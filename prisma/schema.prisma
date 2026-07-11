@@ -1,0 +1,529 @@
+// FleetOS – Datenmodell
+// Multi-Tenant: fast jede Tabelle trägt companyId. Isolation wird zusätzlich
+// über PostgreSQL Row-Level-Security erzwungen (siehe supabase/migrations/).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------- Plattform-Ebene ----------
+
+model Company {
+  id        String   @id @default(uuid())
+  name      String
+  address   String?
+  taxId     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members              CompanyMember[]
+  vehicles              Vehicle[]
+  drivers               Driver[]
+  shiftTemplates        ShiftTemplate[]
+  demandProfiles        DemandProfile[]
+  shifts                Shift[]
+  compensationFormulas  CompensationFormula[]
+  revenueEntries        RevenueEntry[]
+  settings              CompanySettings?
+
+  @@map("companies")
+}
+
+enum MemberRole {
+  super_admin
+  company_owner
+  dispatcher
+  driver
+}
+
+// Verknüpft einen Supabase-Auth-Nutzer (auth.users.id) mit einem Unternehmen + Rolle.
+// super_admin-Zeilen haben companyId = null (plattformweit, kein Unternehmen).
+model CompanyMember {
+  id        String     @id @default(uuid())
+  companyId String?
+  userId    String // entspricht auth.users.id in Supabase
+  role      MemberRole
+  createdAt DateTime   @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId])
+  @@index([userId])
+  @@map("company_members")
+}
+
+// Zentrale, firmenweite Einstellungen (Minijob-Standardsätze, Nachtfenster,
+// Pausenregeln, Bargeld-Verrechnung usw.) - ein Datensatz pro Unternehmen.
+model CompanySettings {
+  id        String  @id @default(uuid())
+  companyId String  @unique
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  bundesland          String  @default("NW")
+  nightStart          String  @default("22:00")
+  nightEnd            String  @default("06:00")
+  minRestHours        Float   @default(11)
+  maxAbsenceHours     Float   @default(10)
+  cashNettingEnabled  Boolean @default(true)
+
+  // Minijob-Pauschalabgaben-Standard (§ 8 SGB IV), pro Fahrer überschreibbar
+  minijobMonthlyEarningLimit Float @default(603)
+  minijobKvFlatRate          Float @default(0.13)
+  minijobRvFlatRate          Float @default(0.15)
+  minijobU1Rate               Float @default(0.011)
+  minijobU2Rate               Float @default(0.0024)
+  minijobInsolvenzRate        Float @default(0.0006)
+  minijobPauschsteuerRate     Float @default(0.02)
+  minijobOtherRate            Float @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("company_settings")
+}
+
+// ---------- Fahrzeuge ----------
+
+enum VehicleStatus {
+  active
+  workshop
+  out_of_service
+  sold
+}
+
+enum OwnershipType {
+  company
+  leasing
+  financing
+  private
+}
+
+model Vehicle {
+  id             String        @id @default(uuid())
+  companyId      String
+  company        Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  licensePlate   String
+  vin            String?
+  brand          String?
+  model          String?
+  year           Int?
+  color          String?
+  mileage        Int           @default(0)
+  status         VehicleStatus @default(active)
+  ownershipType  OwnershipType @default(company)
+
+  registrationDate    DateTime?
+  concessionNumber    String?
+  tuvUntil            DateTime?
+  rentalPermitUntil   DateTime?
+  envBadge            String?
+  euroNorm            String?
+
+  shiftTemplateId  String?
+  shiftTemplate    ShiftTemplate? @relation(fields: [shiftTemplateId], references: [id])
+  defaultDriverId  String? // abgeleitet: Fahrer mit assignment.role = stamm (App-seitig synchron gehalten)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  documents       VehicleDocument[]
+  costs           VehicleCost[]
+  assignments     VehicleDriverAssignment[]
+  shifts          Shift[]
+  maintenance     MaintenanceRecord[]
+
+  @@index([companyId])
+  @@map("vehicles")
+}
+
+model VehicleDocument {
+  id         String    @id @default(uuid())
+  vehicleId  String
+  vehicle    Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  type       String // Fahrzeugschein | Mietwagengenehmigung / Konzessionsurkunde | TÜV-Bericht / HU-Bescheinigung | UVV-Prüfprotokoll | ...
+  side       String? // Vorderseite | Rückseite
+  fileUrl    String
+  uploadedAt DateTime  @default(now())
+  expiryDate DateTime?
+
+  @@index([vehicleId])
+  @@map("vehicle_documents")
+}
+
+model VehicleCost {
+  id          String   @id @default(uuid())
+  vehicleId   String
+  vehicle     Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  category    String // Tanken | Reparatur | Wartung | Reifen | Versicherung | Finanzierung | Leasing | Autowäsche | Parken | Sonstiges
+  amount      Float
+  periodStart DateTime
+  periodEnd   DateTime
+  note        String?
+
+  @@index([vehicleId])
+  @@map("vehicle_costs")
+}
+
+enum DriverRole {
+  stamm
+  zweit
+  vertretung
+  minijob
+  aushilfe
+  springer
+}
+
+model VehicleDriverAssignment {
+  id        String     @id @default(uuid())
+  vehicleId String
+  vehicle   Vehicle    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  driverId  String
+  driver    Driver     @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  role      DriverRole
+  since     DateTime   @default(now())
+  note      String?
+
+  @@index([vehicleId])
+  @@index([driverId])
+  @@map("vehicle_driver_assignments")
+}
+
+// ---------- Fahrer ----------
+
+enum EmploymentType {
+  fulltime
+  parttime
+  minijob
+  shortterm
+  workingStudent
+  auxiliary
+  freelancer
+}
+
+enum DriverStatus {
+  active
+  inactive
+  terminated
+}
+
+enum CompensationMode {
+  hourly
+  formula
+}
+
+model Driver {
+  id             String         @id @default(uuid())
+  companyId      String
+  company        Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  firstName      String
+  lastName       String
+  birthDate      DateTime?
+  birthPlace     String?
+  birthCountry   String?
+  street         String?
+  houseNumber    String?
+  postalCode     String?
+  city           String?
+  country        String?
+  phone          String?
+  email          String?
+
+  idNumber           String?
+  idExpiry           DateTime?
+  licenseNumber       String?
+  licenseClass        String?
+  licenseIssueDate    DateTime?
+  licenseExpiry       DateTime?
+  pbeScheinNumber      String?
+  pbeScheinExpiry      DateTime?
+
+  employmentType EmploymentType @default(fulltime)
+  status         DriverStatus   @default(active)
+  employeeNumber String?
+  qualifications String[]       @default([])
+
+  compensationMode      CompensationMode @default(hourly)
+  compensationFormulaId String?
+  compensationFormula   CompensationFormula? @relation(fields: [compensationFormulaId], references: [id])
+  hourlyRate             Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  documents         DriverDocument[]
+  unavailability    DriverUnavailability[]
+  highDemandWindows DriverHighDemandWindow[]
+  minijobSettings   MinijobSettings?
+  assignments       VehicleDriverAssignment[]
+  shifts            Shift[] @relation("ShiftDriver")
+  substituteShifts  Shift[] @relation("ShiftPrimaryDriver")
+  revenueEntries    RevenueEntry[]
+
+  @@index([companyId])
+  @@map("drivers")
+}
+
+model DriverDocument {
+  id         String    @id @default(uuid())
+  driverId   String
+  driver     Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  type       String
+  side       String?
+  fileUrl    String
+  uploadedAt DateTime  @default(now())
+  expiryDate DateTime?
+
+  @@index([driverId])
+  @@map("driver_documents")
+}
+
+model DriverUnavailability {
+  id       String   @id @default(uuid())
+  driverId String
+  driver   Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  type     String // vacation | sick | other
+  start    DateTime
+  end      DateTime
+  note     String?
+
+  @@index([driverId])
+  @@map("driver_unavailability")
+}
+
+// Bevorzugte, wöchentlich wiederkehrende Hochnachfrage-Zeitfenster pro Fahrer
+model DriverHighDemandWindow {
+  id        String @id @default(uuid())
+  driverId  String
+  driver    Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  label     String?
+  startDow  Int // 0 = Sonntag .. 6 = Samstag
+  startTime String // "HH:MM"
+  endDow    Int
+  endTime   String
+
+  @@index([driverId])
+  @@map("driver_high_demand_windows")
+}
+
+model MinijobSettings {
+  id       String @id @default(uuid())
+  driverId String @unique
+  driver   Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  legalCompliant          Boolean @default(true)
+  monthlyEarningLimit     Float? // leer = Firmenstandard aus CompanySettings verwenden
+  employeePaysRV          Boolean @default(true)
+  overrideCompanyDefaults Boolean @default(false)
+  kvFlatRate              Float?
+  rvFlatRate              Float?
+  u1Rate                  Float?
+  u2Rate                  Float?
+  insolvenzRate           Float?
+  pauschsteuerRate        Float?
+  otherRate               Float?
+
+  @@map("minijob_settings")
+}
+
+// ---------- Schichtmodelle & Nachfrageprofile ----------
+
+enum ShiftTemplateMode {
+  fixed
+  flexible
+}
+
+model ShiftTemplate {
+  id              String            @id @default(uuid())
+  companyId       String
+  company         Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  active          Boolean           @default(true)
+  isDefault       Boolean           @default(false)
+  mode            ShiftTemplateMode @default(fixed)
+  singleDriverMode Boolean          @default(false)
+  holidaysEnabled Boolean           @default(false)
+  createdAt       DateTime          @default(now())
+
+  shifts        ShiftTemplateShift[] @relation("TemplateShifts")
+  holidayShifts ShiftTemplateShift[] @relation("HolidayShifts")
+  vehicles      Vehicle[]
+
+  @@index([companyId])
+  @@map("shift_templates")
+}
+
+model ShiftTemplateShift {
+  id                     String         @id @default(uuid())
+  shiftTemplateId        String
+  shiftTemplate          ShiftTemplate  @relation("TemplateShifts", fields: [shiftTemplateId], references: [id], onDelete: Cascade)
+  holidayForTemplateId   String?
+  holidayForTemplate     ShiftTemplate? @relation("HolidayShifts", fields: [holidayForTemplateId], references: [id])
+
+  name                   String
+  description            String?
+  driverCount            Int      @default(1)
+  weekdays               Int[]    @default([0, 1, 2, 3, 4, 5, 6]) // 0=So..6=Sa
+  requiredQualification  String?
+
+  earliestStart          String // "HH:MM"
+  latestStart            String
+  targetNetHours         Float
+  maxShiftHours          Float
+
+  flexibleStart          Boolean @default(true)
+  prioritizeDemand       Boolean @default(false)
+  optimizeNightSurcharge Boolean @default(false)
+  autoBreak              Boolean @default(true)
+
+  @@index([shiftTemplateId])
+  @@map("shift_template_shifts")
+}
+
+enum DemandLevel {
+  niedrig
+  mittel
+  hoch
+  sehr_hoch
+}
+
+model DemandProfile {
+  id        String      @id @default(uuid())
+  companyId String
+  company   Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  weekday   Int // 0=So..6=Sa
+  startTime String // "HH:MM"
+  endTime   String // "HH:MM", darf über Mitternacht hinausgehen (z. B. Fr 16:00 -> Sa 03:00 als endTime "03:00" mit Flag im App-Code)
+  level     DemandLevel
+
+  @@index([companyId, weekday])
+  @@map("demand_profiles")
+}
+
+// ---------- Dienstplan ----------
+
+model Shift {
+  id        String   @id @default(uuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  vehicleId String
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  driverId  String?
+  driver    Driver?  @relation("ShiftDriver", fields: [driverId], references: [id])
+
+  date            DateTime
+  start           String // "HH:MM"
+  end             String // "HH:MM"
+  breakMinutes    Int      @default(0)
+  commuteMinutes  Int      @default(0)
+
+  generated           Boolean @default(false)
+  isSubstitute         Boolean @default(false)
+  primaryDriverId      String?
+  primaryDriver        Driver? @relation("ShiftPrimaryDriver", fields: [primaryDriverId], references: [id])
+  fromShiftTemplateId  String?
+  shiftName            String?
+  isHoliday            Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  breaks ShiftBreak[]
+
+  @@index([companyId, date])
+  @@index([vehicleId, date])
+  @@index([driverId, date])
+  @@map("shifts")
+}
+
+// Einzelne Pausenblöcke einer Schicht (Minuten seit Schichtbeginn), damit
+// Aufteilungen wie 15+15 statt nur einer Gesamtminutenzahl abgebildet werden.
+model ShiftBreak {
+  id      String @id @default(uuid())
+  shiftId String
+  shift   Shift  @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  start   Int // Minuten seit Schichtbeginn
+  end     Int
+
+  @@index([shiftId])
+  @@map("shift_breaks")
+}
+
+// ---------- Vergütung & Umsatz ----------
+
+model CompensationFormula {
+  id             String   @id @default(uuid())
+  companyId      String
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name           String
+  description    String?
+  active         Boolean  @default(true)
+  isDefault      Boolean  @default(false)
+  steps          Json // Schritt-Kette, siehe Geschäftsregeln in Abschnitt 5.4 des Super-Prompts
+  currentVersion Int      @default(1)
+  createdAt      DateTime @default(now())
+
+  drivers Driver[]
+
+  @@index([companyId])
+  @@map("compensation_formulas")
+}
+
+enum RevenuePeriodType {
+  day
+  week
+}
+
+// Getrennte Geldkategorien, siehe Abschnitt 5.4: netRevenue/bonus =
+// Unternehmensumsatz, tip/surcharge = Fahrervergütung, cashPayout/
+// cashHandedIn = Firmenbargeld (KEIN Lohn), advance = bereits ausgezahlt.
+model RevenueEntry {
+  id          String            @id @default(uuid())
+  companyId   String
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  driverId    String
+  driver      Driver            @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  periodStart DateTime
+  periodEnd   DateTime
+  periodType  RevenuePeriodType
+
+  netRevenue  Float @default(0)
+  bonus       Float @default(0)
+  tip         Float @default(0)
+  surcharge   Float @default(0)
+  cashPayout  Float @default(0) // Bar vom Kunden erhalten - KEIN Lohn
+  cashHandedIn Float @default(0) // Bar an Firma abgegeben
+  advance     Float @default(0) // Vorschuss, bereits an Fahrer ausgezahlt
+
+  createdAt DateTime @default(now())
+
+  @@index([companyId, driverId])
+  @@map("revenue_entries")
+}
+
+// ---------- Wartung ----------
+
+model MaintenanceRecord {
+  id             String    @id @default(uuid())
+  vehicleId      String
+  vehicle        Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  type           String
+  date           DateTime
+  mileage        Int?
+  cost           Float?
+  note           String?
+  nextDueDate    DateTime?
+  nextDueMileage Int?
+
+  @@index([vehicleId])
+  @@map("maintenance_records")
+}

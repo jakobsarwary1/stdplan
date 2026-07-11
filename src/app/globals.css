@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background: theme('colors.bg');
+  color: theme('colors.text');
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors;
+  }
+  .btn-primary {
+    @apply bg-accent text-black hover:brightness-110;
+  }
+  .btn-ghost {
+    @apply bg-surfaceAlt text-text hover:bg-border;
+  }
+  .card {
+    @apply rounded-xl border border-border bg-surface p-6;
+  }
+  .input {
+    @apply w-full rounded-lg border border-border bg-surfaceAlt px-3 py-2 text-sm text-text placeholder:text-textMuted focus:border-accent focus:outline-none;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium text-textMuted;
+  }
+  .table-row-clickable {
+    @apply cursor-pointer transition-colors hover:bg-surfaceAlt;
+  }
+}
