@@ -30,3 +30,15 @@ body {
     @apply cursor-pointer transition-colors hover:bg-surfaceAlt;
   }
 }
+
+/* Native Auf-/Ab-Pfeile bei Zahlenfeldern ausblenden - Felder sollen normal
+   anklickbar und direkt editierbar sein, nicht per Stepper hoch-/runterzählbar. */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

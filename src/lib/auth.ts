@@ -32,9 +32,21 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
 
   if (!user) return null
 
-  const membership = await prisma.companyMember.findFirst({
-    where: { userId: user.id },
-    include: { company: true }
+  // Elevierter Kontext NUR für diese eine Abfrage: Wir wissen an dieser
+  // Stelle noch nicht, zu welchem Unternehmen der Nutzer gehört (genau das
+  // versuchen wir gerade herauszufinden) - ohne "app.is_super_admin" zu
+  // setzen, würde die RLS-Policy auf company_members diese Abfrage
+  // blockieren, selbst für den Nutzer seine EIGENE Zuordnung. Sicher, weil
+  // wir ausschließlich nach der eigenen, durch Supabase Auth bereits
+  // verifizierten userId filtern - keine fremden Mandanten-Daten sichtbar.
+  const membership = await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(
+      `SELECT set_config('app.current_company_id', '', true), set_config('app.is_super_admin', 'true', true)`
+    )
+    return tx.companyMember.findFirst({
+      where: { userId: user.id },
+      include: { company: true }
+    })
   })
 
   if (!membership) return null

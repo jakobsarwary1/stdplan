@@ -13,6 +13,14 @@ export default async function CompanyLayout({ children }: { children: React.Reac
           <Link href="/dashboard" className="text-lg font-semibold">
             {user.companyName}
           </Link>
+          <nav className="flex items-center gap-6 text-sm">
+            <Link href="/dashboard" className="text-textMuted hover:text-text">Übersicht</Link>
+            <Link href="/fahrzeuge" className="text-textMuted hover:text-text">Fahrzeuge</Link>
+            <Link href="/fahrer" className="text-textMuted hover:text-text">Fahrer</Link>
+            <Link href="/schichtmodelle" className="text-textMuted hover:text-text">Schichtmodelle</Link>
+            <Link href="/dienstplan" className="text-textMuted hover:text-text">Dienstplan</Link>
+            <Link href="/einstellungen" className="text-textMuted hover:text-text">Einstellungen</Link>
+          </nav>
           <div className="flex items-center gap-4 text-sm text-textMuted">
             <span>{user.email}</span>
             <form action={async () => {

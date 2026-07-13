@@ -64,6 +64,17 @@ Das erzeugt alle Tabellen aus `prisma/schema.prisma` in deiner Supabase-DB.
 SEED_SUPER_ADMIN_EMAIL=du@beispiel.de SEED_SUPER_ADMIN_PASSWORD=EinSicheresPasswort123 npm run prisma:seed
 ```
 
+## 6b. Storage-Bucket für Dokumente einrichten (für Phase 2 nötig)
+
+Fahrer- und Fahrzeugdokumente (Führerschein, Fahrzeugschein, TÜV-Bericht etc.)
+werden in Supabase Storage abgelegt.
+
+1. Supabase-Dashboard → **Storage** → **New bucket**
+2. Name: **`documents`** (exakt so, wird im Code referenziert)
+3. **Public bucket: AUS lassen** (Dokumente sind sensibel, Zugriff läuft
+   ausschließlich über befristete, signierte URLs aus der App heraus)
+4. Erstellen
+
 ## 7. Lokal starten
 
 ```bash
@@ -84,9 +95,13 @@ einloggen → landet automatisch im Super-Admin-Bereich (`/admin`).
 4. Deploy auslösen – ab jetzt deployt Vercel automatisch bei jedem Push auf
    `main`.
 
-## Was als Nächstes kommt (Phase 2+)
+## Was als Nächstes kommt (Phase 3+)
 
-Siehe Super-Prompt Abschnitt 7. Kurz zusammengefasst: Fahrzeug- und
-Fahrerverwaltung, Schichtmodelle & Nachfrageprofile, die
-Auto-Planungs-Engine, der Dienstplan, Vergütung/Lohnabrechnung, Finanzen &
-Wartung.
+**Phase 2 (Fahrzeug- und Fahrerverwaltung) ist bereits enthalten:** Fahrzeuge
+und Fahrer anlegen/bearbeiten/löschen, Dokumenten-Upload, Fahrzeug-Fahrer-
+Zuordnung mit Rollen (Stammfahrer etc.). OCR-Datenübernahme kommt bewusst
+erst in Phase 8.
+
+Siehe Super-Prompt Abschnitt 7 für den Rest: Schichtmodelle &
+Nachfrageprofile, die Auto-Planungs-Engine, der Dienstplan, Vergütung/
+Lohnabrechnung, Finanzen & Wartung.

@@ -50,10 +50,30 @@ async function main() {
 
   if (!userId) throw new Error('Konnte keine Nutzer-ID ermitteln.')
 
-  await prisma.companyMember.upsert({
-    where: { companyId_userId: { companyId: null, userId } },
-    update: { role: 'super_admin' },
-    create: { companyId: null, userId, role: 'super_admin' }
+  await prisma.$transaction(async (tx) => {
+    // Setzt den RLS-Kontext auf "Super-Admin" für diese Transaktion - ohne
+    // das würde die eingeschränkte app_user-Datenbankrolle (siehe
+    // supabase/migrations/0001_rls_policies.sql) den Schreibzugriff auf
+    // company_members zu Recht verweigern (Henne-Ei-Problem beim allerersten
+    // Super-Admin).
+    await tx.$executeRawUnsafe(
+      `SELECT set_config('app.current_company_id', '', true), set_config('app.is_super_admin', 'true', true)`
+    )
+
+    const existingMembership = await tx.companyMember.findFirst({
+      where: { userId, companyId: null }
+    })
+
+    if (existingMembership) {
+      await tx.companyMember.update({
+        where: { id: existingMembership.id },
+        data: { role: 'super_admin' }
+      })
+    } else {
+      await tx.companyMember.create({
+        data: { companyId: null, userId, role: 'super_admin' }
+      })
+    }
   })
 
   console.log(`✔ ${email} ist jetzt Super-Admin. Anmeldung unter /login.`)

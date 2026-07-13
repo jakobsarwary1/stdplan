@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import { requireSuperAdmin } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { DEMAND_PROFILE_SEEDS, SHIFT_TEMPLATE_SEEDS } from '@/lib/seedDefaults'
 
 export async function createCompany(formData: FormData) {
   await requireSuperAdmin()
@@ -15,8 +16,8 @@ export async function createCompany(formData: FormData) {
 
   if (!name) throw new Error('Name des Unternehmens ist erforderlich.')
 
-  const company = await withTenantContext({ companyId: null, isSuperAdmin: true }, (tx) =>
-    tx.company.create({
+  const company = await withTenantContext({ companyId: null, isSuperAdmin: true }, async (tx) => {
+    const created = await tx.company.create({
       data: {
         name,
         address,
@@ -24,7 +25,45 @@ export async function createCompany(formData: FormData) {
         settings: { create: {} } // Firmeneinstellungen mit sinnvollen Standardwerten anlegen
       }
     })
-  )
+
+    // Standard-Schichtmodelle + Nachfrageprofile seeden, damit der
+    // Firmeninhaber sofort startklar ist (siehe Super-Prompt 5.6 / 5.8).
+    for (const seed of SHIFT_TEMPLATE_SEEDS) {
+      await tx.shiftTemplate.create({
+        data: {
+          companyId: created.id,
+          name: seed.name,
+          description: seed.description,
+          isDefault: seed.isDefault ?? false,
+          singleDriverMode: seed.singleDriverMode ?? false,
+          mode: seed.mode ?? 'fixed',
+          shifts: {
+            create: seed.shifts.map((s) => ({
+              name: s.name,
+              description: s.description,
+              driverCount: s.driverCount ?? 1,
+              weekdays: s.weekdays ?? [0, 1, 2, 3, 4, 5, 6],
+              requiredQualification: s.requiredQualification,
+              earliestStart: s.earliestStart,
+              latestStart: s.latestStart,
+              targetNetHours: s.targetNetHours,
+              maxShiftHours: s.maxShiftHours,
+              flexibleStart: s.flexibleStart ?? true,
+              prioritizeDemand: s.prioritizeDemand ?? false,
+              optimizeNightSurcharge: s.optimizeNightSurcharge ?? false,
+              autoBreak: s.autoBreak ?? true
+            }))
+          }
+        }
+      })
+    }
+
+    await tx.demandProfile.createMany({
+      data: DEMAND_PROFILE_SEEDS.map((d) => ({ ...d, companyId: created.id }))
+    })
+
+    return created
+  })
 
   revalidatePath('/admin')
   redirect(`/admin/unternehmen/${company.id}`)

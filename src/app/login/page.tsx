@@ -1,12 +1,10 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { Button, Card, Field, Input } from '@/components/ui'
 
 export default function LoginPage() {
-  const router = useRouter()
   const supabase = createClient()
 
   const [email, setEmail] = useState('')
@@ -27,8 +25,10 @@ export default function LoginPage() {
       return
     }
 
-    router.push('/')
-    router.refresh()
+    // Bewusst eine harte Navigation statt router.push()/router.refresh():
+    // so sieht der Server garantiert die frisch gesetzten Auth-Cookies,
+    // ohne mit dem clientseitigen Next.js-Router-Cache zu wettlaufen.
+    window.location.assign('/')
   }
 
   return (

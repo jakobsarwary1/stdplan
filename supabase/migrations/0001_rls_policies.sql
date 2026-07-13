@@ -16,7 +16,7 @@
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN
-    CREATE ROLE app_user LOGIN PASSWORD 'BITTE_SICHERES_PASSWORT_EINTRAGEN';
+    CREATE ROLE app_user LOGIN PASSWORD 'firmaFly@2026';
   END IF;
 END $$;
 
@@ -56,64 +56,64 @@ ALTER TABLE maintenance_records             ENABLE ROW LEVEL SECURITY;
 CREATE POLICY companies_isolation ON companies
   USING (
     current_setting('app.is_super_admin', true) = 'true'
-    OR id = NULLIF(current_setting('app.current_company_id', true), '')::uuid
+    OR id = NULLIF(current_setting('app.current_company_id', true), '')
   );
 
 -- company_members: Super-Admin sieht alle, sonst nur Mitglieder des eigenen Unternehmens
 CREATE POLICY company_members_isolation ON company_members
   USING (
     current_setting('app.is_super_admin', true) = 'true'
-    OR "companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid
+    OR "companyId" = NULLIF(current_setting('app.current_company_id', true), '')
   );
 
 -- Alle übrigen Tabellen: strikt auf companyId des aktuellen Kontexts beschränkt
 -- (Super-Admin hat hier bewusst KEINEN Zugriff - operative Daten sind nicht
 -- seine Aufgabe, siehe Rollenmodell im Super-Prompt Abschnitt 3).
 CREATE POLICY tenant_isolation ON company_settings
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid);
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 CREATE POLICY tenant_isolation ON vehicles
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid);
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 CREATE POLICY tenant_isolation ON drivers
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid);
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 CREATE POLICY tenant_isolation ON shift_templates
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid);
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 CREATE POLICY tenant_isolation ON demand_profiles
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid);
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 CREATE POLICY tenant_isolation ON shifts
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid);
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 CREATE POLICY tenant_isolation ON compensation_formulas
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid);
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 CREATE POLICY tenant_isolation ON revenue_entries
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid);
+  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 
 -- Tabellen ohne eigene companyId-Spalte: Isolation über die Elterntabelle (Join)
 CREATE POLICY tenant_isolation ON vehicle_documents
   USING (EXISTS (SELECT 1 FROM vehicles v WHERE v.id = "vehicleId"
-    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON vehicle_costs
   USING (EXISTS (SELECT 1 FROM vehicles v WHERE v.id = "vehicleId"
-    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON vehicle_driver_assignments
   USING (EXISTS (SELECT 1 FROM vehicles v WHERE v.id = "vehicleId"
-    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON maintenance_records
   USING (EXISTS (SELECT 1 FROM vehicles v WHERE v.id = "vehicleId"
-    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON driver_documents
   USING (EXISTS (SELECT 1 FROM drivers d WHERE d.id = "driverId"
-    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON driver_unavailability
   USING (EXISTS (SELECT 1 FROM drivers d WHERE d.id = "driverId"
-    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON driver_high_demand_windows
   USING (EXISTS (SELECT 1 FROM drivers d WHERE d.id = "driverId"
-    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON minijob_settings
   USING (EXISTS (SELECT 1 FROM drivers d WHERE d.id = "driverId"
-    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON shift_template_shifts
   USING (EXISTS (SELECT 1 FROM shift_templates st WHERE st.id = "shiftTemplateId"
-    AND st."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND st."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON shift_breaks
   USING (EXISTS (SELECT 1 FROM shifts s WHERE s.id = "shiftId"
-    AND s."companyId" = NULLIF(current_setting('app.current_company_id', true), '')::uuid));
+    AND s."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
