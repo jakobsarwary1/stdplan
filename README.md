@@ -1,5 +1,6 @@
 # FleetOS – Phase 1: Fundament
 
+
 Multi-Tenant-Fundament: Next.js + Supabase (Auth/DB/Storage) + Prisma +
 Row-Level-Security + Super-Admin-Bereich zum Anlegen/Verwalten von
 Unternehmen. Enthält bewusst noch KEINE Fahrzeug-/Fahrer-/Schichtverwaltung
