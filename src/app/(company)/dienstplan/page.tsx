@@ -116,7 +116,7 @@ export default async function DienstplanPage({
           {Array.from(
             shifts.reduce((map, s) => {
               const key = s.driver ? `${s.driver.firstName} ${s.driver.lastName}` : '—'
-              const entry = map.get(key) ?? { driverId: s.driverId, shifts: [] as typeof shifts }
+              const entry = map.get(key) ?? { driverId: s.driver?.id ?? null, shifts: [] as typeof shifts }
               entry.shifts.push(s)
               map.set(key, entry)
               return map
