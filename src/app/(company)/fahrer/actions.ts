@@ -81,7 +81,17 @@ export async function updateDriverBeschaeftigung(driverId: string, formData: For
         pbeScheinExpiry: date(formData, 'pbeScheinExpiry'),
         hourlyRate: (() => {
           const raw = str(formData, 'hourlyRate')
-          return raw ? parseFloat(raw) : null
+          if (!raw) return null
+          // Deutsches Komma als Dezimaltrennzeichen zulassen (z. B. "13,90"),
+          // nicht nur den englischen Punkt.
+          const parsed = parseFloat(raw.replace(',', '.'))
+          if (Number.isNaN(parsed)) return null
+          // Gesetzlicher Mindestlohn 2026: 13,90 €/Std. - unterhalb davon
+          // wäre die Eingabe rechtswidrig. Obergrenze 30 € als Plausibilitäts-
+          // Deckel gegen Tippfehler (kann bei Bedarf angepasst werden).
+          const MINDESTLOHN_2026 = 13.9
+          const MAX_HOURLY_RATE = 30.0
+          return Math.min(MAX_HOURLY_RATE, Math.max(MINDESTLOHN_2026, parsed))
         })()
       }
     })

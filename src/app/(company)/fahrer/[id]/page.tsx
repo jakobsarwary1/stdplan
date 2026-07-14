@@ -4,6 +4,7 @@ import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
 import { getDocumentUrl } from '@/lib/storage'
 import { Button, Card, Field, Input } from '@/components/ui'
+import { AddressFields } from '@/components/AddressFields'
 import {
   deleteDriver,
   deleteDriverDocument,
@@ -125,20 +126,12 @@ export default async function DriverDetailPage({
             <Field label="E-Mail">
               <Input name="email" type="email" defaultValue={driver.email ?? ''} />
             </Field>
-            <div className="grid grid-cols-[2fr_1fr_1fr] gap-4">
-              <Field label="Straße">
-                <Input name="street" defaultValue={driver.street ?? ''} />
-              </Field>
-              <Field label="Hausnummer">
-                <Input name="houseNumber" defaultValue={driver.houseNumber ?? ''} />
-              </Field>
-              <Field label="PLZ">
-                <Input name="postalCode" defaultValue={driver.postalCode ?? ''} />
-              </Field>
-            </div>
-            <Field label="Ort">
-              <Input name="city" defaultValue={driver.city ?? ''} />
-            </Field>
+            <AddressFields
+              defaultStreet={driver.street ?? ''}
+              defaultHouseNumber={driver.houseNumber ?? ''}
+              defaultPostalCode={driver.postalCode ?? ''}
+              defaultCity={driver.city ?? ''}
+            />
             <Button type="submit">Speichern</Button>
           </form>
         </Card>
@@ -186,7 +179,14 @@ export default async function DriverDetailPage({
               </Field>
             </div>
             <Field label="Stundenlohn (€, optional – für Bruttolohn-Schätzung im Dienstplan)">
-              <Input name="hourlyRate" type="number" step="0.5" min="0" defaultValue={driver.hourlyRate ?? ''} placeholder="z. B. 14.00" />
+              <Input
+                name="hourlyRate"
+                type="text"
+                inputMode="decimal"
+                defaultValue={driver.hourlyRate != null ? String(driver.hourlyRate).replace('.', ',') : ''}
+                placeholder="z. B. 13,90"
+              />
+              <p className="mt-1 text-xs text-textMuted">Zwischen 13,90 € (gesetzlicher Mindestlohn 2026) und 30,00 €. Komma oder Punkt möglich.</p>
             </Field>
             <p className="text-xs text-textMuted">
               Minijob-Einstellungen (Verdienstgrenze, Pauschalabgaben) folgen in Phase 6 (Vergütung &amp; Lohnabrechnung).
