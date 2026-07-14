@@ -164,12 +164,15 @@ async function downloadPdf(
   const summaries = options.includeSummary
     ? selectedDriverNames.map((name) => {
         const s = computeSurcharges(rows.filter((r) => r.driverName === name && !r.isFree))
-        return { driverName: name, ...s }
+        const { grossWage } = computeExtendedStats(rows.filter((r) => r.driverName === name))
+        return { driverName: name, ...s, grossWage }
       })
     : []
   if (options.includeSummary && selectedDriverNames.length > 1) {
     const combined = computeSurcharges(rows.filter((r) => selectedDriverNames.includes(r.driverName) && !r.isFree))
-    summaries.push({ driverName: 'Gesamt (alle Fahrer)', ...combined })
+    const combinedGrossWage = summaries.reduce((sum, s) => (s.grossWage != null ? sum + s.grossWage : sum), 0)
+    const anyHasWage = summaries.some((s) => s.grossWage != null)
+    summaries.push({ driverName: 'Gesamt (alle Fahrer)', ...combined, grossWage: anyHasWage ? combinedGrossWage : null })
   }
 
   try {

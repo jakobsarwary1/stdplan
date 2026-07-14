@@ -23,6 +23,7 @@ type PdfSummary = {
   night25: number
   night40: number
   sunday50: number
+  grossWage?: number | null
 }
 
 const COLUMNS = [
@@ -136,7 +137,8 @@ export async function POST(request: Request) {
           `Gesamt: ${s.totalNet.toFixed(2)} h`,
           `Nachtzuschlag 25 %: ${s.night25.toFixed(2)} h`,
           `Nachtzuschlag 40 % steuerfrei: ${s.night40.toFixed(2)} h`,
-          `Sonntagszuschlag 50 %: ${s.sunday50.toFixed(2)} h`
+          `Sonntagszuschlag 50 %: ${s.sunday50.toFixed(2)} h`,
+          `Bruttolohn (geschätzt): ${s.grossWage != null ? s.grossWage.toFixed(2) + ' EUR' : '- kein Stundenlohn hinterlegt -'}`
         ]
         lines.forEach((line) => {
           summaryPage.drawText(line, { x: marginX + 10, y: sy, size: 9, font, color: rgb(0.2, 0.2, 0.2) })
