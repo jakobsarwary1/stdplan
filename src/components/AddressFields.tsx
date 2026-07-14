@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Input, Field } from '@/components/ui'
 
 type AddressSuggestion = {
@@ -12,15 +12,18 @@ type AddressSuggestion = {
 /**
  * Adressfelder (Straße, Hausnummer, PLZ, Ort) mit vollständigen
  * Adress-Vorschlägen während der Eingabe (OpenStreetMap Nominatim,
- * kostenlos, kein API-Key nötig). Jeder Vorschlag zeigt Straße + PLZ/Ort
- * zweizeilig an, z. B.:
- *   Maxmusterstr.
- *   12345 Musterstadt
- * Beim Anklicken eines Vorschlags werden Straße, PLZ UND Ort automatisch
- * übernommen - es muss nur noch die Hausnummer eingetippt werden.
+ * kostenlos, kein API-Key nötig) - nutzt die STRUKTURIERTE "street="-Suche
+ * statt einer freien Textsuche, da diese zuverlässiger auch kleinere Orte
+ * findet (freie Textsuche gewichtet bekannte Großstädte oft zu stark).
+ * Jeder Vorschlag zeigt Straße + PLZ/Ort zweizeilig an. Beim Anklicken
+ * werden Straße, PLZ UND Ort automatisch übernommen.
  *
- * Best-Effort: schlägt die Anfrage fehl (z. B. keine Internetverbindung),
- * kann weiterhin ganz normal manuell getippt werden - nichts wird blockiert.
+ * Zusätzlich: tippt man die PLZ manuell ein (ohne einen Vorschlag
+ * anzuklicken), wird der Ort separat automatisch nachgeladen
+ * (Zippopotam.us).
+ *
+ * Beide Dienste sind Best-Effort: schlägt eine Anfrage fehl, kann
+ * weiterhin ganz normal manuell getippt werden - nichts wird blockiert.
  */
 export function AddressFields({
   defaultStreet, defaultHouseNumber, defaultPostalCode, defaultCity
@@ -36,13 +39,11 @@ export function AddressFields({
   const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastPickedRef = useRef(false) // verhindert, dass direkt nach Auswahl eines Vorschlags erneut gesucht wird
 
-  // Adress-Vorschläge nachladen, während getippt wird (debounced, damit
-  // nicht bei jedem Tastendruck eine Anfrage rausgeht). Liefert vollständige
-  // Adressen (Straße + PLZ + Ort), nicht nur den Straßennamen - dieselbe
-  // Straße kann ja in mehreren Städten vorkommen.
   function handleStreetChange(value: string) {
     setStreet(value)
+    lastPickedRef.current = false
     if (debounceRef.current) clearTimeout(debounceRef.current)
     if (value.trim().length < 3) {
       setSuggestions([])
@@ -51,8 +52,11 @@ export function AddressFields({
     }
     debounceRef.current = setTimeout(async () => {
       try {
+        // Strukturierte Suche (street=...) statt Freitext - findet
+        // zuverlässiger auch Straßen in kleineren Orten, nicht nur in
+        // bekannten Großstädten.
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=de&limit=8&q=${encodeURIComponent(value + ', Deutschland')}`
+          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=de&limit=20&street=${encodeURIComponent(value)}&country=Deutschland`
         )
         if (!res.ok) return
         const data: { address?: { road?: string; postcode?: string; city?: string; town?: string; village?: string; municipality?: string } }[] = await res.json()
@@ -79,11 +83,34 @@ export function AddressFields({
   }
 
   function selectSuggestion(s: AddressSuggestion) {
+    lastPickedRef.current = true
     setStreet(s.street)
     setPostalCode(s.postalCode)
     setCity(s.city)
     setShowSuggestions(false)
   }
+
+  // Ort automatisch nachladen, sobald eine gültige 5-stellige PLZ manuell
+  // eingetippt wurde (unabhängig davon, ob ein Straßen-Vorschlag angeklickt
+  // wurde - falls doch, überspringen wir das, da der Ort dann schon
+  // korrekt aus dem Vorschlag gesetzt wurde).
+  useEffect(() => {
+    if (lastPickedRef.current) { lastPickedRef.current = false; return }
+    if (!/^\d{5}$/.test(postalCode)) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(`https://api.zippopotam.us/de/${postalCode}`)
+        if (!res.ok || cancelled) return
+        const data = await res.json()
+        const placeName = data?.places?.[0]?.['place name']
+        if (placeName && !cancelled) setCity(placeName)
+      } catch {
+        // Best-Effort - bei Fehler bleibt das Feld einfach manuell editierbar
+      }
+    })()
+    return () => { cancelled = true }
+  }, [postalCode])
 
   return (
     <>
@@ -100,7 +127,7 @@ export function AddressFields({
               placeholder="z. B. Musterstraße"
             />
             {showSuggestions && (
-              <ul className="absolute z-10 mt-1 w-full rounded-lg border border-border bg-surface shadow-lg">
+              <ul className="absolute z-10 mt-1 max-h-72 w-full overflow-y-auto rounded-lg border border-border bg-surface shadow-lg">
                 {suggestions.map((s, i) => (
                   <li
                     key={`${s.street}-${s.postalCode}-${i}`}
@@ -124,7 +151,7 @@ export function AddressFields({
           <Input
             name="postalCode"
             value={postalCode}
-            onChange={(e) => setPostalCode(e.target.value.replace(/\D/g, '').slice(0, 5))}
+            onChange={(e) => { lastPickedRef.current = false; setPostalCode(e.target.value.replace(/\D/g, '').slice(0, 5)) }}
             inputMode="numeric"
             maxLength={5}
           />
