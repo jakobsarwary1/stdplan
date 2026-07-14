@@ -27,6 +27,7 @@ const DOCUMENT_TYPES = [
   'Sozialversicherungsausweis',
   'Steuer-ID-Bescheinigung',
   'Krankenkassenbescheinigung',
+  'A-Fragebogen Angestellte',
   'Sonstiges'
 ]
 

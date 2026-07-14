@@ -121,7 +121,17 @@ export async function uploadDriverDocument(driverId: string, formData: FormData)
   if (!file || file.size === 0) throw new Error('Bitte eine Datei auswählen.')
   if (!type) throw new Error('Bitte einen Dokumenttyp auswählen.')
 
-  const path = await uploadDocument(user.companyId, file)
+  let path: string
+  try {
+    path = await uploadDocument(user.companyId, file)
+  } catch (err) {
+    // Ausführlich in die Server-Logs schreiben (in Vercel unter "Runtime
+    // Logs" sichtbar), damit sich zukünftige Upload-Fehler direkt anhand
+    // der echten Fehlermeldung diagnostizieren lassen, statt nur den
+    // generischen "Application error" zu sehen.
+    console.error('Dokument-Upload fehlgeschlagen:', { driverId, fileName: file.name, fileSize: file.size, fileType: file.type, error: err })
+    throw new Error(`Dokument-Upload fehlgeschlagen: ${(err as Error).message}`)
+  }
 
   await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
     tx.driverDocument.create({

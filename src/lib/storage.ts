@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { randomUUID } from 'crypto'
 
 /**
  * Lädt eine Datei in den Supabase-Storage-Bucket "documents" hoch, unter
@@ -14,7 +15,7 @@ import { createClient } from '@/lib/supabase/server'
 export async function uploadDocument(companyId: string, file: File): Promise<string> {
   const supabase = createClient()
   const ext = file.name.split('.').pop()
-  const path = `${companyId}/${crypto.randomUUID()}.${ext}`
+  const path = `${companyId}/${randomUUID()}.${ext}`
 
   const { error } = await supabase.storage.from('documents').upload(path, file, {
     contentType: file.type,
