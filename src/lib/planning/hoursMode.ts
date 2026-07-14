@@ -221,6 +221,8 @@ export function generateHoursBasedSchedule(
   let chosenWeekdays: Date[]
   let remainingHours: number
   let numWeekdayShifts = 0
+  let reservePool: Date[] = [] // ungenutzte Tage, die bei Bedarf nachträglich zur Unterbringung von Restsstunden hinzugenommen werden können
+  let minijobSundayHoursByDate: Map<string, number> | null = null // dedizierte Sonntagsstunden im Minijob-Zweig (siehe unten)
 
   // Sonntag bekommt KEINE fest eingebrannte Nettozeit, sondern wird aus der
   // eingegebenen Sonntagsstundenzahl abgeleitet - abzüglich des TATSÄCHLICHEN
@@ -272,6 +274,8 @@ export function generateHoursBasedSchedule(
     numWeekdayShifts = Math.min(optionalMonThuPool.length, Math.max(0, Math.round(remainingHours / avgNet)))
     chosenWeekdays = [...mandatoryWeekend, ...pickRandomDays(optionalMonThuPool, numWeekdayShifts)]
       .sort((a, b) => a.getTime() - b.getTime())
+    const chosenSet = new Set(chosenWeekdays.map(toDateStr))
+    reservePool = optionalMonThuPool.filter((d) => !chosenSet.has(toDateStr(d)))
   } else {
     // Minijob / kleines Stundenkontingent: normale flexible Verteilung ohne
     // Pflicht-Wochenende, ohne feste Vorlage, ohne "nie 3 Tage frei" -
@@ -281,11 +285,29 @@ export function generateHoursBasedSchedule(
     const chosenSundays = pickRandomDays(sundayPool, Math.min(numSundayShifts, sundayPool.length))
     const chosenSundayDateStrs = new Set(chosenSundays.map(toDateStr))
 
+    // Sonntage bekommen eine EIGENE, dedizierte Stundenzuteilung (flach
+    // verteilt über die gewählten Sonntage) - sie dürfen NICHT einfach im
+    // allgemeinen Werktags-Topf landen, dessen Budget (remainingHours)
+    // die Sonntagsstunden ja bereits explizit ausschließt. Sonst würden
+    // die Sonntage zwar als Arbeitstage gewählt, aber nie wirklich mit
+    // Stunden befüllt - die Sonntagsstunden blieben faktisch unerreichbar.
+    minijobSundayHoursByDate = new Map()
+    {
+      let remaining = target.sundayHours
+      chosenSundays.forEach((d) => {
+        const h = Math.max(0, Math.min(8, remaining))
+        minijobSundayHoursByDate!.set(toDateStr(d), h)
+        remaining -= h
+      })
+    }
+
     const restPool = allDays.filter((d) => d.getDay() !== 0 && !chosenSundayDateStrs.has(toDateStr(d)))
     remainingHours = Math.max(0, target.totalHours - target.sundayHours)
     const numRestShifts = Math.min(restPool.length, Math.max(0, Math.round(remainingHours / avgNet)))
     chosenWeekdays = [...chosenSundays, ...pickRandomDays(restPool, numRestShifts)]
       .sort((a, b) => a.getTime() - b.getTime())
+    const chosenSet = new Set(chosenWeekdays.map(toDateStr))
+    reservePool = restPool.filter((d) => !chosenSet.has(toDateStr(d)))
   }
 
   if (isEinzelfahrer) {
@@ -401,17 +423,50 @@ export function generateHoursBasedSchedule(
   const weekdayContexts = chosenWeekdays.map(buildContext)
 
   // ---- Schritt 2: Stunden verteilen (nur Montag-Donnerstag - Fr/Sa/So
-  // haben feste Werte aus der Wochenend-Vorlage, siehe Schritt 3). ----
-  const distributableWeekdayContexts = isEinzelfahrer
+  // haben feste Werte aus der Wochenend-Vorlage, siehe Schritt 3). Reicht
+  // das Budget mit den bisher gewählten Tagen nicht aus (z. B. weil ein Tag
+  // rechnerisch mehr als die zulässigen ~8 Std. netto bräuchte), werden
+  // automatisch weitere Tage aus dem Reserve-Pool hinzugenommen, bis die
+  // Reststunden untergebracht sind oder keine Tage mehr übrig sind - statt
+  // die überzähligen Stunden einfach wegzulassen. Praktisch entspricht das
+  // z. B. 10 Netto-Std. auf zwei Tage aufzuteilen, statt sie an einem Tag
+  // unterbringen zu wollen. ----
+  let distributableWeekdayContexts = isEinzelfahrer
     ? weekdayContexts.filter((c) => ![0, 5, 6].includes(c.weekday)) // Fr/Sa/So haben feste Werte
-    : weekdayContexts // Minijob: keine feste Vorlage, alle gewählten Tage normal verteilen
-  const { hoursByDate, shortfallHours: weekdayShortfall } = distributeHoursWithPerDayCap(distributableWeekdayContexts, remainingHours)
+    : minijobSundayHoursByDate
+      ? weekdayContexts.filter((c) => !minijobSundayHoursByDate!.has(c.dateStr)) // Sonntage haben eigene Zuteilung (siehe unten)
+      : weekdayContexts
+  let reserveContexts = reservePool.map(buildContext)
+
+  let hoursByDate: Map<string, number>
+  let weekdayShortfall: number
+  {
+    const result = distributeHoursWithPerDayCap(distributableWeekdayContexts, remainingHours)
+    hoursByDate = result.hoursByDate
+    weekdayShortfall = result.shortfallHours
+
+    let guard = 0
+    while (weekdayShortfall > 0.1 && reserveContexts.length > 0 && guard < 10) {
+      guard++
+      const extra = reserveContexts.shift()!
+      distributableWeekdayContexts = [...distributableWeekdayContexts, extra]
+      weekdayContexts.push(extra)
+      chosenWeekdays.push(extra.date)
+      const retry = distributeHoursWithPerDayCap(distributableWeekdayContexts, remainingHours)
+      hoursByDate = retry.hoursByDate
+      weekdayShortfall = retry.shortfallHours
+    }
+  }
 
   if (weekdayShortfall > 0.2) {
     warnings.push(`${weekdayShortfall.toFixed(2)} Werktagsstunden konnten wegen der 10-Std.-Gesamtzeit-Obergrenze nicht untergebracht werden.`)
   }
 
-  const allContexts = weekdayContexts
+  if (minijobSundayHoursByDate) {
+    minijobSundayHoursByDate.forEach((h, dateStr) => hoursByDate.set(dateStr, h))
+  }
+
+  const allContexts = weekdayContexts.sort((a, b) => a.date.getTime() - b.date.getTime())
 
   // ---- Schritt 3: Für jeden Tag (in chronologischer Reihenfolge, wegen
   // der Ruhezeit-Kette) Start, Ende und Pausenposition festlegen. ----
