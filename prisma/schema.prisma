@@ -263,6 +263,7 @@ model Driver {
   updatedAt DateTime @updatedAt
 
   documents         DriverDocument[]
+  monthlyConfirmations DriverMonthlyConfirmation[]
   unavailability    DriverUnavailability[]
   highDemandWindows DriverHighDemandWindow[]
   minijobSettings   MinijobSettings?
@@ -273,6 +274,27 @@ model Driver {
 
   @@index([companyId])
   @@map("drivers")
+}
+
+model DriverMonthlyConfirmation {
+  id       String @id @default(uuid())
+  driverId String
+  driver   Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  year     Int
+  month    Int // 1-12
+
+  tipsConfirmed      Boolean @default(false) // Trinkgeld
+  expensesConfirmed  Boolean @default(false) // Spesen (falls ausgezahlt)
+  timesheetConfirmed Boolean @default(false) // Stundenzettel
+  cashWageConfirmed  Boolean @default(false) // Lohnbestätigung (falls bar ausgezahlt)
+
+  confirmedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([driverId, year, month])
+  @@index([driverId])
+  @@map("driver_monthly_confirmations")
 }
 
 model DriverDocument {
