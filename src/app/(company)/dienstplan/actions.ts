@@ -322,7 +322,7 @@ export async function previewHoursPlanning(
         )
         if (warning) warnings.push(`${name}: ${warning}`)
 
-        const shiftsByDate = new Map(shifts.map((s) => [s.date, s]))
+        const shiftsByDate = new Map<string, HoursShift>(shifts.map((s) => [s.date, s]))
         shifts.forEach((s) => blockedDates.add(s.date))
 
         allDays.forEach((dateStr) => {

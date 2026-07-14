@@ -122,6 +122,7 @@ function ShiftForm({
     optimizeNightSurcharge: boolean
     autoBreak: boolean
   }
+  submitLabel?: string
 }) {
   const d = defaults
   return (
