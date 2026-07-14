@@ -83,7 +83,13 @@ function computeExtendedStats(rows: import('./actions').HoursPreviewRow[]) {
   const spesenAmount = spesenDays * 14
   const totalNetHours = workDays.reduce((sum, r) => sum + (r.netHours ?? 0), 0)
   const hourlyRate = workDays.find((r) => r.hourlyRate != null)?.hourlyRate ?? null
-  const grossWage = hourlyRate != null ? totalNetHours * hourlyRate : null
+  // Bruttolohn = Grundlohn (alle Netto-Std. × Stundenlohn) PLUS
+  // Sonntagszuschlag 50 % auf die tatsächlich am Sonntag geleisteten
+  // Stunden (zusätzlich zum ohnehin bereits enthaltenen Grundlohn für
+  // diese Stunden) - Nachtzuschläge bleiben hier bewusst außen vor, da sie
+  // steuerfrei sind und separat ausgewiesen werden.
+  const { sunday50 } = computeSurcharges(workDays)
+  const grossWage = hourlyRate != null ? totalNetHours * hourlyRate + sunday50 * hourlyRate * 0.5 : null
   return { freeDays, spesenDays, spesenAmount, grossWage, hourlyRate }
 }
 
@@ -460,7 +466,7 @@ export function HoursPlanningForm({
                 </div>
                 {hourlyRate != null && (
                   <p className="mt-2 text-[10px] text-textMuted">
-                    Bruttolohn geschätzt aus {totalNet.toFixed(2)} Std. × {hourlyRate.toFixed(2)} €/Std. – ohne Zuschläge, Spesen sind steuerfrei und hier nicht enthalten.
+                    Bruttolohn geschätzt aus {totalNet.toFixed(2)} Std. × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % - Nachtzuschläge (steuerfrei) und Spesen sind hier nicht enthalten.
                   </p>
                 )}
               </div>
