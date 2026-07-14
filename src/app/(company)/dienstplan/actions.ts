@@ -379,38 +379,56 @@ export async function applyHoursPlanning(formData: FormData) {
       !r.isFree && r.startMin != null && r.endMin != null
   )
 
-  await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, async (tx) => {
-    // Vor dem Einfügen: bestehende Schichten für exakt dieselben
-    // Fahrzeug+Datum-Kombinationen löschen. Ohne das würde erneutes
-    // "Übernehmen" (z. B. nach nochmaligem Generieren desselben Monats)
-    // die alten Schichten NICHT ersetzen, sondern zusätzlich duplizieren.
-    const affectedDates = Array.from(new Set(shifts.map((s) => s.date))).map(parseLocalDate)
-    if (affectedDates.length > 0) {
-      await tx.shift.deleteMany({
-        where: { vehicleId, date: { in: affectedDates } }
-      })
-    }
+  if (!vehicleId) throw new Error('Kein Fahrzeug ausgewählt.')
+  if (shifts.length === 0) throw new Error('Keine Schichten zum Übernehmen vorhanden.')
+  const missingDriver = shifts.find((s) => !s.driverId)
+  if (missingDriver) throw new Error(`Schicht am ${missingDriver.date} hat keinen Fahrer zugeordnet.`)
 
-    for (const s of shifts) {
-      const shift = await tx.shift.create({
-        data: {
-          companyId: user.companyId,
-          vehicleId,
-          driverId: s.driverId,
-          date: parseLocalDate(s.date),
-          start: minToClock(s.startMin),
-          end: minToClock(s.endMin),
-          breakMinutes: s.breakMinutes,
-          commuteMinutes: s.commuteMinutes,
-          generated: true,
-          shiftName: 'Stundenbasiert (Dokumentation)'
-        }
-      })
-      if (s.breaks.length > 0) {
-        await tx.shiftBreak.createMany({ data: s.breaks.map((b) => ({ shiftId: shift.id, start: b.start, end: b.end })) })
+  try {
+    await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, async (tx) => {
+      // Vor dem Einfügen: bestehende Schichten für exakt dieselben
+      // Fahrzeug+Datum-Kombinationen löschen. Ohne das würde erneutes
+      // "Übernehmen" (z. B. nach nochmaligem Generieren desselben Monats)
+      // die alten Schichten NICHT ersetzen, sondern zusätzlich duplizieren.
+      const affectedDates = Array.from(new Set(shifts.map((s) => s.date))).map(parseLocalDate)
+      if (affectedDates.length > 0) {
+        await tx.shift.deleteMany({
+          where: { vehicleId, date: { in: affectedDates } }
+        })
       }
-    }
-  })
+
+      for (const s of shifts) {
+        const shift = await tx.shift.create({
+          data: {
+            companyId: user.companyId,
+            vehicleId,
+            driverId: s.driverId,
+            date: parseLocalDate(s.date),
+            start: minToClock(s.startMin),
+            end: minToClock(s.endMin),
+            breakMinutes: s.breakMinutes,
+            commuteMinutes: s.commuteMinutes,
+            generated: true,
+            shiftName: 'Stundenbasiert (Dokumentation)'
+          }
+        })
+        if (s.breaks.length > 0) {
+          await tx.shiftBreak.createMany({ data: s.breaks.map((b) => ({ shiftId: shift.id, start: b.start, end: b.end })) })
+        }
+      }
+    })
+  } catch (err) {
+    // Ausführlich in die Server-Logs schreiben (Vercel -> "Runtime Logs"),
+    // damit sich der genaue Fehler beim nächsten Mal sofort erkennen lässt,
+    // statt nur den generischen "Application error" zu sehen.
+    console.error('Dienstplan-Übernahme fehlgeschlagen:', {
+      vehicleId,
+      shiftCount: shifts.length,
+      sampleShift: shifts[0],
+      error: err
+    })
+    throw new Error(`Dienstplan konnte nicht übernommen werden: ${(err as Error).message}`)
+  }
 
   revalidatePath('/dienstplan')
 }

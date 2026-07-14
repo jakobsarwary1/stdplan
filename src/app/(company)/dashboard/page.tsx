@@ -115,48 +115,74 @@ export default async function DashboardPage({
         </span>
       </h2>
       <p className="mb-3 text-xs text-textMuted">
-        Für jeden Fahrer muss monatlich bestätigt werden: Trinkgeld, Spesen (falls ausgezahlt), Stundenzettel, Lohnbestätigung (falls bar ausgezahlt).
+        Für jeden Fahrer muss monatlich bestätigt werden: Trinkgeld, Spesen (falls ausgezahlt), Stundenzettel, Lohnbestätigung (falls bar ausgezahlt). Vollständig bestätigte Fahrer werden unten ausgeblendet.
       </p>
       {drivers.length === 0 ? (
         <Card><p className="text-sm text-textMuted">Keine aktiven Fahrer vorhanden.</p></Card>
-      ) : (
-        <div className="overflow-hidden rounded-xl border border-border">
-          <table className="w-full text-sm">
-            <thead className="bg-surfaceAlt text-left text-xs uppercase text-textMuted">
-              <tr>
-                <th className="px-4 py-3">Fahrer</th>
-                {CONFIRMATION_FIELDS.map((f) => (
-                  <th key={f.field} className="px-4 py-3 text-center">{f.short}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {drivers.map((d) => {
-                const confirmation = confirmationByDriverId.get(d.id)
-                return (
-                  <tr key={d.id} className="border-t border-border">
-                    <td className="px-4 py-3 font-medium">{d.firstName} {d.lastName}</td>
-                    {CONFIRMATION_FIELDS.map((f) => (
-                      <td key={f.field} className="px-4 py-3 text-center">
-                        <div className="flex justify-center">
-                          <ConfirmationToggle
-                            driverId={d.id}
-                            year={year}
-                            month={month}
-                            field={f.field}
-                            checked={confirmation?.[f.field] ?? false}
-                            label={f.label}
-                          />
-                        </div>
-                      </td>
-                    ))}
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      ) : (() => {
+        const isComplete = (driverId: string) => {
+          const c = confirmationByDriverId.get(driverId)
+          return !!c && CONFIRMATION_FIELDS.every((f) => c[f.field])
+        }
+        const openDrivers = drivers.filter((d) => !isComplete(d.id))
+        const completeDrivers = drivers.filter((d) => isComplete(d.id))
+
+        const renderTable = (list: typeof drivers) => (
+          <div className="overflow-hidden rounded-xl border border-border">
+            <table className="w-full text-sm">
+              <thead className="bg-surfaceAlt text-left text-xs uppercase text-textMuted">
+                <tr>
+                  <th className="px-4 py-3">Fahrer</th>
+                  {CONFIRMATION_FIELDS.map((f) => (
+                    <th key={f.field} className="px-4 py-3 text-center">{f.short}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {list.map((d) => {
+                  const confirmation = confirmationByDriverId.get(d.id)
+                  return (
+                    <tr key={d.id} className="border-t border-border">
+                      <td className="px-4 py-3 font-medium">{d.firstName} {d.lastName}</td>
+                      {CONFIRMATION_FIELDS.map((f) => (
+                        <td key={f.field} className="px-4 py-3 text-center">
+                          <div className="flex justify-center">
+                            <ConfirmationToggle
+                              driverId={d.id}
+                              year={year}
+                              month={month}
+                              field={f.field}
+                              checked={confirmation?.[f.field] ?? false}
+                              label={f.label}
+                            />
+                          </div>
+                        </td>
+                      ))}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+
+        return (
+          <>
+            {openDrivers.length === 0 ? (
+              <Card><p className="text-sm text-textMuted">Alle Fahrer sind für {monthLabel} vollständig bestätigt. 🎉</p></Card>
+            ) : renderTable(openDrivers)}
+
+            {completeDrivers.length > 0 && (
+              <details className="mt-3 overflow-hidden rounded-xl border border-border">
+                <summary className="cursor-pointer bg-surfaceAlt px-4 py-3 text-sm font-semibold text-textMuted">
+                  Vollständig bestätigt ({completeDrivers.length})
+                </summary>
+                {renderTable(completeDrivers)}
+              </details>
+            )}
+          </>
+        )
+      })()}
     </div>
   )
 }
