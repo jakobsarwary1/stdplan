@@ -246,7 +246,7 @@ function PdfExportPanel({ rows }: { rows: import('./actions').HoursPreviewRow[] 
   if (!open) {
     return (
       <Button type="button" variant="ghost" onClick={() => setOpen(true)}>
-        Als PDF herunterladen
+        PDF
       </Button>
     )
   }
@@ -304,7 +304,7 @@ function PdfExportPanel({ rows }: { rows: import('./actions').HoursPreviewRow[] 
 
 function ApplySubmit() {
   const { pending } = useFormStatus()
-  return <Button type="submit" disabled={pending}>{pending ? 'Wird übernommen…' : 'Dienstplan übernehmen'}</Button>
+  return <Button type="submit" disabled={pending}>{pending ? 'Wird übernommen…' : 'Übernehmen'}</Button>
 }
 
 function DriverFields({ index, drivers }: { index: 1 | 2; drivers: { id: string; name: string }[] }) {
@@ -429,51 +429,13 @@ export function HoursPlanningForm({
       {state.shifts.length > 0 && (
         <div className="mt-6">
           <Badge tone="success">{state.shifts.filter((s) => !s.isFree).length} Schichten erzeugt</Badge>
-          <table className="mt-3 w-full text-sm">
-            <thead className="text-left text-xs uppercase text-textMuted">
-              <tr>
-                <th className="pb-2">Fahrer</th><th className="pb-2">Datum</th><th className="pb-2">Von</th>
-                <th className="pb-2">Bis</th><th className="pb-2">Pause</th><th className="pb-2">Weg</th>
-                <th className="pb-2">Netto</th><th className="pb-2">Gesamt</th>
-                <th className="pb-2">Nacht 25%</th><th className="pb-2">Nacht 40%</th><th className="pb-2">Sonntag 50%</th>
-              </tr>
-            </thead>
-            <tbody>
-              {state.shifts.map((s, i) => {
-                if (s.isFree) {
-                  return (
-                    <tr key={i} className="border-t border-border text-textMuted">
-                      <td className="py-2 font-medium">{s.driverName}</td>
-                      <td className="py-2 font-mono">
-                        {s.isSunday && '☀️ '}{fmtDateDEWithWeekday(s.date)}
-                      </td>
-                      <td className="py-2 italic" colSpan={9}>frei</td>
-                    </tr>
-                  )
-                }
-                const totalHours = (s.netHours ?? 0) + (s.breakMinutes ?? 0) / 60 + (s.commuteMinutes ?? 0) / 60
-                const day = computeSurcharges([s])
-                const fmtHrs = (h: number) => (h > 0.005 ? h.toFixed(2) + ' h' : '–')
-                return (
-                  <tr key={i} className="border-t border-border">
-                    <td className="py-2 font-medium">{s.driverName}</td>
-                    <td className="py-2 font-mono">
-                      {s.isSunday && '☀️ '}{s.isNightShift && '🌙 '}{fmtDateDEWithWeekday(s.date)}
-                    </td>
-                    <td className="py-2 font-mono">{minToClock(s.startMin!)}</td>
-                    <td className="py-2 font-mono">{minToClock(s.endMin!)}</td>
-                    <td className="py-2 font-mono">{formatBreakRanges(s.startMin!, s.breaks!)}</td>
-                    <td className="py-2 font-mono">{s.commuteMinutes} min</td>
-                    <td className="py-2 font-mono">{(s.netHours ?? 0).toFixed(2)} h</td>
-                    <td className="py-2 font-mono">{totalHours.toFixed(2)} h</td>
-                    <td className="py-2 font-mono">{fmtHrs(day.night25)}</td>
-                    <td className="py-2 font-mono">{fmtHrs(day.night40)}</td>
-                    <td className="py-2 font-mono">{fmtHrs(day.sunday50)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+
+          <form action={applyHoursPlanning} className="mt-3 flex flex-wrap items-start gap-3">
+            <input type="hidden" name="vehicleId" value={state.vehicleId} />
+            <input type="hidden" name="shiftsJson" value={JSON.stringify(state.shifts)} />
+            <ApplySubmit />
+            <PdfExportPanel rows={state.shifts} />
+          </form>
 
           {Array.from(new Set(state.shifts.map((s) => s.driverName))).map((name) => {
             const { totalNet, night25, night40, sunday50 } = computeSurcharges(state.shifts.filter((s) => s.driverName === name))
@@ -518,12 +480,51 @@ export function HoursPlanningForm({
             )
           })()}
 
-          <form action={applyHoursPlanning} className="mt-4 flex flex-wrap items-start gap-3">
-            <input type="hidden" name="vehicleId" value={state.vehicleId} />
-            <input type="hidden" name="shiftsJson" value={JSON.stringify(state.shifts)} />
-            <ApplySubmit />
-            <PdfExportPanel rows={state.shifts} />
-          </form>
+          <table className="mt-6 w-full text-sm">
+            <thead className="text-left text-xs uppercase text-textMuted">
+              <tr>
+                <th className="pb-2">Fahrer</th><th className="pb-2">Datum</th><th className="pb-2">Von</th>
+                <th className="pb-2">Bis</th><th className="pb-2">Pause</th><th className="pb-2">Weg</th>
+                <th className="pb-2">Netto</th><th className="pb-2">Gesamt</th>
+                <th className="pb-2">Nacht 25%</th><th className="pb-2">Nacht 40%</th><th className="pb-2">Sonntag 50%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.shifts.map((s, i) => {
+                if (s.isFree) {
+                  return (
+                    <tr key={i} className="border-t border-border text-textMuted">
+                      <td className="py-2 font-medium">{s.driverName}</td>
+                      <td className="py-2 font-mono">
+                        {s.isSunday && '☀️ '}{fmtDateDEWithWeekday(s.date)}
+                      </td>
+                      <td className="py-2 italic" colSpan={9}>frei</td>
+                    </tr>
+                  )
+                }
+                const totalHours = (s.netHours ?? 0) + (s.breakMinutes ?? 0) / 60 + (s.commuteMinutes ?? 0) / 60
+                const day = computeSurcharges([s])
+                const fmtHrs = (h: number) => (h > 0.005 ? h.toFixed(2) + ' h' : '–')
+                return (
+                  <tr key={i} className="border-t border-border">
+                    <td className="py-2 font-medium">{s.driverName}</td>
+                    <td className="py-2 font-mono">
+                      {s.isSunday && '☀️ '}{s.isNightShift && '🌙 '}{fmtDateDEWithWeekday(s.date)}
+                    </td>
+                    <td className="py-2 font-mono">{minToClock(s.startMin!)}</td>
+                    <td className="py-2 font-mono">{minToClock(s.endMin!)}</td>
+                    <td className="py-2 font-mono">{formatBreakRanges(s.startMin!, s.breaks!)}</td>
+                    <td className="py-2 font-mono">{s.commuteMinutes} min</td>
+                    <td className="py-2 font-mono">{(s.netHours ?? 0).toFixed(2)} h</td>
+                    <td className="py-2 font-mono">{totalHours.toFixed(2)} h</td>
+                    <td className="py-2 font-mono">{fmtHrs(day.night25)}</td>
+                    <td className="py-2 font-mono">{fmtHrs(day.night40)}</td>
+                    <td className="py-2 font-mono">{fmtHrs(day.sunday50)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       )}
     </Card>
