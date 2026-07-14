@@ -161,6 +161,22 @@ export default async function DriverDetailPage({
               <Input name="employeeNumber" defaultValue={driver.employeeNumber ?? ''} />
             </Field>
             <div className="grid grid-cols-2 gap-4">
+              <Field label="Eintritt">
+                <Input name="hireDate" type="date" defaultValue={toDateInput(driver.hireDate)} />
+              </Field>
+              <Field label="SV-Nummer">
+                <Input name="socialSecurityNumber" defaultValue={driver.socialSecurityNumber ?? ''} />
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Kasse">
+                <Input name="healthInsuranceProvider" defaultValue={driver.healthInsuranceProvider ?? ''} placeholder="z. B. AOK, TK, Barmer" />
+              </Field>
+              <Field label="Steuer-ID Nr.">
+                <Input name="taxId" defaultValue={driver.taxId ?? ''} />
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
               <Field label="Führerscheinklasse">
                 <Input name="licenseClass" defaultValue={driver.licenseClass ?? ''} placeholder="B" />
               </Field>
