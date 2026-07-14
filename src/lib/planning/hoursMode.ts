@@ -12,6 +12,7 @@ export type HoursTarget = {
   prioritizeDemand: boolean // Startzeit anhand der Nachfrageprofile wählen (z. B. für Einzelfahrer-Fahrzeuge)
   prioritizeSunday: boolean // Sonntagsüberlappung zusätzlich gezielt maximieren (unabhängig von Nachtzuschlag/Nachfrage), bleibt aber innerhalb der harten sundayHours-Obergrenze
   maximizeNight: boolean
+  spesenEuroTarget?: number // optionales Euro-Ziel für Spesen (14 €/Tag) - begrenzt, wie viele Tage auf die 8h-Grenze angehoben werden
 }
 
 export type HoursShift = {
@@ -485,6 +486,15 @@ export function generateHoursBasedSchedule(
     6: { startMin: 22 * 60, spanMinutes: 7 * 60, breakStart: 90, breakEnd: 150 } // Sa 22:00-05:00, Pause 23:30-00:30 (60 Min.)
   }
 
+  // Optionales Spesen-Euro-Ziel: begrenzt, wie viele Tage insgesamt auf die
+  // 8-Std.-Gesamtzeit-Grenze angehoben werden (14 €/Tag Pauschale). Ohne
+  // gesetztes Ziel (0 oder nicht angegeben) bleibt das Verhalten wie bisher
+  // unbegrenzt (alle in Frage kommenden Tage werden angehoben).
+  const SPESEN_RATE_EUR = 14
+  let spesenDaysRemaining = target.spesenEuroTarget && target.spesenEuroTarget > 0
+    ? Math.round(target.spesenEuroTarget / SPESEN_RATE_EUR)
+    : Infinity
+
   allContexts.forEach((ctx) => {
     const fixed = isEinzelfahrer ? FIXED_WEEKEND_TEMPLATE[ctx.weekday] : undefined
     const isSundayFixed = isEinzelfahrer && ctx.weekday === 0
@@ -499,12 +509,20 @@ export function generateHoursBasedSchedule(
       // 8-Std.-Mindestgesamtzeit gilt auch hier (Vollzeit) - die feste
       // Nettozeit aus der Vorlage bleibt UNVERÄNDERT, nur die Pause wird
       // bei Bedarf stufenweise verlängert (30 -> 45 -> 60 -> 90 -> 120 Min.).
-      if (netMinutes + breakMinutes + commuteMinutes < TARGET_TOTAL_MIN * 60) {
+      // Zählt gegen das Spesen-Euro-Budget, falls eines gesetzt ist -
+      // bereits von Natur aus 8h+ erreichende Tage verbrauchen ebenfalls
+      // Budget (sie zählen ja auch als Spesen-Tag), verlängerte Pause nur
+      // wenn noch Budget übrig ist.
+      const alreadyQualifies = netMinutes + breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60
+      if (alreadyQualifies) {
+        spesenDaysRemaining--
+      } else if (spesenDaysRemaining > 0) {
         for (const step of BREAK_STEPS) {
           if (step <= breakMinutes) continue
           breakMinutes = step
           if (netMinutes + breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60) break
         }
+        spesenDaysRemaining--
       }
 
       const spanMinutes = netMinutes + breakMinutes
@@ -528,15 +546,19 @@ export function generateHoursBasedSchedule(
     // die Pause stufenweise erhöht (30 -> 45 -> 60 -> 90 -> 120 Minuten) -
     // rechtlich zulässig, da das ArbZG nur eine Mindestpause vorschreibt,
     // keine Höchstdauer. Die Pause wird NIE verringert, nur bei Bedarf
-    // angehoben.
+    // angehoben. Begrenzt durch das Spesen-Euro-Budget, falls gesetzt.
     const mustReachEightHours = target.calculateExpenses || target.totalHours >= 100
-    if (mustReachEightHours && netMinutes + ctx.breakMinutes + commuteMinutes < TARGET_TOTAL_MIN * 60) {
+    const currentlyQualifies = netMinutes + ctx.breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60
+    if (mustReachEightHours && currentlyQualifies) {
+      spesenDaysRemaining--
+    } else if (mustReachEightHours && !currentlyQualifies && spesenDaysRemaining > 0) {
       for (const step of BREAK_STEPS) {
         if (step <= ctx.breakMinutes) continue
         ctx.breakMinutes = step
         const total = netMinutes + ctx.breakMinutes + commuteMinutes
         if (total >= TARGET_TOTAL_MIN * 60 || total > TARGET_TOTAL_MAX * 60) break
       }
+      spesenDaysRemaining--
     }
 
     const spanMinutes = netMinutes + ctx.breakMinutes

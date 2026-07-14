@@ -261,7 +261,7 @@ export async function previewHoursPlanning(
 
   if (!vehicleId || !year || !month) return { ...HOURS_EMPTY_STATE, error: 'Bitte Fahrzeug und Monat wählen.' }
 
-  const targets: { driverId: string; totalHours: number; sundayHours: number; commuteMinutes: number; breakMinutesOverride: number | null; calculateExpenses: boolean; prioritizeDemand: boolean; prioritizeSunday: boolean; maximizeNight: boolean }[] = []
+  const targets: { driverId: string; totalHours: number; sundayHours: number; commuteMinutes: number; breakMinutesOverride: number | null; calculateExpenses: boolean; prioritizeDemand: boolean; prioritizeSunday: boolean; maximizeNight: boolean; spesenEuroTarget: number }[] = []
   for (const i of [1, 2]) {
     const driverId = String(formData.get(`driver${i}Id`) ?? '')
     if (!driverId) continue
@@ -273,6 +273,7 @@ export async function previewHoursPlanning(
       commuteMinutes: parseInt(String(formData.get(`driver${i}CommuteMinutes`) ?? '30'), 10) || 30,
       breakMinutesOverride: breakOverrideRaw ? parseInt(breakOverrideRaw, 10) : null,
       calculateExpenses: formData.get(`driver${i}CalculateExpenses`) === 'on',
+      spesenEuroTarget: parseFloat(String(formData.get(`driver${i}SpesenEuroTarget`) ?? '0')) || 0,
       prioritizeDemand: formData.get(`driver${i}PrioritizeDemand`) === 'on',
       prioritizeSunday: formData.get(`driver${i}PrioritizeSunday`) === 'on',
       maximizeNight: formData.get(`driver${i}MaximizeNight`) === 'on'
