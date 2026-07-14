@@ -79,7 +79,7 @@ export function MonthCalendar({
         ))}
 
         {cells.map((day, idx) => {
-          if (day === null) return <div key={idx} className="min-h-[90px] rounded-lg" />
+          if (day === null) return <div key={idx} className="min-h-[60px] rounded-lg" />
 
           const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
           const isSunday = idx % 7 === 6
@@ -88,7 +88,7 @@ export function MonthCalendar({
           return (
             <div
               key={idx}
-              className={`min-h-[90px] rounded-lg border p-1.5 ${isSunday ? 'border-danger/30 bg-danger/5' : 'border-border'}`}
+              className={`min-h-[60px] rounded-lg border p-1.5 ${isSunday ? 'border-danger/30 bg-danger/5' : 'border-border'}`}
             >
               <div className="mb-1 flex items-center justify-between">
                 <span className={`text-xs font-semibold ${isSunday ? 'text-danger' : 'text-textMuted'}`}>{day}</span>

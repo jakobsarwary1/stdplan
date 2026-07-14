@@ -36,7 +36,16 @@ export default async function DienstplanPage({
     await tx.driver.findMany({ where: { status: 'active' }, select: { id: true, firstName: true, lastName: true }, orderBy: { firstName: 'asc' } }),
     await tx.shift.findMany({
       where: { date: { gte: monthStart, lte: monthEnd } },
-      include: { driver: true, vehicle: true, breaks: true },
+      // Bewusst nur die tatsächlich benötigten Felder abfragen (statt
+      // include: true für ganze Relationen) - reduziert die übertragene
+      // Datenmenge und den Speicherbedarf spürbar, besonders bei Monaten
+      // mit vielen Schichten.
+      select: {
+        id: true, date: true, start: true, end: true, breakMinutes: true, commuteMinutes: true, isSubstitute: true,
+        driver: { select: { id: true, firstName: true, lastName: true } },
+        vehicle: { select: { licensePlate: true } },
+        breaks: { select: { start: true, end: true } }
+      },
       orderBy: [{ date: 'asc' }, { start: 'asc' }]
     }),
     await tx.companySettings.findUnique({ where: { companyId: user.companyId! } })
@@ -53,11 +62,18 @@ export default async function DienstplanPage({
     <div>
       <h1 className="mb-6 text-2xl font-semibold">Dienstplan</h1>
 
-      <AutoPlanningForm
-        vehicles={vehicles.map((v) => ({ id: v.id, licensePlate: v.licensePlate, hasTemplate: !!v.shiftTemplateId }))}
-        defaultStart={monthStart.toISOString().slice(0, 10)}
-        defaultEnd={monthEnd.toISOString().slice(0, 10)}
-      />
+      <details className="mb-6 rounded-xl border border-border">
+        <summary className="cursor-pointer bg-surfaceAlt px-4 py-3 text-sm font-semibold">
+          Fahrzeugbasierte Auto-Planung (Schichtmodelle)
+        </summary>
+        <div className="p-4">
+          <AutoPlanningForm
+            vehicles={vehicles.map((v) => ({ id: v.id, licensePlate: v.licensePlate, hasTemplate: !!v.shiftTemplateId }))}
+            defaultStart={monthStart.toISOString().slice(0, 10)}
+            defaultEnd={monthEnd.toISOString().slice(0, 10)}
+          />
+        </div>
+      </details>
 
       <HoursPlanningForm
         vehicles={vehicles.map((v) => ({ id: v.id, licensePlate: v.licensePlate }))}
@@ -66,14 +82,21 @@ export default async function DienstplanPage({
         defaultMonth={month}
       />
 
-      <MonthCalendar
-        year={year}
-        month={month}
-        shiftsByDate={shiftsByDate}
-        nightStart={settings?.nightStart ?? '22:00'}
-        nightEnd={settings?.nightEnd ?? '06:00'}
-        basePath="/dienstplan"
-      />
+      <details className="mb-8 mt-8 rounded-xl border border-border">
+        <summary className="cursor-pointer bg-surfaceAlt px-4 py-3 text-sm font-semibold">
+          Monatskalender
+        </summary>
+        <div className="p-4">
+          <MonthCalendar
+            year={year}
+            month={month}
+            shiftsByDate={shiftsByDate}
+            nightStart={settings?.nightStart ?? '22:00'}
+            nightEnd={settings?.nightEnd ?? '06:00'}
+            basePath="/dienstplan"
+          />
+        </div>
+      </details>
 
       <h2 className="mb-3 mt-8 flex items-center justify-between text-lg font-semibold">
         <span>Geplante Schichten (nach Fahrer)</span>
