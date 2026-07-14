@@ -8,6 +8,8 @@ type PdfRow = {
   start: string
   end: string
   breakLabel: string
+  breakMinutes: number
+  commuteMinutes: number
   netHours: number
   totalHours: number
   vehiclePlate: string
@@ -26,16 +28,25 @@ type PdfSummary = {
   grossWage?: number | null
 }
 
-const COLUMNS = [
+// Immer dabei: Fahrer, Datum, Von, Bis. Alles danach ist über die
+// Spalten-Auswahl im Formular steuerbar.
+const BASE_COLUMNS = [
   { label: 'Fahrer', width: 90 },
   { label: 'Datum', width: 65 },
   { label: 'Von', width: 35 },
-  { label: 'Bis', width: 35 },
-  { label: 'Pause', width: 110 },
-  { label: 'Netto', width: 45 },
-  { label: 'Gesamt', width: 45 },
-  { label: 'Fahrzeug', width: 55 }
+  { label: 'Bis', width: 35 }
 ]
+
+const OPTIONAL_COLUMN_DEFS: Record<string, { label: string; width: number; value: (r: PdfRow) => string }> = {
+  pause: { label: 'Pause', width: 50, value: (r) => (r.isFree ? '' : `${r.breakMinutes} min`) },
+  weg: { label: 'Weg', width: 50, value: (r) => (r.isFree ? '' : `${r.commuteMinutes} min`) },
+  netto: { label: 'Netto', width: 45, value: (r) => (r.isFree ? '' : `${r.netHours.toFixed(2)} h`) },
+  gesamt: { label: 'Gesamt', width: 45, value: (r) => (r.isFree ? '' : `${r.totalHours.toFixed(2)} h`) },
+  nacht25: { label: 'Nacht 25%', width: 50, value: (r) => (r.isFree || r.night25 <= 0.005 ? '' : `${r.night25.toFixed(2)} h`) },
+  nacht40: { label: 'Nacht 40%', width: 50, value: (r) => (r.isFree || r.night40 <= 0.005 ? '' : `${r.night40.toFixed(2)} h`) },
+  sonntag50: { label: 'Sonntag 50%', width: 55, value: (r) => (r.isFree || r.sunday50 <= 0.005 ? '' : `${r.sunday50.toFixed(2)} h`) },
+  fahrzeug: { label: 'Fahrzeug', width: 55, value: (r) => (r.isFree ? '' : r.vehiclePlate) }
+}
 
 // pdf-lib's Standard-Schriftarten unterstützen nur WinAnsi-Zeichen - Bindestrich-
 // Varianten (En-/Em-Dash) und ein paar andere Sonderzeichen können damit vereinzelt
@@ -60,7 +71,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Kein Firmenzugriff.' }, { status: 403 })
     }
 
-    const { title, rows, summaries, monthLabel }: { title: string; rows: PdfRow[]; summaries?: PdfSummary[]; monthLabel?: string } = await request.json()
+    const { title, rows, summaries, monthLabel, columns }: { title: string; rows: PdfRow[]; summaries?: PdfSummary[]; monthLabel?: string; columns?: string[] } = await request.json()
+
+    const activeOptionalColumns = (columns ?? ['pause', 'gesamt'])
+      .filter((key) => OPTIONAL_COLUMN_DEFS[key])
+      .map((key) => ({ key, ...OPTIONAL_COLUMN_DEFS[key] }))
+    const ALL_COLUMNS = [...BASE_COLUMNS, ...activeOptionalColumns]
 
     const pdfDoc = await PDFDocument.create()
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
@@ -86,7 +102,7 @@ export async function POST(request: Request) {
       cursorY -= 22
 
       let x = marginX
-      COLUMNS.forEach((col) => {
+      ALL_COLUMNS.forEach((col) => {
         page.drawText(col.label, { x, y: cursorY, size: 8, font: fontBold, color: rgb(0.35, 0.35, 0.35) })
         x += col.width
       })
@@ -107,19 +123,15 @@ export async function POST(request: Request) {
       }
 
       const values = r.isFree
-        ? [r.driverName, r.date, '', '', '', '', '', '']
-        : [
-            r.driverName, r.date, r.start, r.end, r.breakLabel,
-            `${r.netHours.toFixed(2)} h`, `${r.totalHours.toFixed(2)} h`,
-            r.vehiclePlate
-          ]
+        ? [r.driverName, r.date, '', '', ...activeOptionalColumns.map(() => '')]
+        : [r.driverName, r.date, r.start, r.end, ...activeOptionalColumns.map((c) => c.value(r))]
       const cleanValues = values.map(sanitizeForPdf)
       const textColor = r.isFree ? rgb(0.55, 0.55, 0.55) : rgb(0.1, 0.1, 0.1)
 
       let x = marginX
       cleanValues.forEach((val, i) => {
         page.drawText(val, { x, y: cursorY, size: 8, font, color: textColor })
-        x += COLUMNS[i].width
+        x += ALL_COLUMNS[i].width
       })
       cursorY -= rowHeight
     })

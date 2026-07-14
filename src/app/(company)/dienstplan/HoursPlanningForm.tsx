@@ -101,7 +101,7 @@ function Submit() {
 async function downloadPdf(
   rows: import('./actions').HoursPreviewRow[],
   title: string,
-  options: { driverNames: string[]; includeFreeDays: boolean; includeSummary: boolean }
+  options: { driverNames: string[]; includeFreeDays: boolean; includeSummary: boolean; columns: string[] }
 ) {
   const filteredRows = rows.filter((r) => options.driverNames.includes(r.driverName) && (options.includeFreeDays || !r.isFree))
   const sorted = [...filteredRows].sort((a, b) => a.driverName.localeCompare(b.driverName) || a.date.localeCompare(b.date))
@@ -146,7 +146,7 @@ async function downloadPdf(
       return {
         driverName: r.driverName,
         date: label,
-        start: '', end: '', breakLabel: '',
+        start: '', end: '', breakLabel: '', breakMinutes: 0, commuteMinutes: 0,
         netHours: 0, totalHours: 0,
         vehiclePlate: '',
         night25: 0, night40: 0, sunday50: 0,
@@ -160,6 +160,8 @@ async function downloadPdf(
       start: minToClock(r.startMin!),
       end: minToClock(r.endMin!),
       breakLabel: formatBreakRanges(r.startMin!, r.breaks!),
+      breakMinutes: r.breakMinutes ?? 0,
+      commuteMinutes: r.commuteMinutes ?? 0,
       netHours: r.netHours ?? 0,
       totalHours: (r.netHours ?? 0) + (r.breakMinutes ?? 0) / 60 + (r.commuteMinutes ?? 0) / 60,
       vehiclePlate: r.vehiclePlate,
@@ -193,7 +195,7 @@ async function downloadPdf(
     const res = await fetch('/api/dienstplan/pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, rows: pdfRows, summaries, monthLabel })
+      body: JSON.stringify({ title, rows: pdfRows, summaries, monthLabel, columns: options.columns })
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
@@ -212,15 +214,33 @@ async function downloadPdf(
   }
 }
 
+const PDF_COLUMN_OPTIONS = [
+  { key: 'pause', label: 'Pause (nur Dauer)' },
+  { key: 'weg', label: 'Weg' },
+  { key: 'netto', label: 'Netto' },
+  { key: 'gesamt', label: 'Gesamt (Brutto)' },
+  { key: 'nacht25', label: 'Nacht 25 %' },
+  { key: 'nacht40', label: 'Nacht 40 %' },
+  { key: 'sonntag50', label: 'Sonntag 50 %' },
+  { key: 'fahrzeug', label: 'Fahrzeug' }
+] as const
+type PdfColumnKey = typeof PDF_COLUMN_OPTIONS[number]['key']
+const DEFAULT_PDF_COLUMNS: PdfColumnKey[] = ['pause', 'gesamt']
+
 function PdfExportPanel({ rows }: { rows: import('./actions').HoursPreviewRow[] }) {
   const allDriverNames = Array.from(new Set(rows.map((r) => r.driverName)))
   const [open, setOpen] = useState(false)
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>(allDriverNames)
   const [includeFreeDays, setIncludeFreeDays] = useState(true)
   const [includeSummary, setIncludeSummary] = useState(true)
+  const [selectedColumns, setSelectedColumns] = useState<PdfColumnKey[]>(DEFAULT_PDF_COLUMNS)
 
   function toggleDriver(name: string) {
     setSelectedDrivers((prev) => (prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]))
+  }
+
+  function toggleColumn(key: PdfColumnKey) {
+    setSelectedColumns((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
   }
 
   if (!open) {
@@ -245,6 +265,16 @@ function PdfExportPanel({ rows }: { rows: import('./actions').HoursPreviewRow[] 
         ))}
       </div>
 
+      <p className="mb-1 text-xs text-textMuted">Spalten (Fahrer, Datum, Von, Bis sind immer dabei)</p>
+      <div className="mb-3 flex flex-wrap gap-3">
+        {PDF_COLUMN_OPTIONS.map((col) => (
+          <label key={col.key} className="flex items-center gap-1.5">
+            <input type="checkbox" checked={selectedColumns.includes(col.key)} onChange={() => toggleColumn(col.key)} />
+            {col.label}
+          </label>
+        ))}
+      </div>
+
       <div className="mb-3 flex flex-wrap gap-4">
         <label className="flex items-center gap-1.5">
           <input type="checkbox" checked={includeFreeDays} onChange={(e) => setIncludeFreeDays(e.target.checked)} />
@@ -260,7 +290,7 @@ function PdfExportPanel({ rows }: { rows: import('./actions').HoursPreviewRow[] 
         <Button
           type="button"
           disabled={selectedDrivers.length === 0}
-          onClick={() => downloadPdf(rows, 'Dienstplan', { driverNames: selectedDrivers, includeFreeDays, includeSummary })}
+          onClick={() => downloadPdf(rows, 'Dienstplan', { driverNames: selectedDrivers, includeFreeDays, includeSummary, columns: selectedColumns })}
         >
           PDF erstellen
         </Button>
