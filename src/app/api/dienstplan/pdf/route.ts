@@ -31,21 +31,21 @@ type PdfSummary = {
 // Immer dabei: Fahrer, Datum, Von, Bis. Alles danach ist über die
 // Spalten-Auswahl im Formular steuerbar.
 const BASE_COLUMNS = [
-  { label: 'Fahrer', width: 90 },
-  { label: 'Datum', width: 65 },
-  { label: 'Von', width: 35 },
-  { label: 'Bis', width: 35 }
+  { label: 'Fahrer', width: 70 },
+  { label: 'Datum', width: 55 },
+  { label: 'Von', width: 28 },
+  { label: 'Bis', width: 28 }
 ]
 
 const OPTIONAL_COLUMN_DEFS: Record<string, { label: string; width: number; value: (r: PdfRow) => string }> = {
-  pause: { label: 'Pause', width: 50, value: (r) => (r.isFree ? '' : `${r.breakMinutes} min`) },
-  weg: { label: 'Weg', width: 50, value: (r) => (r.isFree ? '' : `${r.commuteMinutes} min`) },
-  netto: { label: 'Netto', width: 45, value: (r) => (r.isFree ? '' : `${r.netHours.toFixed(2)} h`) },
-  gesamt: { label: 'Gesamt', width: 45, value: (r) => (r.isFree ? '' : `${r.totalHours.toFixed(2)} h`) },
-  nacht25: { label: 'Nacht 25%', width: 50, value: (r) => (r.isFree || r.night25 <= 0.005 ? '' : `${r.night25.toFixed(2)} h`) },
-  nacht40: { label: 'Nacht 40%', width: 50, value: (r) => (r.isFree || r.night40 <= 0.005 ? '' : `${r.night40.toFixed(2)} h`) },
-  sonntag50: { label: 'Sonntag 50%', width: 55, value: (r) => (r.isFree || r.sunday50 <= 0.005 ? '' : `${r.sunday50.toFixed(2)} h`) },
-  fahrzeug: { label: 'Fahrzeug', width: 55, value: (r) => (r.isFree ? '' : r.vehiclePlate) }
+  pause: { label: 'Pause', width: 38, value: (r) => (r.isFree ? '' : `${r.breakMinutes} min`) },
+  weg: { label: 'Weg', width: 36, value: (r) => (r.isFree ? '' : `${r.commuteMinutes} min`) },
+  netto: { label: 'Netto', width: 34, value: (r) => (r.isFree ? '' : `${r.netHours.toFixed(2)} h`) },
+  gesamt: { label: 'Gesamt', width: 36, value: (r) => (r.isFree ? '' : `${r.totalHours.toFixed(2)} h`) },
+  nacht25: { label: 'Nacht 25%', width: 40, value: (r) => (r.isFree || r.night25 <= 0.005 ? '' : `${r.night25.toFixed(2)} h`) },
+  nacht40: { label: 'Nacht 40%', width: 40, value: (r) => (r.isFree || r.night40 <= 0.005 ? '' : `${r.night40.toFixed(2)} h`) },
+  sonntag50: { label: 'Sonntag 50%', width: 44, value: (r) => (r.isFree || r.sunday50 <= 0.005 ? '' : `${r.sunday50.toFixed(2)} h`) },
+  fahrzeug: { label: 'Fahrzeug', width: 42, value: (r) => (r.isFree ? '' : r.vehiclePlate) }
 }
 
 // pdf-lib's Standard-Schriftarten unterstützen nur WinAnsi-Zeichen - Bindestrich-
@@ -82,8 +82,8 @@ export async function POST(request: Request) {
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
 
-    const pageWidth = 842 // A4 quer (Landscape) in Punkt
-    const pageHeight = 595
+    const pageWidth = 595 // A4 hoch (Portrait) in Punkt
+    const pageHeight = 842
     const marginX = 30
     const marginTop = 40
     const rowHeight = 16
