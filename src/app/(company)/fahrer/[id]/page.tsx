@@ -165,7 +165,7 @@ export default async function DriverDetailPage({
                 <Input name="licenseClass" defaultValue={driver.licenseClass ?? ''} placeholder="B" />
               </Field>
               <Field label="Führerscheinnummer">
-                <Input name="licenseNumber" defaultValue={driver.licenseNumber ?? ''} />
+                <Input name="licenseNumber" defaultValue={driver.licenseNumber ?? ''} style={{ textTransform: 'uppercase' }} />
               </Field>
             </div>
             <Field label="Führerschein gültig bis">

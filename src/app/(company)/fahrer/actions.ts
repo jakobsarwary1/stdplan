@@ -75,7 +75,7 @@ export async function updateDriverBeschaeftigung(driverId: string, formData: For
         status: (str(formData, 'status') as any) ?? 'active',
         employeeNumber: str(formData, 'employeeNumber'),
         licenseClass: str(formData, 'licenseClass'),
-        licenseNumber: str(formData, 'licenseNumber'),
+        licenseNumber: str(formData, 'licenseNumber')?.toUpperCase() ?? null,
         licenseExpiry: date(formData, 'licenseExpiry'),
         pbeScheinNumber: str(formData, 'pbeScheinNumber'),
         pbeScheinExpiry: date(formData, 'pbeScheinExpiry'),
