@@ -248,6 +248,10 @@ model Driver {
   employmentType EmploymentType @default(fulltime)
   status         DriverStatus   @default(active)
   employeeNumber String?
+  hireDate               DateTime?
+  socialSecurityNumber   String?
+  healthInsuranceProvider String?
+  taxId                  String?
   qualifications String[]       @default([])
 
   compensationMode      CompensationMode @default(hourly)

@@ -16,7 +16,7 @@
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN
-    CREATE ROLE app_user LOGIN PASSWORD 'firmaFly@2026';
+    CREATE ROLE app_user LOGIN PASSWORD 'BITTE_SICHERES_PASSWORT_EINTRAGEN';
   END IF;
 END $$;
 
@@ -69,8 +69,14 @@ CREATE POLICY company_members_isolation ON company_members
 -- Alle übrigen Tabellen: strikt auf companyId des aktuellen Kontexts beschränkt
 -- (Super-Admin hat hier bewusst KEINEN Zugriff - operative Daten sind nicht
 -- seine Aufgabe, siehe Rollenmodell im Super-Prompt Abschnitt 3).
+-- company_settings: wird beim Anlegen eines Unternehmens durch den
+-- Super-Admin automatisch mit angelegt (verschachtelter Prisma-Create) -
+-- braucht deshalb dieselbe Super-Admin-Ausnahme wie companies/company_members.
 CREATE POLICY tenant_isolation ON company_settings
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
+  USING (
+    current_setting('app.is_super_admin', true) = 'true'
+    OR "companyId" = NULLIF(current_setting('app.current_company_id', true), '')
+  );
 CREATE POLICY tenant_isolation ON vehicles
   USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 CREATE POLICY tenant_isolation ON drivers
