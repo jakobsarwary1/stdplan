@@ -412,3 +412,46 @@ export async function applyHoursPlanning(formData: FormData) {
 
   revalidatePath('/dienstplan')
 }
+
+/**
+ * Löscht alle gespeicherten Schichten eines Fahrers für einen bestimmten
+ * Monat (unabhängig vom Fahrzeug) - für die "ohne viel Aufwand löschen"
+ * Anforderung: ein Klick pro Fahrer/Monat statt einzelner Schicht-Löschung.
+ */
+export async function deleteDriverMonthShifts(formData: FormData) {
+  const user = await requireCompanyUser()
+  const driverId = String(formData.get('driverId') ?? '')
+  const year = parseInt(String(formData.get('year') ?? ''), 10)
+  const month = parseInt(String(formData.get('month') ?? ''), 10) // 1-12
+  if (!driverId || !year || !month) return
+
+  const monthStart = new Date(year, month - 1, 1)
+  const monthEnd = new Date(year, month, 0)
+
+  await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, async (tx) => {
+    await tx.shift.deleteMany({
+      where: { driverId, date: { gte: monthStart, lte: monthEnd } }
+    })
+  })
+
+  revalidatePath('/dienstplan')
+}
+
+/** Löscht ALLE gespeicherten Schichten (aller Fahrer) für einen Monat. */
+export async function deleteAllMonthShifts(formData: FormData) {
+  const user = await requireCompanyUser()
+  const year = parseInt(String(formData.get('year') ?? ''), 10)
+  const month = parseInt(String(formData.get('month') ?? ''), 10) // 1-12
+  if (!year || !month) return
+
+  const monthStart = new Date(year, month - 1, 1)
+  const monthEnd = new Date(year, month, 0)
+
+  await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, async (tx) => {
+    await tx.shift.deleteMany({
+      where: { date: { gte: monthStart, lte: monthEnd } }
+    })
+  })
+
+  revalidatePath('/dienstplan')
+}

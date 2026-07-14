@@ -4,6 +4,8 @@ import { Card } from '@/components/ui'
 import { AutoPlanningForm } from './AutoPlanningForm'
 import { HoursPlanningForm } from './HoursPlanningForm'
 import { MonthCalendar } from './MonthCalendar'
+import { DeleteMonthButton } from './DeleteMonthButton'
+import { deleteDriverMonthShifts, deleteAllMonthShifts } from './actions'
 import { fmtDateDEWithWeekday, formatBreakRanges } from '@/lib/planning/format'
 
 function dateToStr(d: Date): string {
@@ -73,7 +75,17 @@ export default async function DienstplanPage({
         basePath="/dienstplan"
       />
 
-      <h2 className="mb-3 mt-8 text-lg font-semibold">Geplante Schichten (nach Fahrer)</h2>
+      <h2 className="mb-3 mt-8 flex items-center justify-between text-lg font-semibold">
+        <span>Geplante Schichten (nach Fahrer)</span>
+        {shifts.length > 0 && (
+          <DeleteMonthButton
+            action={deleteAllMonthShifts}
+            confirmText={`Wirklich ALLE Schichten für ${new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(monthStart)} löschen (alle Fahrer)? Das kann nicht rückgängig gemacht werden.`}
+            label="Ganzen Monat löschen"
+            hiddenFields={{ year: String(year), month: String(month) }}
+          />
+        )}
+      </h2>
       {shifts.length === 0 ? (
         <Card><p className="text-textMuted">Noch keine Schichten für diesen Monat.</p></Card>
       ) : (
@@ -81,10 +93,12 @@ export default async function DienstplanPage({
           {Array.from(
             shifts.reduce((map, s) => {
               const key = s.driver ? `${s.driver.firstName} ${s.driver.lastName}` : '—'
-              map.set(key, [...(map.get(key) ?? []), s])
+              const entry = map.get(key) ?? { driverId: s.driverId, shifts: [] as typeof shifts }
+              entry.shifts.push(s)
+              map.set(key, entry)
               return map
-            }, new Map<string, typeof shifts>())
-          ).map(([driverName, driverShifts]) => {
+            }, new Map<string, { driverId: string | null; shifts: typeof shifts }>())
+          ).map(([driverName, { driverId, shifts: driverShifts }]) => {
             const monthLabel = new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(monthStart)
             const totalNet = driverShifts.reduce((sum, s) => {
               const startMinAbs = clockToMin(s.start)
@@ -94,9 +108,19 @@ export default async function DienstplanPage({
             }, 0)
             return (
               <details key={driverName} className="overflow-hidden rounded-xl border border-border" open>
-                <summary className="cursor-pointer bg-surfaceAlt px-4 py-3 text-sm font-semibold">
-                  {driverName} – {monthLabel} ({driverShifts.length} Schichten, {totalNet.toFixed(2)} h netto)
+                <summary className="flex cursor-pointer items-center justify-between bg-surfaceAlt px-4 py-3 text-sm font-semibold">
+                  <span>{driverName} – {monthLabel} ({driverShifts.length} Schichten, {totalNet.toFixed(2)} h netto)</span>
                 </summary>
+                {driverId && (
+                  <div className="flex justify-end border-b border-border bg-surface px-4 py-2">
+                    <DeleteMonthButton
+                      action={deleteDriverMonthShifts}
+                      confirmText={`Wirklich alle Schichten von ${driverName} für ${monthLabel} löschen? Das kann nicht rückgängig gemacht werden.`}
+                      label="Diesen Fahrer-Monat löschen"
+                      hiddenFields={{ driverId, year: String(year), month: String(month) }}
+                    />
+                  </div>
+                )}
                 <table className="w-full text-sm">
                   <thead className="text-left text-xs uppercase text-textMuted">
                     <tr>

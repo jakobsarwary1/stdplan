@@ -101,7 +101,7 @@ export async function POST(request: Request) {
       }
 
       const values = r.isFree
-        ? [r.driverName, r.date, 'frei', '', '', '', '', '']
+        ? [r.driverName, r.date, '', '', '', '', '', '']
         : [
             r.driverName, r.date, r.start, r.end, r.breakLabel,
             `${r.netHours.toFixed(2)} h`, `${r.totalHours.toFixed(2)} h`,

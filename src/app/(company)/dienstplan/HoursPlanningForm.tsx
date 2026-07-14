@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import { useFormState, useFormStatus } from 'react-dom'
 import { Badge, Button, Card } from '@/components/ui'
 import { applyHoursPlanning, previewHoursPlanning, type HoursPreviewState } from './actions'
@@ -91,48 +92,83 @@ function Submit() {
   return <Button type="submit" disabled={pending}>{pending ? 'Berechne…' : 'Dienstplan erzeugen'}</Button>
 }
 
-async function downloadPdf(rows: import('./actions').HoursPreviewRow[], title: string) {
-  const pdfRows = rows
-    .sort((a, b) => a.date.localeCompare(b.date) || a.driverName.localeCompare(b.driverName))
-    .map((r) => {
-      if (r.isFree) {
-        return {
-          driverName: r.driverName,
-          date: fmtDateDEWithWeekday(r.date),
-          start: '', end: '', breakLabel: '',
-          netHours: 0, totalHours: 0,
-          vehiclePlate: '',
-          night25: 0, night40: 0, sunday50: 0,
-          isFree: true
-        }
-      }
-      const day = computeSurcharges([r])
+async function downloadPdf(
+  rows: import('./actions').HoursPreviewRow[],
+  title: string,
+  options: { driverNames: string[]; includeFreeDays: boolean; includeSummary: boolean }
+) {
+  const filteredRows = rows.filter((r) => options.driverNames.includes(r.driverName) && (options.includeFreeDays || !r.isFree))
+  const sorted = [...filteredRows].sort((a, b) => a.driverName.localeCompare(b.driverName) || a.date.localeCompare(b.date))
+
+  // Zusammenhängende freie Tage (pro Fahrer, aufeinanderfolgende
+  // Kalendertage) zu EINER Zeile zusammenfassen statt jeden Tag einzeln
+  // aufzulisten - spart massiv Papier bei Fahrern mit vielen freien Tagen.
+  type MergedFree = { driverName: string; fromDate: string; toDate: string; isFree: true; dayCount: number }
+  type MergedWork = import('./actions').HoursPreviewRow & { isFree: false }
+  const merged: (MergedFree | MergedWork)[] = []
+
+  sorted.forEach((r) => {
+    if (!r.isFree) {
+      merged.push(r as MergedWork)
+      return
+    }
+    const last = merged[merged.length - 1]
+    const prevDay = new Date(r.date)
+    prevDay.setDate(prevDay.getDate() - 1)
+    const prevDateStr = `${prevDay.getFullYear()}-${String(prevDay.getMonth() + 1).padStart(2, '0')}-${String(prevDay.getDate()).padStart(2, '0')}`
+    if (last && last.isFree && last.driverName === r.driverName && last.toDate === prevDateStr) {
+      last.toDate = r.date
+      last.dayCount += 1
+    } else {
+      merged.push({ driverName: r.driverName, fromDate: r.date, toDate: r.date, isFree: true, dayCount: 1 })
+    }
+  })
+
+  const pdfRows = merged.map((r) => {
+    if (r.isFree) {
+      const label = r.dayCount === 1
+        ? `frei (${fmtDateDEWithWeekday(r.fromDate)})`
+        : `frei: ${fmtDateDEWithWeekday(r.fromDate)} bis ${fmtDateDEWithWeekday(r.toDate)} (${r.dayCount} Tage)`
       return {
         driverName: r.driverName,
-        date: fmtDateDEWithWeekday(r.date),
-        start: minToClock(r.startMin!),
-        end: minToClock(r.endMin!),
-        breakLabel: formatBreakRanges(r.startMin!, r.breaks!),
-        netHours: r.netHours ?? 0,
-        totalHours: (r.netHours ?? 0) + (r.breakMinutes ?? 0) / 60 + (r.commuteMinutes ?? 0) / 60,
-        vehiclePlate: r.vehiclePlate,
-        night25: day.night25,
-        night40: day.night40,
-        sunday50: day.sunday50,
-        isFree: false
+        date: label,
+        start: '', end: '', breakLabel: '',
+        netHours: 0, totalHours: 0,
+        vehiclePlate: '',
+        night25: 0, night40: 0, sunday50: 0,
+        isFree: true
       }
-    })
+    }
+    const day = computeSurcharges([r])
+    return {
+      driverName: r.driverName,
+      date: fmtDateDEWithWeekday(r.date),
+      start: minToClock(r.startMin!),
+      end: minToClock(r.endMin!),
+      breakLabel: formatBreakRanges(r.startMin!, r.breaks!),
+      netHours: r.netHours ?? 0,
+      totalHours: (r.netHours ?? 0) + (r.breakMinutes ?? 0) / 60 + (r.commuteMinutes ?? 0) / 60,
+      vehiclePlate: r.vehiclePlate,
+      night25: day.night25,
+      night40: day.night40,
+      sunday50: day.sunday50,
+      isFree: false
+    }
+  })
 
   // Zuschlags-Zusammenfassung pro Fahrer (und ggf. Gesamt) mit ins PDF
   // geben, damit z. B. der Sonntagszuschlag nicht nur auf dem Bildschirm,
-  // sondern auch im heruntergeladenen Dokument sichtbar ist.
-  const driverNames = Array.from(new Set(rows.filter((r) => !r.isFree).map((r) => r.driverName)))
-  const summaries = driverNames.map((name) => {
-    const s = computeSurcharges(rows.filter((r) => r.driverName === name))
-    return { driverName: name, ...s }
-  })
-  if (driverNames.length > 1) {
-    const combined = computeSurcharges(rows.filter((r) => !r.isFree))
+  // sondern auch im heruntergeladenen Dokument sichtbar ist. Nur für
+  // ausgewählte Fahrer, und nur wenn die Zusammenfassung gewünscht ist.
+  const selectedDriverNames = options.driverNames
+  const summaries = options.includeSummary
+    ? selectedDriverNames.map((name) => {
+        const s = computeSurcharges(rows.filter((r) => r.driverName === name && !r.isFree))
+        return { driverName: name, ...s }
+      })
+    : []
+  if (options.includeSummary && selectedDriverNames.length > 1) {
+    const combined = computeSurcharges(rows.filter((r) => selectedDriverNames.includes(r.driverName) && !r.isFree))
     summaries.push({ driverName: 'Gesamt (alle Fahrer)', ...combined })
   }
 
@@ -157,6 +193,66 @@ async function downloadPdf(rows: import('./actions').HoursPreviewRow[], title: s
   } catch (err) {
     alert(`PDF-Erzeugung fehlgeschlagen: ${(err as Error).message}`)
   }
+}
+
+function PdfExportPanel({ rows }: { rows: import('./actions').HoursPreviewRow[] }) {
+  const allDriverNames = Array.from(new Set(rows.map((r) => r.driverName)))
+  const [open, setOpen] = useState(false)
+  const [selectedDrivers, setSelectedDrivers] = useState<string[]>(allDriverNames)
+  const [includeFreeDays, setIncludeFreeDays] = useState(true)
+  const [includeSummary, setIncludeSummary] = useState(true)
+
+  function toggleDriver(name: string) {
+    setSelectedDrivers((prev) => (prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]))
+  }
+
+  if (!open) {
+    return (
+      <Button type="button" variant="ghost" onClick={() => setOpen(true)}>
+        Als PDF herunterladen
+      </Button>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4 text-sm">
+      <p className="mb-3 font-semibold">Was soll ins PDF?</p>
+
+      <p className="mb-1 text-xs text-textMuted">Fahrer</p>
+      <div className="mb-3 flex flex-wrap gap-3">
+        {allDriverNames.map((name) => (
+          <label key={name} className="flex items-center gap-1.5">
+            <input type="checkbox" checked={selectedDrivers.includes(name)} onChange={() => toggleDriver(name)} />
+            {name}
+          </label>
+        ))}
+      </div>
+
+      <div className="mb-3 flex flex-wrap gap-4">
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={includeFreeDays} onChange={(e) => setIncludeFreeDays(e.target.checked)} />
+          Freie Tage anzeigen
+        </label>
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={includeSummary} onChange={(e) => setIncludeSummary(e.target.checked)} />
+          Monatszusammenfassung einschließen
+        </label>
+      </div>
+
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          disabled={selectedDrivers.length === 0}
+          onClick={() => downloadPdf(rows, 'Dienstplan', { driverNames: selectedDrivers, includeFreeDays, includeSummary })}
+        >
+          PDF erstellen
+        </Button>
+        <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+          Abbrechen
+        </Button>
+      </div>
+    </div>
+  )
 }
 
 function ApplySubmit() {
@@ -366,13 +462,11 @@ export function HoursPlanningForm({
             )
           })()}
 
-          <form action={applyHoursPlanning} className="mt-4 flex gap-3">
+          <form action={applyHoursPlanning} className="mt-4 flex flex-wrap items-start gap-3">
             <input type="hidden" name="vehicleId" value={state.vehicleId} />
             <input type="hidden" name="shiftsJson" value={JSON.stringify(state.shifts)} />
             <ApplySubmit />
-            <Button type="button" variant="ghost" onClick={() => downloadPdf(state.shifts, 'Dienstplan')}>
-              Als PDF herunterladen
-            </Button>
+            <PdfExportPanel rows={state.shifts} />
           </form>
         </div>
       )}
