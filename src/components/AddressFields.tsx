@@ -52,22 +52,25 @@ export function AddressFields({
     }
     debounceRef.current = setTimeout(async () => {
       try {
-        // Strukturierte Suche (street=...) statt Freitext - findet
-        // zuverlässiger auch Straßen in kleineren Orten, nicht nur in
-        // bekannten Großstädten.
+        // Photon (komoot) statt Nominatim - eigens für "während des Tippens
+        // vorschlagen" gebaut (nicht nur allgemeine Geokodierung), findet
+        // erfahrungsgemäß auch Straßen in kleineren Orten zuverlässiger.
+        // Ebenfalls auf OpenStreetMap-Daten basierend, kostenlos, kein Key.
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=de&limit=20&street=${encodeURIComponent(value)}&country=Deutschland`
+          `https://photon.komoot.io/api/?q=${encodeURIComponent(value)}&lat=51.16&lon=10.45&zoom=10&limit=20&lang=de&osm_tag=highway`
         )
         if (!res.ok) return
-        const data: { address?: { road?: string; postcode?: string; city?: string; town?: string; village?: string; municipality?: string } }[] = await res.json()
+        const data: { features?: { properties?: { name?: string; street?: string; postcode?: string; city?: string; district?: string; countrycode?: string } }[] } = await res.json()
 
         const seen = new Set<string>()
         const results: AddressSuggestion[] = []
-        data.forEach((d) => {
-          const road = d.address?.road
-          const postcode = d.address?.postcode
-          const place = d.address?.city ?? d.address?.town ?? d.address?.village ?? d.address?.municipality
-          if (!road || !postcode || !place) return
+        ;(data.features ?? []).forEach((f) => {
+          const p = f.properties
+          if (!p || p.countrycode !== 'DE') return
+          const road = p.street ?? p.name
+          const postcode = p.postcode ?? ''
+          const place = p.city ?? p.district
+          if (!road || !place) return
           const key = `${road}|${postcode}|${place}`
           if (seen.has(key)) return
           seen.add(key)
