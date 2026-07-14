@@ -100,6 +100,14 @@ async function downloadPdf(
   const filteredRows = rows.filter((r) => options.driverNames.includes(r.driverName) && (options.includeFreeDays || !r.isFree))
   const sorted = [...filteredRows].sort((a, b) => a.driverName.localeCompare(b.driverName) || a.date.localeCompare(b.date))
 
+  // Monat/Jahr für die Kopfzeile im PDF (z. B. "April 2026") aus den
+  // tatsächlichen Zeilendaten ableiten - robuster als der Formular-Zustand,
+  // da es exakt widerspiegelt, was generiert wurde.
+  const firstDate = sorted[0]?.date
+  const monthLabel = firstDate
+    ? new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(new Date(firstDate + 'T00:00:00'))
+    : ''
+
   // Zusammenhängende freie Tage (pro Fahrer, aufeinanderfolgende
   // Kalendertage) zu EINER Zeile zusammenfassen statt jeden Tag einzeln
   // aufzulisten - spart massiv Papier bei Fahrern mit vielen freien Tagen.
@@ -179,7 +187,7 @@ async function downloadPdf(
     const res = await fetch('/api/dienstplan/pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, rows: pdfRows, summaries })
+      body: JSON.stringify({ title, rows: pdfRows, summaries, monthLabel })
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')

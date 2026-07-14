@@ -60,7 +60,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Kein Firmenzugriff.' }, { status: 403 })
     }
 
-    const { title, rows, summaries }: { title: string; rows: PdfRow[]; summaries?: PdfSummary[] } = await request.json()
+    const { title, rows, summaries, monthLabel }: { title: string; rows: PdfRow[]; summaries?: PdfSummary[]; monthLabel?: string } = await request.json()
 
     const pdfDoc = await PDFDocument.create()
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
@@ -78,6 +78,11 @@ export async function POST(request: Request) {
 
     function drawHeader() {
       page.drawText(sanitizeForPdf(title), { x: marginX, y: cursorY, size: 13, font: fontBold, color: rgb(0.1, 0.1, 0.1) })
+      if (monthLabel) {
+        const label = sanitizeForPdf(monthLabel)
+        const textWidth = fontBold.widthOfTextAtSize(label, 13)
+        page.drawText(label, { x: pageWidth - marginX - textWidth, y: cursorY, size: 13, font: fontBold, color: rgb(0.1, 0.1, 0.1) })
+      }
       cursorY -= 22
 
       let x = marginX
