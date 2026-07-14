@@ -548,7 +548,23 @@ export function generateHoursBasedSchedule(
     // keine Höchstdauer. Die Pause wird NIE verringert, nur bei Bedarf
     // angehoben. Begrenzt durch das Spesen-Euro-Budget, falls gesetzt.
     const mustReachEightHours = target.calculateExpenses || isEinzelfahrer
-    const currentlyQualifies = netMinutes + ctx.breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60
+    const spesenBudgetActive = target.spesenEuroTarget != null && target.spesenEuroTarget > 0
+    let currentlyQualifies = netMinutes + ctx.breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60
+
+    if (mustReachEightHours && currentlyQualifies && spesenBudgetActive && spesenDaysRemaining <= 0) {
+      // Budget ist aufgebraucht, der Tag qualifiziert sich aber trotzdem
+      // (z. B. weil die Pause durch die Nachfrage-Priorisierung ohnehin
+      // schon länger war) - Pause auf das gesetzliche Minimum zurücksetzen
+      // und prüfen, ob der Tag dadurch unter die 8h-Grenze rutscht (spart
+      // dann echtes Spesen-Budget). Hilft nicht, wenn bereits die reine
+      // Nettoarbeitszeit allein die 8h-Grenze überschreitet.
+      const legalMin = Math.max(BUSINESS_MIN_BREAK, requiredBreakMinutes(netHours))
+      if (legalMin < ctx.breakMinutes) {
+        ctx.breakMinutes = legalMin
+        currentlyQualifies = netMinutes + ctx.breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60
+      }
+    }
+
     if (mustReachEightHours && currentlyQualifies) {
       spesenDaysRemaining--
     } else if (mustReachEightHours && !currentlyQualifies && spesenDaysRemaining > 0) {
