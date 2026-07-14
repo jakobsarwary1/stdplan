@@ -1,18 +1,26 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import { Input, Field } from '@/components/ui'
 
+type AddressSuggestion = {
+  street: string
+  postalCode: string
+  city: string
+}
+
 /**
- * Adressfelder (Straße, Hausnummer, PLZ, Ort) mit:
- * - Straßen-Vorschlägen während der Eingabe (OpenStreetMap Nominatim,
- *   kostenlos, kein API-Key nötig)
- * - automatischem Ausfüllen des Orts, sobald eine gültige 5-stellige PLZ
- *   eingegeben wurde (Zippopotam.us, kostenlos, kein API-Key nötig)
+ * Adressfelder (Straße, Hausnummer, PLZ, Ort) mit vollständigen
+ * Adress-Vorschlägen während der Eingabe (OpenStreetMap Nominatim,
+ * kostenlos, kein API-Key nötig). Jeder Vorschlag zeigt Straße + PLZ/Ort
+ * zweizeilig an, z. B.:
+ *   Maxmusterstr.
+ *   12345 Musterstadt
+ * Beim Anklicken eines Vorschlags werden Straße, PLZ UND Ort automatisch
+ * übernommen - es muss nur noch die Hausnummer eingetippt werden.
  *
- * Beide Diensте sind Best-Effort: schlägt die Anfrage fehl (z. B. keine
- * Internetverbindung), kann weiterhin ganz normal manuell getippt werden -
- * nichts wird blockiert.
+ * Best-Effort: schlägt die Anfrage fehl (z. B. keine Internetverbindung),
+ * kann weiterhin ganz normal manuell getippt werden - nichts wird blockiert.
  */
 export function AddressFields({
   defaultStreet, defaultHouseNumber, defaultPostalCode, defaultCity
@@ -25,57 +33,61 @@ export function AddressFields({
   const [street, setStreet] = useState(defaultStreet ?? '')
   const [postalCode, setPostalCode] = useState(defaultPostalCode ?? '')
   const [city, setCity] = useState(defaultCity ?? '')
-  const [suggestions, setSuggestions] = useState<string[]>([])
+  const [suggestions, setSuggestions] = useState<AddressSuggestion[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Straßen-Vorschläge nachladen, während getippt wird (debounced, damit
-  // nicht bei jedem Tastendruck eine Anfrage rausgeht)
+  // Adress-Vorschläge nachladen, während getippt wird (debounced, damit
+  // nicht bei jedem Tastendruck eine Anfrage rausgeht). Liefert vollständige
+  // Adressen (Straße + PLZ + Ort), nicht nur den Straßennamen - dieselbe
+  // Straße kann ja in mehreren Städten vorkommen.
   function handleStreetChange(value: string) {
     setStreet(value)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     if (value.trim().length < 3) {
       setSuggestions([])
+      setShowSuggestions(false)
       return
     }
     debounceRef.current = setTimeout(async () => {
       try {
-        const query = city ? `${value}, ${postalCode} ${city}, Deutschland` : `${value}, Deutschland`
         const res = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=de&limit=5&q=${encodeURIComponent(query)}`
+          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=de&limit=8&q=${encodeURIComponent(value + ', Deutschland')}`
         )
         if (!res.ok) return
-        const data: { address?: { road?: string } }[] = await res.json()
-        const roads = Array.from(new Set(data.map((d) => d.address?.road).filter((r): r is string => !!r)))
-        setSuggestions(roads)
-        setShowSuggestions(roads.length > 0)
+        const data: { address?: { road?: string; postcode?: string; city?: string; town?: string; village?: string; municipality?: string } }[] = await res.json()
+
+        const seen = new Set<string>()
+        const results: AddressSuggestion[] = []
+        data.forEach((d) => {
+          const road = d.address?.road
+          const postcode = d.address?.postcode
+          const place = d.address?.city ?? d.address?.town ?? d.address?.village ?? d.address?.municipality
+          if (!road || !postcode || !place) return
+          const key = `${road}|${postcode}|${place}`
+          if (seen.has(key)) return
+          seen.add(key)
+          results.push({ street: road, postalCode: postcode, city: place })
+        })
+
+        setSuggestions(results)
+        setShowSuggestions(results.length > 0)
       } catch {
         // Netzwerkfehler o.ä. - Vorschläge einfach weglassen, manuelle Eingabe bleibt möglich
       }
     }, 400)
   }
 
-  // Ort automatisch nachladen, sobald eine gültige 5-stellige PLZ eingetippt wurde
-  useEffect(() => {
-    if (!/^\d{5}$/.test(postalCode)) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch(`https://api.zippopotam.us/de/${postalCode}`)
-        if (!res.ok || cancelled) return
-        const data = await res.json()
-        const placeName = data?.places?.[0]?.['place name']
-        if (placeName && !cancelled) setCity(placeName)
-      } catch {
-        // Best-Effort - bei Fehler bleibt das Feld einfach manuell editierbar
-      }
-    })()
-    return () => { cancelled = true }
-  }, [postalCode])
+  function selectSuggestion(s: AddressSuggestion) {
+    setStreet(s.street)
+    setPostalCode(s.postalCode)
+    setCity(s.city)
+    setShowSuggestions(false)
+  }
 
   return (
     <>
-      <div className="grid grid-cols-[2fr_1fr_1fr] gap-4">
+      <div className="grid grid-cols-[2fr_1fr] gap-4">
         <Field label="Straße">
           <div className="relative">
             <Input
@@ -85,16 +97,18 @@ export function AddressFields({
               onFocus={() => setShowSuggestions(suggestions.length > 0)}
               onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
               autoComplete="off"
+              placeholder="z. B. Musterstraße"
             />
             {showSuggestions && (
               <ul className="absolute z-10 mt-1 w-full rounded-lg border border-border bg-surface shadow-lg">
-                {suggestions.map((s) => (
+                {suggestions.map((s, i) => (
                   <li
-                    key={s}
+                    key={`${s.street}-${s.postalCode}-${i}`}
                     className="cursor-pointer px-3 py-2 text-sm hover:bg-surfaceAlt"
-                    onMouseDown={() => { setStreet(s); setShowSuggestions(false) }}
+                    onMouseDown={() => selectSuggestion(s)}
                   >
-                    {s}
+                    <div>{s.street}</div>
+                    <div className="text-xs text-textMuted">{s.postalCode} {s.city}</div>
                   </li>
                 ))}
               </ul>
@@ -104,6 +118,8 @@ export function AddressFields({
         <Field label="Hausnummer">
           <Input name="houseNumber" defaultValue={defaultHouseNumber ?? ''} />
         </Field>
+      </div>
+      <div className="grid grid-cols-[1fr_2fr] gap-4">
         <Field label="PLZ">
           <Input
             name="postalCode"
@@ -113,10 +129,10 @@ export function AddressFields({
             maxLength={5}
           />
         </Field>
+        <Field label="Ort">
+          <Input name="city" value={city} onChange={(e) => setCity(e.target.value)} />
+        </Field>
       </div>
-      <Field label="Ort">
-        <Input name="city" value={city} onChange={(e) => setCity(e.target.value)} />
-      </Field>
     </>
   )
 }
