@@ -304,7 +304,7 @@ function PdfExportPanel({ rows }: { rows: import('./actions').HoursPreviewRow[] 
 
 function ApplySubmit() {
   const { pending } = useFormStatus()
-  return <Button type="submit" disabled={pending}>{pending ? 'Wird übernommen…' : 'Übernehmen'}</Button>
+  return <Button type="submit" disabled={pending}>{pending ? 'Wird übernommen…' : 'Dienstplan übernehmen'}</Button>
 }
 
 function DriverFields({ index, drivers }: { index: 1 | 2; drivers: { id: string; name: string }[] }) {
@@ -427,17 +427,18 @@ export function HoursPlanningForm({
       )}
 
       {state.shifts.length > 0 && (
-        <div className="mt-6">
-          <Badge tone="success">{state.shifts.filter((s) => !s.isFree).length} Schichten erzeugt</Badge>
-
-          <form action={applyHoursPlanning} className="mt-3 flex flex-wrap items-start gap-3">
+        <>
+          <form action={applyHoursPlanning} className="mt-4 flex flex-wrap items-start justify-end gap-3">
             <input type="hidden" name="vehicleId" value={state.vehicleId} />
             <input type="hidden" name="shiftsJson" value={JSON.stringify(state.shifts)} />
             <ApplySubmit />
             <PdfExportPanel rows={state.shifts} />
           </form>
 
-          {Array.from(new Set(state.shifts.map((s) => s.driverName))).map((name) => {
+          <div className="mt-6">
+            <Badge tone="success">{state.shifts.filter((s) => !s.isFree).length} Schichten erzeugt</Badge>
+
+            {Array.from(new Set(state.shifts.map((s) => s.driverName))).map((name) => {
             const { totalNet, night25, night40, sunday50 } = computeSurcharges(state.shifts.filter((s) => s.driverName === name))
             const { freeDays, spesenDays, spesenAmount, grossWage, hourlyRate } = computeExtendedStats(state.shifts.filter((s) => s.driverName === name))
             return (
@@ -525,7 +526,8 @@ export function HoursPlanningForm({
               })}
             </tbody>
           </table>
-        </div>
+          </div>
+        </>
       )}
     </Card>
   )
