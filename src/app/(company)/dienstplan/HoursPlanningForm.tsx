@@ -305,6 +305,10 @@ function DriverFields({ index, drivers }: { index: 1 | 2; drivers: { id: string;
           <p className="mt-1 text-xs text-textMuted">Bei 14 €/Tag: die Engine hebt genau so viele Tage auf mind. 8 Std. Gesamtzeit an, wie für diesen Betrag nötig sind - ohne dieses Feld gilt weiterhin "alle Tage" (bei Spesen-Häkchen/Vollzeit).</p>
         </div>
         <label className="mt-6 flex items-center gap-2 text-sm">
+          <input type="checkbox" name={`driver${index}IsEinzelfahrer`} defaultChecked={index === 1} />
+          Einzelfahrer/Vollzeit-Muster (feste Fr/Sa/So-Vorlage, 8h-Mindestgesamtzeit, nie 3 Tage frei)
+        </label>
+        <label className="mt-6 flex items-center gap-2 text-sm">
           <input type="checkbox" name={`driver${index}CalculateExpenses`} defaultChecked={index === 1} />
           Spesen berechnen (erzwingt 8–10 Std. Gesamtzeit)
         </label>

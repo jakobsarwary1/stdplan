@@ -13,6 +13,7 @@ export type HoursTarget = {
   prioritizeSunday: boolean // Sonntagsüberlappung zusätzlich gezielt maximieren (unabhängig von Nachtzuschlag/Nachfrage), bleibt aber innerhalb der harten sundayHours-Obergrenze
   maximizeNight: boolean
   spesenEuroTarget?: number // optionales Euro-Ziel für Spesen (14 €/Tag) - begrenzt, wie viele Tage auf die 8h-Grenze angehoben werden
+  isEinzelfahrer?: boolean // explizit gesetzt: feste Fr/Sa/So-Vorlage, 8h-Mindestgesamtzeit, "nie 3 Tage frei" - NICHT mehr automatisch aus der Stundenzahl abgeleitet
 }
 
 export type HoursShift = {
@@ -209,13 +210,12 @@ export function generateHoursBasedSchedule(
   const warnings: string[] = []
 
   // Die feste Fr/Sa/So-Wochenend-Vorlage und die "nie 3 Tage frei"-Regel
-  // gelten NUR bei einem Gesamtstundenziel >= 100 Std./Monat (echte
-  // Vollzeit/Einzelfahrer-Konstellation) - NICHT allein wegen des Spesen-
-  // Häkchens, sonst würden auch Minijobber mit wenig Stunden fälschlich in
-  // die Wochenend-Pflicht rutschen. Das Spesen-Häkchen sorgt weiterhin
-  // unabhängig davon für die 8-Std.-Mindestgesamtzeit pro Tag (dafür ist es
-  // ja da), aber NICHT für die Wochenend-Vorlage.
-  const isEinzelfahrer = target.totalHours >= 100
+  // gelten NUR, wenn explizit als Einzelfahrer/Vollzeit markiert (Häkchen
+  // im Formular) - NICHT mehr automatisch nur wegen einer Stundenzahl
+  // >= 100. Ein Teilzeit-Fahrer mit z. B. 110 Std. soll NICHT ungefragt in
+  // die Wochenend-Pflicht und die 8h-Zwangsregel rutschen, nur weil seine
+  // Stundenzahl zufällig über der Schwelle liegt.
+  const isEinzelfahrer = target.isEinzelfahrer === true
   const mustReachEightHoursGlobal = target.calculateExpenses || isEinzelfahrer
   const avgNet = mustReachEightHoursGlobal ? 6.75 : (BASE_MIN_NET + BASE_MAX_NET) / 2
 
@@ -239,7 +239,7 @@ export function generateHoursBasedSchedule(
   const SAT_TEMPLATE_BASE_BREAK_MINUTES = 60
 
   let satActualBreakMinutes = SAT_TEMPLATE_BASE_BREAK_MINUTES
-  const mustReachEightHoursForSat = target.calculateExpenses || target.totalHours >= 100
+  const mustReachEightHoursForSat = target.calculateExpenses || isEinzelfahrer
   if (mustReachEightHoursForSat && SAT_TEMPLATE_NET_MINUTES + satActualBreakMinutes + commuteMinutes < TARGET_TOTAL_MIN * 60) {
     for (const step of BREAK_STEPS) {
       if (step <= satActualBreakMinutes) continue
@@ -547,7 +547,7 @@ export function generateHoursBasedSchedule(
     // rechtlich zulässig, da das ArbZG nur eine Mindestpause vorschreibt,
     // keine Höchstdauer. Die Pause wird NIE verringert, nur bei Bedarf
     // angehoben. Begrenzt durch das Spesen-Euro-Budget, falls gesetzt.
-    const mustReachEightHours = target.calculateExpenses || target.totalHours >= 100
+    const mustReachEightHours = target.calculateExpenses || isEinzelfahrer
     const currentlyQualifies = netMinutes + ctx.breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60
     if (mustReachEightHours && currentlyQualifies) {
       spesenDaysRemaining--
