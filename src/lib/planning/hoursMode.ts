@@ -143,11 +143,12 @@ function pickBlockDays(pool: Date[], count: number): Date[] {
 }
 
 /**
- * Wählt Arbeitstage mit wochenweise VARIIERENDER Anzahl (statt gleichmäßig
- * über den Monat verstreut oder in festen Blöcken): jede Kalenderwoche
- * bekommt zufällig 1-6 Arbeitstage zugeteilt, gewichtet auf 2-5 Tage als
- * Regelfall, 1 Tag selten, 6 Tage ganz selten - sorgt für ein
- * realistischeres, nicht-uniformes Wochenmuster.
+ * Wählt Arbeitstage so, dass jede Kalenderwoche im Monat MÖGLICHST DIE
+ * GLEICHE ANZAHL an Arbeitstagen bekommt (Gesamtzahl Schichten ÷ Anzahl
+ * Wochen im Zeitraum) - nicht die gleiche Stundenzahl pro Woche (die darf
+ * variieren), sondern die gleiche TAGESANZAHL. Ein eventueller Rest wird
+ * auf zufällig ausgewählte Wochen verteilt (je 1 Tag mehr), statt alles in
+ * eine einzelne Woche zu packen.
  */
 function pickDaysWithWeeklyVariation(pool: Date[], count: number): Date[] {
   const sorted = [...pool].sort((a, b) => a.getTime() - b.getTime())
@@ -165,29 +166,35 @@ function pickDaysWithWeeklyVariation(pool: Date[], count: number): Date[] {
     const key = weekOf(d)
     weeks.set(key, [...(weeks.get(key) ?? []), d])
   })
-  const weekKeys = Array.from(weeks.keys()).sort(() => Math.random() - 0.5)
+  const weekKeys = Array.from(weeks.keys()).sort()
+  const numWeeks = weekKeys.length
+  if (numWeeks === 0) return []
 
-  // Gewichtete Zufallsauswahl der Tagesanzahl pro Woche: 1 Tag selten,
-  // 2-5 Tage als Regelfall, 6 Tage ganz selten.
-  function weightedDayCount(maxAvailable: number): number {
-    const weights: [number, number][] = [[1, 8], [2, 20], [3, 24], [4, 24], [5, 18], [6, 6]]
-    const total = weights.reduce((s, [, w]) => s + w, 0)
-    let r = Math.random() * total
-    for (const [days, w] of weights) {
-      if (r < w) return Math.min(days, maxAvailable)
-      r -= w
-    }
-    return Math.min(3, maxAvailable)
-  }
+  // Gleichmäßige Grundverteilung (Gesamtzahl ÷ Wochenzahl), Rest zufällig
+  // auf einzelne Wochen verteilen (je maximal 1 Tag mehr) statt alles in
+  // eine Woche zu packen.
+  const baseDaysPerWeek = Math.floor(count / numWeeks)
+  let remainder = count % numWeeks
+  const shuffledWeekKeys = [...weekKeys].sort(() => Math.random() - 0.5)
+  const extraWeeks = new Set(shuffledWeekKeys.slice(0, remainder))
 
   const chosen: Date[] = []
   for (const key of weekKeys) {
-    if (chosen.length >= count) break
     const daysInWeek = weeks.get(key)!
-    const remaining = count - chosen.length
-    const wanted = Math.min(weightedDayCount(daysInWeek.length), remaining)
+    const wanted = Math.min(daysInWeek.length, baseDaysPerWeek + (extraWeeks.has(key) ? 1 : 0))
     chosen.push(...pickRandomDays(daysInWeek, wanted))
   }
+
+  // Falls durch zu wenige verfügbare Tage in einzelnen Wochen (z. B.
+  // Monatsanfang/-ende mit nur 1-2 Tagen) die Zielzahl nicht ganz erreicht
+  // wurde, die fehlenden Tage aus den übrigen, noch nicht gewählten Tagen
+  // auffüllen.
+  if (chosen.length < count) {
+    const chosenSet = new Set(chosen.map((d) => d.toISOString().slice(0, 10)))
+    const leftover = sorted.filter((d) => !chosenSet.has(d.toISOString().slice(0, 10)))
+    chosen.push(...pickRandomDays(leftover, count - chosen.length))
+  }
+
   return chosen.sort((a, b) => a.getTime() - b.getTime())
 }
 
