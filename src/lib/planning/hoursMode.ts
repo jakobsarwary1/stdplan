@@ -142,6 +142,55 @@ function pickBlockDays(pool: Date[], count: number): Date[] {
   return chosen
 }
 
+/**
+ * Wählt Arbeitstage mit wochenweise VARIIERENDER Anzahl (statt gleichmäßig
+ * über den Monat verstreut oder in festen Blöcken): jede Kalenderwoche
+ * bekommt zufällig 1-6 Arbeitstage zugeteilt, gewichtet auf 2-5 Tage als
+ * Regelfall, 1 Tag selten, 6 Tage ganz selten - sorgt für ein
+ * realistischeres, nicht-uniformes Wochenmuster.
+ */
+function pickDaysWithWeeklyVariation(pool: Date[], count: number): Date[] {
+  const sorted = [...pool].sort((a, b) => a.getTime() - b.getTime())
+  if (sorted.length === 0 || count <= 0) return []
+
+  // Tage nach Kalenderwoche gruppieren (Woche beginnt Montag)
+  const weekOf = (d: Date) => {
+    const monday = new Date(d)
+    const diff = (d.getDay() + 6) % 7 // Montag = 0
+    monday.setDate(d.getDate() - diff)
+    return monday.toISOString().slice(0, 10)
+  }
+  const weeks = new Map<string, Date[]>()
+  sorted.forEach((d) => {
+    const key = weekOf(d)
+    weeks.set(key, [...(weeks.get(key) ?? []), d])
+  })
+  const weekKeys = Array.from(weeks.keys()).sort(() => Math.random() - 0.5)
+
+  // Gewichtete Zufallsauswahl der Tagesanzahl pro Woche: 1 Tag selten,
+  // 2-5 Tage als Regelfall, 6 Tage ganz selten.
+  function weightedDayCount(maxAvailable: number): number {
+    const weights: [number, number][] = [[1, 8], [2, 20], [3, 24], [4, 24], [5, 18], [6, 6]]
+    const total = weights.reduce((s, [, w]) => s + w, 0)
+    let r = Math.random() * total
+    for (const [days, w] of weights) {
+      if (r < w) return Math.min(days, maxAvailable)
+      r -= w
+    }
+    return Math.min(3, maxAvailable)
+  }
+
+  const chosen: Date[] = []
+  for (const key of weekKeys) {
+    if (chosen.length >= count) break
+    const daysInWeek = weeks.get(key)!
+    const remaining = count - chosen.length
+    const wanted = Math.min(weightedDayCount(daysInWeek.length), remaining)
+    chosen.push(...pickRandomDays(daysInWeek, wanted))
+  }
+  return chosen.sort((a, b) => a.getTime() - b.getTime())
+}
+
 type DayContext = {
   date: Date
   dateStr: string
@@ -295,7 +344,7 @@ export function generateHoursBasedSchedule(
     remainingHours = Math.max(0, target.totalHours - fixedWeekendHoursTotal)
     const optionalMonThuPool = allDays.filter((d) => ![0, 5, 6].includes(d.getDay()))
     numWeekdayShifts = Math.min(optionalMonThuPool.length, Math.max(0, Math.round(remainingHours / avgNet)))
-    chosenWeekdays = [...mandatoryWeekend, ...pickRandomDays(optionalMonThuPool, numWeekdayShifts)]
+    chosenWeekdays = [...mandatoryWeekend, ...pickDaysWithWeeklyVariation(optionalMonThuPool, numWeekdayShifts)]
       .sort((a, b) => a.getTime() - b.getTime())
     const chosenSet = new Set(chosenWeekdays.map(toDateStr))
     reservePool = optionalMonThuPool.filter((d) => !chosenSet.has(toDateStr(d)))
@@ -329,10 +378,12 @@ export function generateHoursBasedSchedule(
     const numRestShifts = Math.min(restPool.length, Math.max(0, Math.round(remainingHours / avgNet)))
     // Ab 150 Std. Gesamtstunden/Monat: Arbeitstage in Blöcken von 3-5
     // aufeinanderfolgenden Tagen vergeben statt einzeln verstreut - deutlich
-    // alltagstauglicher bei so hohem Stundenvolumen.
+    // alltagstauglicher bei so hohem Stundenvolumen. Darunter: wochenweise
+    // variierende Tagesanzahl (1-6 Tage/Woche, gewichtet auf 2-5) für ein
+    // realistischeres, nicht-uniformes Muster.
     const chosenRestDays = target.totalHours >= 150
       ? pickBlockDays(restPool, numRestShifts)
-      : pickRandomDays(restPool, numRestShifts)
+      : pickDaysWithWeeklyVariation(restPool, numRestShifts)
     chosenWeekdays = [...chosenSundays, ...chosenRestDays]
       .sort((a, b) => a.getTime() - b.getTime())
     const chosenSet = new Set(chosenWeekdays.map(toDateStr))
@@ -424,7 +475,13 @@ export function generateHoursBasedSchedule(
   function buildContext(day: Date): DayContext {
     const weekday = day.getDay()
     const legalMinBreak = Math.max(BUSINESS_MIN_BREAK, requiredBreakMinutes(BASE_MIN_NET))
-    let breakMinutes = target.breakMinutesOverride != null ? Math.max(target.breakMinutesOverride, legalMinBreak) : legalMinBreak
+    // Zufällige Pausenlänge zwischen gesetzlichem Minimum und 120 Minuten
+    // (in 15-Min.-Schritten), statt immer exakt am Minimum zu bleiben -
+    // sorgt für realistischere, nicht jeden Tag identische Pausenzeiten.
+    // Eine explizite Vorgabe (breakMinutesOverride) hat weiterhin Vorrang.
+    const randomBreakSteps = Math.floor((120 - legalMinBreak) / 15)
+    const randomBreak = legalMinBreak + Math.floor(Math.random() * (randomBreakSteps + 1)) * 15
+    let breakMinutes = target.breakMinutesOverride != null ? Math.max(target.breakMinutesOverride, legalMinBreak) : randomBreak
 
     const lowestWindow = target.prioritizeDemand && !target.maximizeNight
       ? pickLowestDemandWindow(weekday, demandProfiles)
@@ -680,14 +737,16 @@ export function generateHoursBasedSchedule(
           // gegeneinander abwägen (z. B. Samstagschicht, die bewusst in
           // den Sonntagmorgen hineinreicht).
           ? surchargeValueScore(cand, cand + spanMinutes, ctx.weekday) +
-            (target.prioritizeDemand ? 0.3 * demandScore(cand, cand + spanMinutes, ctx.weekday, demandProfiles) : 0)
+            (target.prioritizeDemand ? 0.3 * demandScore(cand, cand + spanMinutes, ctx.weekday, demandProfiles) : 0) +
+            Math.random() * 8 // kleine Streuung, damit nicht jeden Tag exakt dieselbe Uhrzeit rauskommt
           : target.prioritizeDemand
             // Auch OHNE explizit gesetztes "Nachtzuschläge maximieren"
             // soll die Nachfrage-Priorisierung Zuschläge nicht komplett
             // ignorieren - Nachfrage bleibt das Hauptkriterium, Zuschlagswert
             // wirkt als zweites, schwächer gewichtetes Kriterium mit.
             ? demandScore(cand, cand + spanMinutes, ctx.weekday, demandProfiles) +
-              0.3 * surchargeValueScore(cand, cand + spanMinutes, ctx.weekday)
+              0.3 * surchargeValueScore(cand, cand + spanMinutes, ctx.weekday) +
+              Math.random() * 8
             : -Math.abs(cand - randomPreferredStart) + Math.random() * 5
 
         // "Sonntagszuschlag priorisieren" wirkt als eigenständiger,
