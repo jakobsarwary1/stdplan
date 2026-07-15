@@ -21,25 +21,39 @@ function int(formData: FormData, key: string): number | null {
   return v ? parseInt(v, 10) : null
 }
 
+/** Wandelt einen doppeltes-Kennzeichen-Fehler in eine verständliche Meldung um. */
+function friendlyVehicleDuplicateError(err: unknown): Error {
+  const e = err as { code?: string }
+  if (e?.code === 'P2002') {
+    return new Error('Es gibt bereits ein Fahrzeug mit exakt diesem Kennzeichen in deiner Firma.')
+  }
+  return err instanceof Error ? err : new Error('Unbekannter Fehler beim Speichern.')
+}
+
 export async function createVehicle(formData: FormData) {
   const user = await requireCompanyUser()
 
   const licensePlate = str(formData, 'licensePlate')
   if (!licensePlate) throw new Error('Kennzeichen ist erforderlich.')
 
-  const vehicle = await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
-    tx.vehicle.create({
-      data: {
-        companyId: user.companyId,
-        licensePlate,
-        vin: str(formData, 'vin'),
-        brand: str(formData, 'brand'),
-        model: str(formData, 'model'),
-        year: int(formData, 'year'),
-        color: str(formData, 'color')
-      }
-    })
-  )
+  let vehicle
+  try {
+    vehicle = await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
+      tx.vehicle.create({
+        data: {
+          companyId: user.companyId,
+          licensePlate,
+          vin: str(formData, 'vin'),
+          brand: str(formData, 'brand'),
+          model: str(formData, 'model'),
+          year: int(formData, 'year'),
+          color: str(formData, 'color')
+        }
+      })
+    )
+  } catch (err) {
+    throw friendlyVehicleDuplicateError(err)
+  }
 
   revalidatePath('/fahrzeuge')
   redirect(`/fahrzeuge/${vehicle.id}`)
@@ -48,22 +62,26 @@ export async function createVehicle(formData: FormData) {
 export async function updateVehicleStammdaten(vehicleId: string, formData: FormData) {
   const user = await requireCompanyUser()
 
-  await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
-    tx.vehicle.update({
-      where: { id: vehicleId },
-      data: {
-        licensePlate: str(formData, 'licensePlate') ?? undefined,
-        vin: str(formData, 'vin'),
-        brand: str(formData, 'brand'),
-        model: str(formData, 'model'),
-        year: int(formData, 'year'),
-        color: str(formData, 'color'),
-        mileage: int(formData, 'mileage') ?? 0,
-        status: (str(formData, 'status') as any) ?? 'active',
-        shiftTemplateId: str(formData, 'shiftTemplateId')
-      }
-    })
-  )
+  try {
+    await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
+      tx.vehicle.update({
+        where: { id: vehicleId },
+        data: {
+          licensePlate: str(formData, 'licensePlate') ?? undefined,
+          vin: str(formData, 'vin'),
+          brand: str(formData, 'brand'),
+          model: str(formData, 'model'),
+          year: int(formData, 'year'),
+          color: str(formData, 'color'),
+          mileage: int(formData, 'mileage') ?? 0,
+          status: (str(formData, 'status') as any) ?? 'active',
+          shiftTemplateId: str(formData, 'shiftTemplateId')
+        }
+      })
+    )
+  } catch (err) {
+    throw friendlyVehicleDuplicateError(err)
+  }
 
   revalidatePath(`/fahrzeuge/${vehicleId}`)
   redirect(`/fahrzeuge/${vehicleId}?tab=stammdaten&saved=1`)
