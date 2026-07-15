@@ -120,6 +120,28 @@ function pickRandomDays(pool: Date[], count: number): Date[] {
   return chosen.sort((a, b) => a.getTime() - b.getTime())
 }
 
+/**
+ * Wählt Arbeitstage in BLÖCKEN von 3-5 aufeinanderfolgenden Tagen aus dem
+ * Pool (statt einzeln verstreut über den Monat), mit 1-2 freien Tagen
+ * zwischen den Blöcken. Wird bei hohem Stundenvolumen (>= 150 Std./Monat)
+ * verwendet, da ein Muster mit vielen kurzen Einzeltagen dazwischen für
+ * Vollzeit-nahe Fahrer unpraktisch ist - zusammenhängende Arbeitsblöcke
+ * sind alltagstauglicher.
+ */
+function pickBlockDays(pool: Date[], count: number): Date[] {
+  const sorted = [...pool].sort((a, b) => a.getTime() - b.getTime())
+  const chosen: Date[] = []
+  let i = 0
+  while (chosen.length < count && i < sorted.length) {
+    const remaining = count - chosen.length
+    const blockLen = Math.min(3 + Math.floor(Math.random() * 3), remaining, sorted.length - i) // 3, 4 oder 5 Tage
+    for (let k = 0; k < blockLen; k++) chosen.push(sorted[i + k])
+    i += blockLen
+    i += 1 + Math.floor(Math.random() * 2) // 1-2 Tage Pause zwischen den Blöcken überspringen
+  }
+  return chosen
+}
+
 type DayContext = {
   date: Date
   dateStr: string
@@ -305,7 +327,13 @@ export function generateHoursBasedSchedule(
     const restPool = allDays.filter((d) => d.getDay() !== 0 && !chosenSundayDateStrs.has(toDateStr(d)))
     remainingHours = Math.max(0, target.totalHours - target.sundayHours)
     const numRestShifts = Math.min(restPool.length, Math.max(0, Math.round(remainingHours / avgNet)))
-    chosenWeekdays = [...chosenSundays, ...pickRandomDays(restPool, numRestShifts)]
+    // Ab 150 Std. Gesamtstunden/Monat: Arbeitstage in Blöcken von 3-5
+    // aufeinanderfolgenden Tagen vergeben statt einzeln verstreut - deutlich
+    // alltagstauglicher bei so hohem Stundenvolumen.
+    const chosenRestDays = target.totalHours >= 150
+      ? pickBlockDays(restPool, numRestShifts)
+      : pickRandomDays(restPool, numRestShifts)
+    chosenWeekdays = [...chosenSundays, ...chosenRestDays]
       .sort((a, b) => a.getTime() - b.getTime())
     const chosenSet = new Set(chosenWeekdays.map(toDateStr))
     reservePool = restPool.filter((d) => !chosenSet.has(toDateStr(d)))
