@@ -182,8 +182,16 @@ function pickDaysWithWeeklyVariation(pool: Date[], count: number): Date[] {
   // eine Woche zu packen.
   const baseDaysPerWeek = Math.floor(count / numWeeks)
   let remainder = count % numWeeks
-  const shuffledWeekKeys = [...weekKeys].sort(() => Math.random() - 0.5)
-  const extraWeeks = new Set(shuffledWeekKeys.slice(0, remainder))
+  // Feste Priorität, welche Woche(n) zuerst einen Extra-Tag bekommen:
+  // Woche 1, 2, 4, 5, 3 (in dieser Reihenfolge) - statt zufällig verteilt.
+  // Bei mehr als 5 Wochen im Zeitraum werden die übrigen Wochen danach in
+  // normaler Reihenfolge angehängt.
+  const WEEK_PRIORITY_PATTERN = [0, 1, 3, 4, 2] // 0-basiert: Woche 1,2,4,5,3
+  const priorityIndices = [
+    ...WEEK_PRIORITY_PATTERN.filter((i) => i < numWeeks),
+    ...Array.from({ length: numWeeks }, (_, i) => i).filter((i) => !WEEK_PRIORITY_PATTERN.includes(i))
+  ]
+  const extraWeeks = new Set(priorityIndices.slice(0, remainder).map((i) => weekKeys[i]))
 
   const chosen: Date[] = []
   for (const key of weekKeys) {
