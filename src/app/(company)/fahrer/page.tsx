@@ -19,7 +19,7 @@ export default async function DriversPage() {
   const user = await requireCompanyUser()
 
   const drivers = await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
-    tx.driver.findMany({ orderBy: { createdAt: 'desc' } })
+    tx.driver.findMany({ orderBy: { employeeNumber: 'asc' } })
   )
 
   return (

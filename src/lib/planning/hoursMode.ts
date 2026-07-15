@@ -467,6 +467,7 @@ export function generateHoursBasedSchedule(
       ? weekdayContexts.filter((c) => !minijobSundayHoursByDate!.has(c.dateStr)) // Sonntage haben eigene Zuteilung (siehe unten)
       : weekdayContexts
   let reserveContexts = reservePool.map(buildContext)
+  let spesenUnrestrictedDates: Set<string> | null = null
 
   // Spesen-Euro-Ziel STRUKTURELL durchsetzen (nicht erst nachträglich
   // korrigieren): nur so viele Tage wie nötig dürfen überhaupt bis zur
@@ -474,7 +475,10 @@ export function generateHoursBasedSchedule(
   // gedeckelt (Netto so begrenzt, dass Gesamtzeit selbst mit minimaler
   // Pause/Arbeitsweg sicher unter 8 Std. bleibt) - verhindert, dass allein
   // durch die normale Stundenverteilung zu viele Tage "zufällig" die
-  // Spesen-Grenze erreichen.
+  // Spesen-Grenze erreichen. Die dafür "freigegebenen" Tage werden weiter
+  // unten (Schritt 3) zusätzlich aktiv auf die 8h-Grenze angehoben, falls
+  // sie sie nicht von selbst erreichen - sonst käme am Ende zu WENIG
+  // Spesen-Tage heraus.
   if (target.spesenEuroTarget && target.spesenEuroTarget > 0) {
     const qualifyThresholdMinutes = TARGET_TOTAL_MIN * 60 - BUSINESS_MIN_BREAK - commuteMinutes
     // Sonntage (Minijob-Zweig: feste, oft volle 8h-Zuteilung) UND die feste
@@ -489,11 +493,20 @@ export function generateHoursBasedSchedule(
     const allCandidates = [...distributableWeekdayContexts, ...reserveContexts]
     const shuffled = [...allCandidates].sort(() => Math.random() - 0.5)
     const unrestrictedSet = new Set(shuffled.slice(0, maxQualifyingDays).map((c) => c.dateStr))
+    spesenUnrestrictedDates = unrestrictedSet
     // 15 Minuten Sicherheitsmarge unter der 8h-Schwelle, damit auch bei
     // Rundung sicher unter der Grenze geblieben wird.
     const safeMaxNetMinutes = Math.max(BASE_MIN_NET * 60, qualifyThresholdMinutes - 15)
     allCandidates.forEach((c) => {
-      if (!unrestrictedSet.has(c.dateStr)) c.maxNetMinutes = Math.min(c.maxNetMinutes, safeMaxNetMinutes)
+      if (!unrestrictedSet.has(c.dateStr)) {
+        c.maxNetMinutes = Math.min(c.maxNetMinutes, safeMaxNetMinutes)
+      } else {
+        // Freigegebene Tage brauchen genug Netto-Spielraum, damit die
+        // Pausen-Anhebung (max. 120 Min.) sie zuverlässig auf 8h Gesamtzeit
+        // bringen kann: Netto + 120 Min. Pause + Arbeitsweg >= 8 Std.
+        const minNeededForBump = Math.max(BASE_MIN_NET * 60, TARGET_TOTAL_MIN * 60 - MAX_BREAK_STEP_MINUTES - commuteMinutes)
+        c.minNetMinutes = Math.max(c.minNetMinutes, minNeededForBump)
+      }
     })
   }
 
@@ -624,11 +637,11 @@ export function generateHoursBasedSchedule(
 
     if (mustReachEightHours && currentlyQualifies) {
       spesenDaysRemaining--
-    } else if (mustReachEightHours && !currentlyQualifies && !spesenBudgetActive && spesenDaysRemaining > 0) {
-      // Nachträgliches Hochstufen nur, wenn KEIN Spesen-Euro-Ziel gesetzt
-      // ist - ist eines gesetzt, wurde die Tagesauswahl bereits vorab (vor
-      // der Stundenverteilung) passend gedeckelt, ein zusätzliches
-      // Hochstufen hier würde das wieder aushebeln.
+    } else if (mustReachEightHours && !currentlyQualifies && spesenDaysRemaining > 0 && (!spesenBudgetActive || spesenUnrestrictedDates?.has(ctx.dateStr))) {
+      // Nachträgliches Hochstufen: ohne Spesen-Budget wie bisher für jeden
+      // in Frage kommenden Tag; MIT Spesen-Budget nur für die vorab dafür
+      // "freigegebenen" Tage (sonst würde das die vorab vorgenommene
+      // Deckelung der übrigen Tage wieder aushebeln).
       for (const step of BREAK_STEPS) {
         if (step <= ctx.breakMinutes) continue
         ctx.breakMinutes = step
