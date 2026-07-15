@@ -192,10 +192,11 @@ async function downloadPdf(
   }
 
   try {
+    const vehiclePlateForHeader = sorted.find((r) => !r.isFree)?.vehiclePlate ?? ''
     const res = await fetch('/api/dienstplan/pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, rows: pdfRows, summaries, monthLabel, columns: options.columns })
+      body: JSON.stringify({ title, rows: pdfRows, summaries, monthLabel, columns: options.columns, vehiclePlate: vehiclePlateForHeader })
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')

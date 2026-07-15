@@ -71,7 +71,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Kein Firmenzugriff.' }, { status: 403 })
     }
 
-    const { title, rows, summaries, monthLabel, columns }: { title: string; rows: PdfRow[]; summaries?: PdfSummary[]; monthLabel?: string; columns?: string[] } = await request.json()
+    const { title, rows, summaries, monthLabel, columns, vehiclePlate }: { title: string; rows: PdfRow[]; summaries?: PdfSummary[]; monthLabel?: string; columns?: string[]; vehiclePlate?: string } = await request.json()
 
     const activeOptionalColumns = (columns ?? ['pause', 'gesamt'])
       .filter((key) => OPTIONAL_COLUMN_DEFS[key])
@@ -99,7 +99,12 @@ export async function POST(request: Request) {
         const textWidth = fontBold.widthOfTextAtSize(label, 13)
         page.drawText(label, { x: pageWidth - marginX - textWidth, y: cursorY, size: 13, font: fontBold, color: rgb(0.1, 0.1, 0.1) })
       }
-      cursorY -= 22
+      if (vehiclePlate) {
+        const label = `[${sanitizeForPdf(vehiclePlate)}]`
+        const textWidth = font.widthOfTextAtSize(label, 10)
+        page.drawText(label, { x: pageWidth - marginX - textWidth, y: cursorY - 15, size: 10, font, color: rgb(0.4, 0.4, 0.4) })
+      }
+      cursorY -= 28
 
       let x = marginX
       ALL_COLUMNS.forEach((col) => {
