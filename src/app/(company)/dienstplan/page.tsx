@@ -33,7 +33,7 @@ export default async function DienstplanPage({
 
   const [vehicles, drivers, shifts, settings] = await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, async (tx) => [
     await tx.vehicle.findMany({ where: { status: 'active' }, select: { id: true, licensePlate: true, shiftTemplateId: true }, orderBy: { licensePlate: 'asc' } }),
-    await tx.driver.findMany({ where: { status: 'active' }, select: { id: true, firstName: true, lastName: true }, orderBy: { firstName: 'asc' } }),
+    await tx.driver.findMany({ where: { status: 'active' }, select: { id: true, firstName: true, lastName: true, employeeNumber: true }, orderBy: { employeeNumber: 'asc' } }),
     await tx.shift.findMany({
       where: { date: { gte: monthStart, lte: monthEnd } },
       // Bewusst nur die tatsächlich benötigten Felder abfragen (statt
