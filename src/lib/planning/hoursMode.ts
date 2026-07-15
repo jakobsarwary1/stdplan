@@ -150,6 +150,13 @@ function pickBlockDays(pool: Date[], count: number): Date[] {
  * auf zufällig ausgewählte Wochen verteilt (je 1 Tag mehr), statt alles in
  * eine einzelne Woche zu packen.
  */
+// Prioritätsreihenfolge bei der Wochentag-Auswahl: Samstag zuerst, dann
+// Freitag, dann die übrigen Werktage - Sonntag wird hier nicht gelistet,
+// da er über die eigene, dedizierte Sonntagsstunden-Zuteilung bereits
+// separat (und mit eigener Priorität, sofern Sonntagsstunden angegeben
+// sind) behandelt wird, nicht Teil dieses Werktags-Pools ist.
+const WEEKDAY_PRIORITY: Record<number, number> = { 6: 0, 5: 1, 1: 2, 2: 3, 3: 4, 4: 5, 0: 6 }
+
 function pickDaysWithWeeklyVariation(pool: Date[], count: number): Date[] {
   const sorted = [...pool].sort((a, b) => a.getTime() - b.getTime())
   if (sorted.length === 0 || count <= 0) return []
@@ -182,7 +189,11 @@ function pickDaysWithWeeklyVariation(pool: Date[], count: number): Date[] {
   for (const key of weekKeys) {
     const daysInWeek = weeks.get(key)!
     const wanted = Math.min(daysInWeek.length, baseDaysPerWeek + (extraWeeks.has(key) ? 1 : 0))
-    chosen.push(...pickRandomDays(daysInWeek, wanted))
+    // Innerhalb der Woche nach Priorität sortiert auswählen (Sa, Fr, Mo,
+    // Di, Mi, Do) statt rein zufällig - Samstag/Freitag werden so
+    // bevorzugt belegt, wenn nicht alle Wochentage gebraucht werden.
+    const prioritized = [...daysInWeek].sort((a, b) => WEEKDAY_PRIORITY[a.getDay()] - WEEKDAY_PRIORITY[b.getDay()])
+    chosen.push(...prioritized.slice(0, wanted))
   }
 
   // Falls durch zu wenige verfügbare Tage in einzelnen Wochen (z. B.
@@ -191,8 +202,10 @@ function pickDaysWithWeeklyVariation(pool: Date[], count: number): Date[] {
   // auffüllen.
   if (chosen.length < count) {
     const chosenSet = new Set(chosen.map((d) => d.toISOString().slice(0, 10)))
-    const leftover = sorted.filter((d) => !chosenSet.has(d.toISOString().slice(0, 10)))
-    chosen.push(...pickRandomDays(leftover, count - chosen.length))
+    const leftover = sorted
+      .filter((d) => !chosenSet.has(d.toISOString().slice(0, 10)))
+      .sort((a, b) => WEEKDAY_PRIORITY[a.getDay()] - WEEKDAY_PRIORITY[b.getDay()])
+    chosen.push(...leftover.slice(0, count - chosen.length))
   }
 
   return chosen.sort((a, b) => a.getTime() - b.getTime())
