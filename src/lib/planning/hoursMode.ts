@@ -12,7 +12,7 @@ export type HoursTarget = {
   prioritizeDemand: boolean // Startzeit anhand der Nachfrageprofile wählen (z. B. für Einzelfahrer-Fahrzeuge)
   prioritizeSunday: boolean // Sonntagsüberlappung zusätzlich gezielt maximieren (unabhängig von Nachtzuschlag/Nachfrage), bleibt aber innerhalb der harten sundayHours-Obergrenze
   maximizeNight: boolean
-  spesenEuroTarget?: number // optionales Euro-Ziel für Spesen (14 €/Tag) - begrenzt, wie viele Tage auf die 8h-Grenze angehoben werden
+  spesenDaysTarget?: number // optionale Ziel-Anzahl an Spesen-Tagen (>=8h Brutto) - direkt als Tageszahl, keine Euro-Umrechnung mehr
   isEinzelfahrer?: boolean // explizit gesetzt: feste Fr/Sa/So-Vorlage, 8h-Mindestgesamtzeit, "nie 3 Tage frei" - NICHT mehr automatisch aus der Stundenzahl abgeleitet
 }
 
@@ -44,7 +44,6 @@ const FRI_FIXED_NET_HOURS = 7.5
 const SAT_FIXED_NET_HOURS = 6
 const SUN_FIXED_NET_HOURS = 6
 const BREAK_STEPS = [30, 45, 60, 90, 120]
-const SPESEN_RATE_EUR = 14
 const MAX_BREAK_STEP_MINUTES = BREAK_STEPS[BREAK_STEPS.length - 1]
 const START_WINDOW = { earliest: 4 * 60, latest: 22 * 60 } // 04:00-22:00, in 15-Minuten-Schritten durchsucht
 
@@ -469,42 +468,29 @@ export function generateHoursBasedSchedule(
   let reserveContexts = reservePool.map(buildContext)
   let spesenUnrestrictedDates: Set<string> | null = null
 
-  // Spesen-Euro-Ziel STRUKTURELL durchsetzen (nicht erst nachträglich
-  // korrigieren): nur so viele Tage wie nötig dürfen überhaupt bis zur
-  // 8-Std.-Grenze gehen. Alle anderen Tage werden von vornherein niedriger
-  // gedeckelt (Netto so begrenzt, dass Gesamtzeit selbst mit minimaler
-  // Pause/Arbeitsweg sicher unter 8 Std. bleibt) - verhindert, dass allein
-  // durch die normale Stundenverteilung zu viele Tage "zufällig" die
-  // Spesen-Grenze erreichen. Die dafür "freigegebenen" Tage werden weiter
-  // unten (Schritt 3) zusätzlich aktiv auf die 8h-Grenze angehoben, falls
-  // sie sie nicht von selbst erreichen - sonst käme am Ende zu WENIG
-  // Spesen-Tage heraus.
-  if (target.spesenEuroTarget && target.spesenEuroTarget > 0) {
+  // Spesen-Tage-Ziel STRUKTURELL durchsetzen: nur so viele Tage wie nötig
+  // dürfen überhaupt bis zur 8-Std.-Grenze gehen (niedriger gedeckelte
+  // Tage für den Rest). WICHTIG: die exakte Monatsstundensumme hat Vorrang
+  // vor der exakten Spesen-Tage-Zahl - die "freigegebenen" Tage bleiben
+  // Teil der normalen Verteilung (nur mit höherer Ober- und Untergrenze),
+  // damit die Gesamtsumme in jedem Fall stimmt, auch wenn die Spesen-Tage-
+  // Zahl dadurch nur angenähert statt exakt getroffen wird.
+  if (target.spesenDaysTarget && target.spesenDaysTarget > 0) {
     const qualifyThresholdMinutes = TARGET_TOTAL_MIN * 60 - BUSINESS_MIN_BREAK - commuteMinutes
-    // Sonntage (Minijob-Zweig: feste, oft volle 8h-Zuteilung) UND die feste
-    // Fr/Sa/So-Vorlage (Einzelfahrer-Zweig) zählen ebenfalls gegen das
-    // Budget, auch wenn sie außerhalb der hier gedeckelten Tage liegen -
-    // sonst würde das Budget nur für die "restlichen" Tage gelten und in
-    // Summe zu viele Spesen-Tage entstehen.
     const alreadyQualifyingElsewhere = isEinzelfahrer
-      ? 0 // Einzelfahrer-Vorlage wird weiter unten separat (mustReachEightHoursForSat/Sun) behandelt
+      ? 0
       : Array.from(minijobSundayHoursByDate?.values() ?? []).filter((h) => h * 60 >= qualifyThresholdMinutes).length
-    const maxQualifyingDays = Math.max(0, Math.round(target.spesenEuroTarget / SPESEN_RATE_EUR) - alreadyQualifyingElsewhere)
+    const maxQualifyingDays = Math.max(0, Math.round(target.spesenDaysTarget) - alreadyQualifyingElsewhere)
     const allCandidates = [...distributableWeekdayContexts, ...reserveContexts]
     const shuffled = [...allCandidates].sort(() => Math.random() - 0.5)
     const unrestrictedSet = new Set(shuffled.slice(0, maxQualifyingDays).map((c) => c.dateStr))
     spesenUnrestrictedDates = unrestrictedSet
-    // 15 Minuten Sicherheitsmarge unter der 8h-Schwelle, damit auch bei
-    // Rundung sicher unter der Grenze geblieben wird.
     const safeMaxNetMinutes = Math.max(BASE_MIN_NET * 60, qualifyThresholdMinutes - 15)
+    const minNeededForBump = Math.max(BASE_MIN_NET * 60, TARGET_TOTAL_MIN * 60 - MAX_BREAK_STEP_MINUTES - commuteMinutes)
     allCandidates.forEach((c) => {
       if (!unrestrictedSet.has(c.dateStr)) {
         c.maxNetMinutes = Math.min(c.maxNetMinutes, safeMaxNetMinutes)
       } else {
-        // Freigegebene Tage brauchen genug Netto-Spielraum, damit die
-        // Pausen-Anhebung (max. 120 Min.) sie zuverlässig auf 8h Gesamtzeit
-        // bringen kann: Netto + 120 Min. Pause + Arbeitsweg >= 8 Std.
-        const minNeededForBump = Math.max(BASE_MIN_NET * 60, TARGET_TOTAL_MIN * 60 - MAX_BREAK_STEP_MINUTES - commuteMinutes)
         c.minNetMinutes = Math.max(c.minNetMinutes, minNeededForBump)
       }
     })
@@ -561,8 +547,8 @@ export function generateHoursBasedSchedule(
   // 8-Std.-Gesamtzeit-Grenze angehoben werden (14 €/Tag Pauschale). Ohne
   // gesetztes Ziel (0 oder nicht angegeben) bleibt das Verhalten wie bisher
   // unbegrenzt (alle in Frage kommenden Tage werden angehoben).
-  let spesenDaysRemaining = target.spesenEuroTarget && target.spesenEuroTarget > 0
-    ? Math.round(target.spesenEuroTarget / SPESEN_RATE_EUR)
+  let spesenDaysRemaining = target.spesenDaysTarget && target.spesenDaysTarget > 0
+    ? Math.round(target.spesenDaysTarget)
     : Infinity
 
   allContexts.forEach((ctx) => {
@@ -618,7 +604,7 @@ export function generateHoursBasedSchedule(
     // keine Höchstdauer. Die Pause wird NIE verringert, nur bei Bedarf
     // angehoben. Begrenzt durch das Spesen-Euro-Budget, falls gesetzt.
     const mustReachEightHours = target.calculateExpenses || isEinzelfahrer
-    const spesenBudgetActive = target.spesenEuroTarget != null && target.spesenEuroTarget > 0
+    const spesenBudgetActive = target.spesenDaysTarget != null && target.spesenDaysTarget > 0
     let currentlyQualifies = netMinutes + ctx.breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60
 
     if (mustReachEightHours && currentlyQualifies && spesenBudgetActive && spesenDaysRemaining <= 0) {

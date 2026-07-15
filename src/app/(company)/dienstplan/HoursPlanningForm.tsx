@@ -357,9 +357,9 @@ function DriverFields({ index, drivers }: { index: 1 | 2; drivers: { id: string;
           <input type="number" step="5" min="0" name={`driver${index}BreakMinutes`} className="input" placeholder="leer = gesetzliches Minimum" />
         </div>
         <div className="field">
-          <label className="label">Spesen-Ziel (€, optional)</label>
-          <input type="number" step="14" min="0" name={`driver${index}SpesenEuroTarget`} className="input" placeholder="z. B. 196" />
-          <p className="mt-1 text-xs text-textMuted">Bei 14 €/Tag: die Engine hebt genau so viele Tage auf mind. 8 Std. Gesamtzeit an, wie für diesen Betrag nötig sind - ohne dieses Feld gilt weiterhin "alle Tage" (bei Spesen-Häkchen/Vollzeit).</p>
+          <label className="label">Spesen-Tage (Anzahl, optional)</label>
+          <input type="number" step="1" min="0" name={`driver${index}SpesenDaysTarget`} className="input" placeholder="z. B. 10" />
+          <p className="mt-1 text-xs text-textMuted">Anzahl Tage mit mind. 8 Std. Gesamtzeit (= Spesen-berechtigt). Ohne dieses Feld gilt weiterhin "alle in Frage kommenden Tage" (bei Spesen-Häkchen/Vollzeit).</p>
         </div>
         <label className="mt-6 flex items-center gap-2 text-sm">
           <input type="checkbox" name={`driver${index}IsEinzelfahrer`} defaultChecked={index === 1} />
