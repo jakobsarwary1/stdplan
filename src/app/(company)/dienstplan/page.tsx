@@ -7,6 +7,7 @@ import { MonthCalendar } from './MonthCalendar'
 import { DeleteMonthButton } from './DeleteMonthButton'
 import { deleteDriverMonthShifts, deleteAllMonthShifts } from './actions'
 import { fmtDateDEWithWeekday, formatBreakRanges } from '@/lib/planning/format'
+import { stripEmployeeNumberPadding } from '@/lib/employeeNumber'
 
 function dateToStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
