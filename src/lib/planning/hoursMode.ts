@@ -44,6 +44,7 @@ const FRI_FIXED_NET_HOURS = 7.5
 const SAT_FIXED_NET_HOURS = 6
 const SUN_FIXED_NET_HOURS = 6
 const BREAK_STEPS = [30, 45, 60, 90, 120]
+const SPESEN_RATE_EUR = 14
 const MAX_BREAK_STEP_MINUTES = BREAK_STEPS[BREAK_STEPS.length - 1]
 const START_WINDOW = { earliest: 4 * 60, latest: 22 * 60 } // 04:00-22:00, in 15-Minuten-Schritten durchsucht
 
@@ -467,6 +468,35 @@ export function generateHoursBasedSchedule(
       : weekdayContexts
   let reserveContexts = reservePool.map(buildContext)
 
+  // Spesen-Euro-Ziel STRUKTURELL durchsetzen (nicht erst nachträglich
+  // korrigieren): nur so viele Tage wie nötig dürfen überhaupt bis zur
+  // 8-Std.-Grenze gehen. Alle anderen Tage werden von vornherein niedriger
+  // gedeckelt (Netto so begrenzt, dass Gesamtzeit selbst mit minimaler
+  // Pause/Arbeitsweg sicher unter 8 Std. bleibt) - verhindert, dass allein
+  // durch die normale Stundenverteilung zu viele Tage "zufällig" die
+  // Spesen-Grenze erreichen.
+  if (target.spesenEuroTarget && target.spesenEuroTarget > 0) {
+    const qualifyThresholdMinutes = TARGET_TOTAL_MIN * 60 - BUSINESS_MIN_BREAK - commuteMinutes
+    // Sonntage (Minijob-Zweig: feste, oft volle 8h-Zuteilung) UND die feste
+    // Fr/Sa/So-Vorlage (Einzelfahrer-Zweig) zählen ebenfalls gegen das
+    // Budget, auch wenn sie außerhalb der hier gedeckelten Tage liegen -
+    // sonst würde das Budget nur für die "restlichen" Tage gelten und in
+    // Summe zu viele Spesen-Tage entstehen.
+    const alreadyQualifyingElsewhere = isEinzelfahrer
+      ? 0 // Einzelfahrer-Vorlage wird weiter unten separat (mustReachEightHoursForSat/Sun) behandelt
+      : Array.from(minijobSundayHoursByDate?.values() ?? []).filter((h) => h * 60 >= qualifyThresholdMinutes).length
+    const maxQualifyingDays = Math.max(0, Math.round(target.spesenEuroTarget / SPESEN_RATE_EUR) - alreadyQualifyingElsewhere)
+    const allCandidates = [...distributableWeekdayContexts, ...reserveContexts]
+    const shuffled = [...allCandidates].sort(() => Math.random() - 0.5)
+    const unrestrictedSet = new Set(shuffled.slice(0, maxQualifyingDays).map((c) => c.dateStr))
+    // 15 Minuten Sicherheitsmarge unter der 8h-Schwelle, damit auch bei
+    // Rundung sicher unter der Grenze geblieben wird.
+    const safeMaxNetMinutes = Math.max(BASE_MIN_NET * 60, qualifyThresholdMinutes - 15)
+    allCandidates.forEach((c) => {
+      if (!unrestrictedSet.has(c.dateStr)) c.maxNetMinutes = Math.min(c.maxNetMinutes, safeMaxNetMinutes)
+    })
+  }
+
   let hoursByDate: Map<string, number>
   let weekdayShortfall: number
   {
@@ -518,7 +548,6 @@ export function generateHoursBasedSchedule(
   // 8-Std.-Gesamtzeit-Grenze angehoben werden (14 €/Tag Pauschale). Ohne
   // gesetztes Ziel (0 oder nicht angegeben) bleibt das Verhalten wie bisher
   // unbegrenzt (alle in Frage kommenden Tage werden angehoben).
-  const SPESEN_RATE_EUR = 14
   let spesenDaysRemaining = target.spesenEuroTarget && target.spesenEuroTarget > 0
     ? Math.round(target.spesenEuroTarget / SPESEN_RATE_EUR)
     : Infinity
@@ -595,7 +624,11 @@ export function generateHoursBasedSchedule(
 
     if (mustReachEightHours && currentlyQualifies) {
       spesenDaysRemaining--
-    } else if (mustReachEightHours && !currentlyQualifies && spesenDaysRemaining > 0) {
+    } else if (mustReachEightHours && !currentlyQualifies && !spesenBudgetActive && spesenDaysRemaining > 0) {
+      // Nachträgliches Hochstufen nur, wenn KEIN Spesen-Euro-Ziel gesetzt
+      // ist - ist eines gesetzt, wurde die Tagesauswahl bereits vorab (vor
+      // der Stundenverteilung) passend gedeckelt, ein zusätzliches
+      // Hochstufen hier würde das wieder aushebeln.
       for (const step of BREAK_STEPS) {
         if (step <= ctx.breakMinutes) continue
         ctx.breakMinutes = step
