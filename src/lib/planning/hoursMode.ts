@@ -741,6 +741,59 @@ export function generateHoursBasedSchedule(
     warnings.push(`Monatssumme liegt bei ${deliveredTotal.toFixed(2)} Std. statt der eingegebenen ${target.totalHours} Std. - das kommt durch die feste 8-Std.-Mindestgesamtzeit pro Tag (Vollzeit) in Kombination mit Pflichttagen (Fr/Sa, "nie 3 Tage frei") zustande, die zusammen mehr Tage als ursprünglich geschätzt benötigen.`)
   }
 
+  // ---- Spesen-Tage-Ziel iterativ nachschärfen ----
+  // Verändert AUSSCHLIESSLICH Pausenlängen (in 15-Min.-Schritten) an
+  // einzelnen Tagen - die Nettoarbeitszeit und damit die Monatssumme
+  // bleiben dabei garantiert unverändert. Läuft so lange, bis die Anzahl
+  // der Tage mit >= 8 Std. Gesamtzeit exakt der Vorgabe entspricht (oder
+  // keine weitere Verbesserung mehr möglich ist).
+  if (target.spesenDaysTarget && target.spesenDaysTarget > 0) {
+    const targetDays = Math.round(target.spesenDaysTarget)
+    const grossHours = (s: HoursShift) => s.netHours + s.breakMinutes / 60 + s.commuteMinutes / 60
+    const countQualifying = () => shifts.filter((s) => grossHours(s) >= 7.99).length
+
+    let guard = 0
+    while (guard < 300) {
+      guard++
+      const current = countQualifying()
+      if (current === targetDays) break
+
+      if (current < targetDays) {
+        // Zu wenige Spesen-Tage: den Tag, der der 8h-Grenze am nächsten
+        // ist (aber noch drunter liegt), per 15-Min.-Pausenverlängerung
+        // darüber schieben - nur wenn dabei die 10h-Gesamtzeit-Obergrenze
+        // nicht überschritten wird und die Pause nicht schon bei 120 Min.
+        // (gesetzliche Praxisgrenze) angekommen ist.
+        const candidates = shifts
+          .filter((s) => grossHours(s) < 7.99 && s.breakMinutes < 120 && grossHours(s) + 0.25 <= TARGET_TOTAL_MAX + 0.001)
+          .sort((a, b) => grossHours(b) - grossHours(a))
+        if (candidates.length === 0) break // keine weitere Verbesserung möglich
+        const s = candidates[0]
+        s.breakMinutes += 15
+        s.breaks[s.breaks.length - 1].end += 15
+        s.endMin += 15
+      } else {
+        // Zu viele Spesen-Tage: den qualifizierenden Tag mit der längsten
+        // Pause (und, bei Gleichstand, am nächsten an der 8h-Grenze) per
+        // 15-Min.-Pausenverkürzung wieder unter die Grenze bringen - nie
+        // unter die gesetzliche Mindestpause (30 Min.).
+        const candidates = shifts
+          .filter((s) => grossHours(s) >= 7.99 && s.breakMinutes > 30)
+          .sort((a, b) => (b.breakMinutes !== a.breakMinutes ? b.breakMinutes - a.breakMinutes : grossHours(a) - grossHours(b)))
+        if (candidates.length === 0) break // keine weitere Verbesserung möglich
+        const s = candidates[0]
+        s.breakMinutes -= 15
+        s.breaks[s.breaks.length - 1].end -= 15
+        s.endMin -= 15
+      }
+    }
+
+    const finalCount = countQualifying()
+    if (finalCount !== targetDays) {
+      warnings.push(`Spesen-Tage-Ziel (${targetDays}) konnte nicht exakt erreicht werden (${finalCount} Tage generiert) - vermutlich reichen die verfügbaren Tage/Pausenspielräume dafür nicht aus.`)
+    }
+  }
+
   return { shifts, warning: warnings.length > 0 ? warnings.join(' ') : null }
 }
 

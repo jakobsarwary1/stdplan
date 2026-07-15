@@ -77,7 +77,10 @@ export default async function DienstplanPage({
 
       <HoursPlanningForm
         vehicles={vehicles.map((v) => ({ id: v.id, licensePlate: v.licensePlate }))}
-        drivers={drivers.map((d) => ({ id: d.id, name: `${d.firstName} ${d.lastName}` }))}
+        drivers={drivers.map((d) => {
+          const persNr = stripEmployeeNumberPadding(d.employeeNumber)
+          return { id: d.id, name: `${persNr ? persNr + ' – ' : ''}${d.firstName} ${d.lastName}` }
+        })}
         defaultYear={year}
         defaultMonth={month}
       />
