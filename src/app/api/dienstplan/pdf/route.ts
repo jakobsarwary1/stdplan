@@ -31,21 +31,21 @@ type PdfSummary = {
 // Immer dabei: Fahrer, Datum, Von, Bis. Alles danach ist über die
 // Spalten-Auswahl im Formular steuerbar.
 const BASE_COLUMNS = [
-  { label: 'Fahrer', width: 70 },
-  { label: 'Datum', width: 55 },
-  { label: 'Von', width: 28 },
-  { label: 'Bis', width: 28 }
+  { label: 'Fahrer', width: 110 },
+  { label: 'Datum', width: 90 },
+  { label: 'Von', width: 26 },
+  { label: 'Bis', width: 26 }
 ]
 
 const OPTIONAL_COLUMN_DEFS: Record<string, { label: string; width: number; value: (r: PdfRow) => string }> = {
-  pause: { label: 'Pause', width: 38, value: (r) => (r.isFree ? '' : `${r.breakMinutes} min`) },
-  weg: { label: 'Weg', width: 36, value: (r) => (r.isFree ? '' : `${r.commuteMinutes} min`) },
-  netto: { label: 'Netto', width: 34, value: (r) => (r.isFree ? '' : `${r.netHours.toFixed(2)} h`) },
-  gesamt: { label: 'Gesamt', width: 36, value: (r) => (r.isFree ? '' : `${r.totalHours.toFixed(2)} h`) },
-  nacht25: { label: 'Nacht 25%', width: 40, value: (r) => (r.isFree || r.night25 <= 0.005 ? '' : `${r.night25.toFixed(2)} h`) },
-  nacht40: { label: 'Nacht 40%', width: 40, value: (r) => (r.isFree || r.night40 <= 0.005 ? '' : `${r.night40.toFixed(2)} h`) },
-  sonntag50: { label: 'Sonntag 50%', width: 44, value: (r) => (r.isFree || r.sunday50 <= 0.005 ? '' : `${r.sunday50.toFixed(2)} h`) },
-  fahrzeug: { label: 'Fahrzeug', width: 42, value: (r) => (r.isFree ? '' : r.vehiclePlate) }
+  pause: { label: 'Pause', width: 34, value: (r) => (r.isFree ? '' : `${r.breakMinutes} min`) },
+  weg: { label: 'Weg', width: 32, value: (r) => (r.isFree ? '' : `${r.commuteMinutes} min`) },
+  netto: { label: 'Netto', width: 30, value: (r) => (r.isFree ? '' : `${r.netHours.toFixed(2)} h`) },
+  gesamt: { label: 'Gesamt', width: 32, value: (r) => (r.isFree ? '' : `${r.totalHours.toFixed(2)} h`) },
+  nacht25: { label: 'Nacht 25%', width: 36, value: (r) => (r.isFree || r.night25 <= 0.005 ? '' : `${r.night25.toFixed(2)} h`) },
+  nacht40: { label: 'Nacht 40%', width: 36, value: (r) => (r.isFree || r.night40 <= 0.005 ? '' : `${r.night40.toFixed(2)} h`) },
+  sonntag50: { label: 'Sonntag 50%', width: 40, value: (r) => (r.isFree || r.sunday50 <= 0.005 ? '' : `${r.sunday50.toFixed(2)} h`) },
+  fahrzeug: { label: 'Fahrzeug', width: 38, value: (r) => (r.isFree ? '' : r.vehiclePlate) }
 }
 
 // pdf-lib's Standard-Schriftarten unterstützen nur WinAnsi-Zeichen - Bindestrich-

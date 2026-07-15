@@ -215,6 +215,7 @@ export type HoursPreviewRow = Partial<HoursShift> & {
   isSunday: boolean
   isNightShift: boolean
   hourlyRate: number | null
+  employeeNumber: string | null
   calculateExpenses: boolean
 }
 
@@ -302,6 +303,7 @@ export async function previewHoursPlanning(
 
       const driverNameById = new Map(drivers.map((d) => [d.id, `${d.firstName} ${d.lastName}`]))
       const driverRateById = new Map(drivers.map((d) => [d.id, d.hourlyRate ?? null]))
+      const driverEmployeeNumberById = new Map(drivers.map((d) => [d.id, d.employeeNumber ?? null]))
       const blockedDates = new Set<string>()
       const warnings: string[] = []
       const allRows: HoursPreviewRow[] = []
@@ -318,6 +320,7 @@ export async function previewHoursPlanning(
       for (const t of orderedTargets) {
         const name = driverNameById.get(t.driverId) ?? '—'
         const rate = driverRateById.get(t.driverId) ?? null
+        const employeeNumber = driverEmployeeNumberById.get(t.driverId) ?? null
         const { shifts, warning } = generateHoursBasedSchedule(
           year, month - 1, { ...t, driverName: name },
           blockedDates, nightStart, nightEnd, minRestHours, demandProfiles
@@ -340,6 +343,7 @@ export async function previewHoursPlanning(
               isSunday,
               isNightShift: isNightShiftRow(minToClock(s.startMin), minToClock(s.endMin), nightStart, nightEnd),
               hourlyRate: rate,
+              employeeNumber,
               calculateExpenses: t.calculateExpenses
             })
           } else {
@@ -352,6 +356,7 @@ export async function previewHoursPlanning(
               isSunday,
               isNightShift: false,
               hourlyRate: rate,
+              employeeNumber,
               calculateExpenses: t.calculateExpenses
             })
           }

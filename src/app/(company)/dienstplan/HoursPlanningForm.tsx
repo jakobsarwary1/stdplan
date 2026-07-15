@@ -206,7 +206,25 @@ async function downloadPdf(
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'dienstplan.pdf'
+
+    // Dateiname im Format Plan_[Monat][Jahr]_[Pers.-Nr.]_[Nachname]_[Fahrzeug].pdf
+    // Bei mehreren ausgewählten Fahrern (Pers.-Nr./Nachname wären dann nicht
+    // eindeutig) fällt der Name auf Plan_[Monat][Jahr]_[Fahrzeug] zurück.
+    const selectedRows = rows.filter((r) => options.driverNames.includes(r.driverName))
+    const uniqueDriverNames = Array.from(new Set(selectedRows.map((r) => r.driverName)))
+    const vehiclePlateForFile = selectedRows.find((r) => !r.isFree)?.vehiclePlate ?? ''
+    const monthFileLabel = monthLabel.replace(/\s+/g, '')
+    let fileNameBase: string
+    if (uniqueDriverNames.length === 1) {
+      const driverRow = selectedRows.find((r) => r.driverName === uniqueDriverNames[0])
+      const lastName = uniqueDriverNames[0].trim().split(' ').slice(-1)[0] || uniqueDriverNames[0]
+      const persNr = driverRow?.employeeNumber || 'ohnePersNr'
+      fileNameBase = `Plan_${monthFileLabel}_${persNr}_${lastName}_${vehiclePlateForFile}`
+    } else {
+      fileNameBase = `Plan_${monthFileLabel}_${vehiclePlateForFile}`
+    }
+    a.download = fileNameBase.replace(/[^a-zA-Z0-9_-]/g, '') + '.pdf'
+
     a.click()
     URL.revokeObjectURL(url)
   } catch (err) {
