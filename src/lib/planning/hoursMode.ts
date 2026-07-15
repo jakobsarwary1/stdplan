@@ -110,6 +110,21 @@ function sundayOverlapMinutes(startMin: number, endMin: number, weekday: number)
 // Wählt zufällig `count` Tage aus `pool` aus (ohne Zurücklegen) - für eine
 // abwechslungsreiche, aber weiterhin plausible Verteilung der Arbeitstage
 // über den Monat.
+/**
+ * Wählt `count` Tage aus einem sortierten Pool nach dem Prinzip "Rand vor
+ * Mitte": Tage am Anfang und Ende des Pools (z. B. erste/letzte Sonntage
+ * im Monat) haben Vorrang vor denen in der Mitte.
+ */
+function pickDaysEdgeFirst(pool: Date[], count: number): Date[] {
+  const sorted = [...pool].sort((a, b) => a.getTime() - b.getTime())
+  if (count >= sorted.length) return sorted
+  const center = (sorted.length - 1) / 2
+  const priorityIndices = Array.from({ length: sorted.length }, (_, i) => i)
+    .sort((a, b) => Math.abs(b - center) - Math.abs(a - center))
+  const chosenIndices = priorityIndices.slice(0, count)
+  return chosenIndices.map((i) => sorted[i]).sort((a, b) => a.getTime() - b.getTime())
+}
+
 function pickRandomDays(pool: Date[], count: number): Date[] {
   const copy = [...pool]
   const chosen: Date[] = []
@@ -379,7 +394,7 @@ export function generateHoursBasedSchedule(
     // Tage werden proportional zum Gesamtstundenziel zufällig gewählt.
     const sundayPool = allDays.filter((d) => d.getDay() === 0)
     const numSundayShifts = target.sundayHours > 0 ? Math.max(1, Math.ceil(target.sundayHours / 8)) : 0
-    const chosenSundays = pickRandomDays(sundayPool, Math.min(numSundayShifts, sundayPool.length))
+    const chosenSundays = pickDaysEdgeFirst(sundayPool, Math.min(numSundayShifts, sundayPool.length))
     const chosenSundayDateStrs = new Set(chosenSundays.map(toDateStr))
 
     // Sonntage bekommen eine EIGENE, dedizierte Stundenzuteilung (flach
