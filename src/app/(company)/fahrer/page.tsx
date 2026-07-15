@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
 import { Badge, Button, Card } from '@/components/ui'
+import { stripEmployeeNumberPadding } from '@/lib/employeeNumber'
 
 const EMPLOYMENT_LABEL: Record<string, string> = {
   fulltime: 'Vollzeit',
@@ -61,7 +62,7 @@ export default async function DriversPage() {
                     </Link>
                   </td>
                   <td className="p-0">
-                    <Link href={`/fahrer/${d.id}`} className="block px-4 py-3">{d.employeeNumber ?? '—'}</Link>
+                    <Link href={`/fahrer/${d.id}`} className="block px-4 py-3">{stripEmployeeNumberPadding(d.employeeNumber) || '—'}</Link>
                   </td>
                 </tr>
               ))}

@@ -5,6 +5,7 @@ import { useFormState, useFormStatus } from 'react-dom'
 import { Badge, Button, Card } from '@/components/ui'
 import { applyHoursPlanning, previewHoursPlanning, type HoursPreviewState } from './actions'
 import { fmtDateDEWithWeekday, formatBreakRanges, minToClock } from '@/lib/planning/format'
+import { stripEmployeeNumberPadding } from '@/lib/employeeNumber'
 
 const INITIAL_STATE: HoursPreviewState = { vehicleId: '', shifts: [], warnings: [], error: null }
 const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember']
@@ -219,7 +220,8 @@ async function downloadPdf(
     if (uniqueDriverNames.length === 1) {
       const driverRow = selectedRows.find((r) => r.driverName === uniqueDriverNames[0])
       const lastName = uniqueDriverNames[0].trim().split(' ').slice(-1)[0] || uniqueDriverNames[0]
-      const persNr = driverRow?.employeeNumber || 'ohnePersNr'
+      const rawPersNr = driverRow?.employeeNumber
+      const persNr = rawPersNr ? stripEmployeeNumberPadding(rawPersNr) || 'ohnePersNr' : 'ohnePersNr'
       fileNameBase = `Plan_${monthFileLabel}_${persNr}_${lastName}_${vehiclePlateForFile}`
     } else {
       fileNameBase = `Plan_${monthFileLabel}_${vehiclePlateForFile}`
@@ -433,7 +435,15 @@ export function HoursPlanningForm({
         </div>
 
         <DriverFields index={1} drivers={drivers} />
-        <DriverFields index={2} drivers={drivers} />
+
+        <details className="mt-6 rounded-xl border border-border">
+          <summary className="cursor-pointer bg-surfaceAlt px-4 py-3 text-sm font-semibold">
+            Fahrer 2 (optional)
+          </summary>
+          <div className="p-4">
+            <DriverFields index={2} drivers={drivers} />
+          </div>
+        </details>
 
         <Submit />
       </form>

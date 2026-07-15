@@ -5,6 +5,7 @@ import { withTenantContext } from '@/lib/prisma'
 import { getDocumentUrl } from '@/lib/storage'
 import { Button, Card, Field, Input } from '@/components/ui'
 import { AddressFields } from '@/components/AddressFields'
+import { stripEmployeeNumberPadding } from '@/lib/employeeNumber'
 import {
   deleteDriver,
   deleteDriverDocument,
@@ -158,7 +159,7 @@ export default async function DriverDetailPage({
               </select>
             </div>
             <Field label="Personalnummer">
-              <Input name="employeeNumber" defaultValue={driver.employeeNumber ?? ''} />
+              <Input name="employeeNumber" defaultValue={stripEmployeeNumberPadding(driver.employeeNumber)} />
             </Field>
             <div className="grid grid-cols-2 gap-4">
               <Field label="Eintritt">

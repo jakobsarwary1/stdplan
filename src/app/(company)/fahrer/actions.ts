@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
 import { uploadDocument } from '@/lib/storage'
+import { padEmployeeNumber } from '@/lib/employeeNumber'
 
 function str(formData: FormData, key: string): string | null {
   const v = String(formData.get(key) ?? '').trim()
@@ -110,7 +111,7 @@ export async function updateDriverBeschaeftigung(driverId: string, formData: For
         data: {
           employmentType: (str(formData, 'employmentType') as any) ?? 'fulltime',
           status: (str(formData, 'status') as any) ?? 'active',
-          employeeNumber: str(formData, 'employeeNumber'),
+          employeeNumber: padEmployeeNumber(str(formData, 'employeeNumber')),
           hireDate: date(formData, 'hireDate'),
           socialSecurityNumber: str(formData, 'socialSecurityNumber'),
           healthInsuranceProvider: str(formData, 'healthInsuranceProvider'),
