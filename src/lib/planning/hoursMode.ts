@@ -840,6 +840,85 @@ export function generateHoursBasedSchedule(
     warnings.push(`Monatssumme liegt bei ${deliveredTotal.toFixed(2)} Std. statt der eingegebenen ${target.totalHours} Std. - das kommt durch die feste 8-Std.-Mindestgesamtzeit pro Tag (Vollzeit) in Kombination mit Pflichttagen (Fr/Sa, "nie 3 Tage frei") zustande, die zusammen mehr Tage als ursprünglich geschätzt benötigen.`)
   }
 
+  // ---- Freie Tage auf 4-7 pro Monat begrenzen ----
+  // Sind es mehr als 7 freie Tage (weil die vorhandenen Schichten die
+  // übrigen Tage nicht "sättigen"), wird schrittweise Nettoarbeitszeit von
+  // Tagen OHNE Spesen-Berechtigung (< 8h Brutto) in 30-Min.-Schritten
+  // abgezogen und aufgesammelt, bis genug für eine komplett neue
+  // Tagesschicht zusammenkommt - die dann auf einem der freien Tage
+  // platziert wird. Die Monatsgesamtsumme bleibt dabei unverändert, es
+  // werden nur Stunden zwischen Tagen umverteilt.
+  {
+    const MAX_FREE_DAYS = 7
+    const MIN_NEW_SHIFT_MINUTES = BASE_MIN_NET * 60 // mind. 5 Std. für eine sinnvolle neue Schicht
+    const monthDays = daysInMonth(year, month0)
+
+    function freeDates(): Date[] {
+      const workingDateStrs = new Set(shifts.map((s) => s.date))
+      return monthDays.filter((d) => !workingDateStrs.has(toDateStr(d)))
+    }
+
+    let guard = 0
+    while (freeDates().length > MAX_FREE_DAYS && guard < 50) {
+      guard++
+      const grossHours = (s: HoursShift) => s.netHours + s.breakMinutes / 60 + s.commuteMinutes / 60
+
+      // Spender: Tage ohne (beabsichtigte) Spesen-Berechtigung, mit genug
+      // Netto-Puffer (bleiben nach Abzug mindestens bei BASE_MIN_NET). Der
+      // Brutto-Check (< 8h) greift nur, wenn für diesen Fahrer überhaupt
+      // Spesen vorgesehen sind (calculateExpenses/spesenDaysTarget) - sonst
+      // zählt eine zufällig lange Pause nicht als "Spesen-Tag" und der Tag
+      // bleibt trotzdem als Spender nutzbar.
+      const spesenRelevant = target.calculateExpenses || (target.spesenDaysTarget != null && target.spesenDaysTarget > 0)
+      const donors = shifts
+        .filter((s) => (!spesenRelevant || grossHours(s) < 7.99) && s.netHours > BASE_MIN_NET + 0.5)
+        .sort((a, b) => b.netHours - a.netHours)
+      if (donors.length === 0) break // keine Spender mehr verfügbar
+
+      const neededMinutes = MIN_NEW_SHIFT_MINUTES
+      let accumulated = 0
+      const reductions: { shift: HoursShift; amountMinutes: number }[] = []
+      for (const donor of donors) {
+        if (accumulated >= neededMinutes) break
+        const maxReducibleMinutes = Math.floor((donor.netHours * 60 - BASE_MIN_NET * 60) / 30) * 30
+        const take = Math.min(maxReducibleMinutes, neededMinutes - accumulated)
+        if (take <= 0) continue
+        donor.netHours = Math.round((donor.netHours - take / 60) * 100) / 100
+        accumulated += take
+        reductions.push({ shift: donor, amountMinutes: take })
+      }
+
+      if (accumulated < neededMinutes) {
+        // Nicht genug Puffer zusammenbekommen - ALLE bereits getätigten
+        // Kürzungen exakt rückgängig machen, damit keine Nettostunden
+        // verloren gehen, und abbrechen (mehr freie Tage sind dann
+        // unvermeidbar).
+        reductions.forEach(({ shift, amountMinutes }) => {
+          shift.netHours = Math.round((shift.netHours + amountMinutes / 60) * 100) / 100
+        })
+        break
+      }
+
+      // Neue Schicht auf einem freien Tag anlegen (Rand-vor-Mitte-Prinzip
+      // für die Auswahl, konsistent mit der übrigen Tagesauswahl-Logik).
+      const candidates = freeDates()
+      if (candidates.length === 0) break
+      const [newDay] = pickDaysEdgeFirst(candidates, 1)
+      const newCtx = buildContext(newDay)
+      const netHours = accumulated / 60
+      const netMinutes = accumulated
+      const spanMinutes = netMinutes + newCtx.breakMinutes
+      const startMin = 6 * 60 + Math.floor(Math.random() * 4 * 60) // 06:00-10:00, zufällig
+      const endMin = startMin + spanMinutes
+      const newBreaks = positionBreak(spanMinutes, newCtx.breakMinutes)
+
+      shifts.push({
+        driverId: target.driverId, date: toDateStr(newDay), startMin, endMin,
+        breakMinutes: newCtx.breakMinutes, breaks: newBreaks, netHours, commuteMinutes
+      })
+    }
+  }
+
   // ---- Spesen-Tage-Ziel iterativ nachschärfen ----
   // Verändert AUSSCHLIESSLICH Pausenlängen (in 15-Min.-Schritten) an
   // einzelnen Tagen - die Nettoarbeitszeit und damit die Monatssumme
