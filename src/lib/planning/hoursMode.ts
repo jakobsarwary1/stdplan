@@ -335,6 +335,7 @@ export function generateHoursBasedSchedule(
   let numWeekdayShifts = 0
   let reservePool: Date[] = [] // ungenutzte Tage, die bei Bedarf nachträglich zur Unterbringung von Restsstunden hinzugenommen werden können
   let minijobSundayHoursByDate: Map<string, number> | null = null // dedizierte Sonntagsstunden im Minijob-Zweig (siehe unten)
+  let restDayCountWasExpandedForFreeTarget = false // true, wenn mehr Tage als die Durchschnittsschätzung gewählt wurden, um das Freie-Tage-Ziel zu erreichen
 
   // Sonntag bekommt KEINE fest eingebrannte Nettozeit, sondern wird aus der
   // eingegebenen Sonntagsstundenzahl abgeleitet - abzüglich des TATSÄCHLICHEN
@@ -415,7 +416,21 @@ export function generateHoursBasedSchedule(
 
     const restPool = allDays.filter((d) => d.getDay() !== 0 && !chosenSundayDateStrs.has(toDateStr(d)))
     remainingHours = Math.max(0, target.totalHours - target.sundayHours)
-    const numRestShifts = Math.min(restPool.length, Math.max(0, Math.round(remainingHours / avgNet)))
+    const avgNetEstimate = Math.max(0, Math.round(remainingHours / avgNet))
+
+    // Freie Tage sollen im Zielbereich 4-7 (idealerweise 5) liegen - reicht
+    // die reine Durchschnittsschätzung dafür nicht aus (zu wenige Tage
+    // gewählt), wird die Tagesanzahl von vornherein auf das nötige Minimum
+    // angehoben, statt das nachträglich per Stunden-Umverteilung zu
+    // korrigieren (was bei knappem Budget nicht immer zuverlässig
+    // funktioniert). Nach oben begrenzt durch das, was selbst mit der
+    // niedrigsten zulässigen Tagesmindestzeit (3,5 Std.) noch rechnerisch
+    // möglich ist, damit kein Stundenüberschuss entsteht.
+    const TARGET_FREE_DAYS_FLOOR = 5
+    const minRestDaysForFreeTarget = Math.max(0, allDays.length - TARGET_FREE_DAYS_FLOOR - chosenSundays.length)
+    const maxFeasibleRestDays = restPool.length > 0 ? Math.floor(remainingHours / 3.5) : 0
+    const numRestShifts = Math.min(restPool.length, Math.max(avgNetEstimate, Math.min(minRestDaysForFreeTarget, maxFeasibleRestDays)))
+    restDayCountWasExpandedForFreeTarget = numRestShifts > avgNetEstimate
     // Ab 150 Std. Gesamtstunden/Monat: Arbeitstage in Blöcken von 3-5
     // aufeinanderfolgenden Tagen vergeben statt einzeln verstreut - deutlich
     // alltagstauglicher bei so hohem Stundenvolumen. Darunter: wochenweise
@@ -563,6 +578,18 @@ export function generateHoursBasedSchedule(
       ? weekdayContexts.filter((c) => !minijobSundayHoursByDate!.has(c.dateStr)) // Sonntage haben eigene Zuteilung (siehe unten)
       : weekdayContexts
   let reserveContexts = reservePool.map(buildContext)
+
+  // Wurde die Tagesanzahl oben erzwungen ausgeweitet (mehr Tage als die
+  // Durchschnittsschätzung, um das Freie-Tage-Ziel direkt zu erreichen),
+  // muss die Mindest-Nettozeit pro Tag entsprechend abgesenkt werden (bis
+  // 3,5 Std.), sonst könnte die Verteilung die dünneren Stunden pro Tag
+  // nicht sauber unterbringen.
+  if (restDayCountWasExpandedForFreeTarget) {
+    const lowerFloorMinutes = 3.5 * 60
+    ;[...distributableWeekdayContexts, ...reserveContexts].forEach((c) => {
+      c.minNetMinutes = Math.min(c.minNetMinutes, lowerFloorMinutes)
+    })
+  }
   let spesenUnrestrictedDates: Set<string> | null = null
 
   // Spesen-Tage-Ziel STRUKTURELL durchsetzen: nur so viele Tage wie nötig
@@ -847,11 +874,13 @@ export function generateHoursBasedSchedule(
   // abgezogen und aufgesammelt, bis genug für eine komplett neue
   // Tagesschicht zusammenkommt - die dann auf einem der freien Tage
   // platziert wird. Die Monatsgesamtsumme bleibt dabei unverändert, es
-  // werden nur Stunden zwischen Tagen umverteilt.
+  // werden nur Stunden zwischen Tagen umverteilt. Reicht die normale
+  // Mindestschichtgröße (5 Std.) nicht aus, um genug neue Tage zu schaffen,
+  // wird die Mindestgröße für NEUE Tage schrittweise gesenkt (5 -> 4 ->
+  // 3,5 Std.), damit das Ziel möglichst dennoch erreicht wird.
   {
     const MAX_FREE_DAYS = 7
     const TARGET_FREE_DAYS = 5 // Priorität: möglichst 4-5 statt nur irgendwo unter 7 landen
-    const MIN_NEW_SHIFT_MINUTES = BASE_MIN_NET * 60 // mind. 5 Std. für eine sinnvolle neue Schicht
     const MIN_SHIFT_FLOOR_CANDIDATES = [BASE_MIN_NET, 4, 3.5] // Std., der Reihe nach versucht
     const monthDays = daysInMonth(year, month0)
 
@@ -927,7 +956,6 @@ export function generateHoursBasedSchedule(
 
     if (freeDates().length > MAX_FREE_DAYS) {
       warnings.push(`Freie Tage (${freeDates().length}) konnten nicht auf max. 7 gesenkt werden - selbst mit auf 3,5 Std. abgesenkter Mindestschichtgröße reicht die Gesamtstundenzahl dafür nicht aus.`)
-    }
     }
   }
 
