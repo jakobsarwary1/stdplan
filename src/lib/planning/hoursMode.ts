@@ -934,8 +934,29 @@ function generateHoursBasedScheduleAttempt(
         }
 
         // Neue Schicht auf einem freien Tag anlegen (Rand-vor-Mitte-Prinzip
-        // für die Auswahl, konsistent mit der übrigen Tagesauswahl-Logik).
-        const candidates = freeDates()
+        // für die Auswahl, konsistent mit der übrigen Tagesauswahl-Logik) -
+        // dabei Tage ausschließen, die eine Kette von mehr als 6
+        // aufeinanderfolgenden Arbeitstagen erzeugen würden (gesetzliche
+        // Obergrenze, ArbZG).
+        const workingDateStrsForCheck = new Set(shifts.map((s) => s.date))
+        function wouldExceedSixConsecutive(d: Date): boolean {
+          const ds = toDateStr(d)
+          let runLength = 1
+          const cursor = new Date(d)
+          for (let i = 0; i < 6; i++) {
+            cursor.setDate(cursor.getDate() - 1)
+            if (workingDateStrsForCheck.has(toDateStr(cursor))) runLength++
+            else break
+          }
+          const cursor2 = new Date(d)
+          for (let i = 0; i < 6; i++) {
+            cursor2.setDate(cursor2.getDate() + 1)
+            if (workingDateStrsForCheck.has(toDateStr(cursor2))) runLength++
+            else break
+          }
+          return runLength > 6
+        }
+        const candidates = freeDates().filter((d) => !wouldExceedSixConsecutive(d))
         if (candidates.length === 0) break
         const [newDay] = pickDaysEdgeFirst(candidates, 1)
         const newCtx = buildContext(newDay)
@@ -1009,6 +1030,38 @@ function generateHoursBasedScheduleAttempt(
     const finalCount = countQualifying()
     if (finalCount !== targetDays) {
       warnings.push(`Spesen-Tage-Ziel (${targetDays}) konnte nicht exakt erreicht werden (${finalCount} Tage generiert) - vermutlich reichen die verfügbaren Tage/Pausenspielräume dafür nicht aus.`)
+    }
+  }
+
+  // ---- Finale Sicherheitsprüfung: nie mehr als 6 aufeinanderfolgende
+  // Arbeitstage (ArbZG) ---- Fängt jede Verletzung ab, unabhängig davon,
+  // durch welchen Schritt sie entstanden ist (z. B. durch das nachträgliche
+  // Auffüllen freier Tage) - der zuletzt hinzugekommene Tag einer zu langen
+  // Kette wird wieder freigegeben.
+  {
+    let guard = 0
+    while (guard < 30) {
+      guard++
+      const sortedShifts = [...shifts].sort((a, b) => a.date.localeCompare(b.date))
+      let violationIndex = -1
+      let runLength = 1
+      for (let i = 1; i < sortedShifts.length; i++) {
+        const prev = new Date(sortedShifts[i - 1].date)
+        const curr = new Date(sortedShifts[i].date)
+        prev.setDate(prev.getDate() + 1)
+        if (toDateStr(prev) === sortedShifts[i].date) {
+          runLength++
+          if (runLength > 6) { violationIndex = i; break }
+        } else {
+          runLength = 1
+        }
+      }
+      if (violationIndex === -1) break
+      const violatingDate = sortedShifts[violationIndex].date
+      const idx = shifts.findIndex((s) => s.date === violatingDate)
+      if (idx === -1) break
+      shifts.splice(idx, 1)
+      warnings.push(`${violatingDate}: Schicht wieder freigegeben, um die gesetzliche Obergrenze von 6 aufeinanderfolgenden Arbeitstagen einzuhalten.`)
     }
   }
 
