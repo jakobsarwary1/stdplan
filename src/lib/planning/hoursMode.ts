@@ -847,13 +847,11 @@ export function generateHoursBasedSchedule(
   // abgezogen und aufgesammelt, bis genug für eine komplett neue
   // Tagesschicht zusammenkommt - die dann auf einem der freien Tage
   // platziert wird. Die Monatsgesamtsumme bleibt dabei unverändert, es
-  // werden nur Stunden zwischen Tagen umverteilt. Reicht die normale
-  // Mindestschichtgröße (5 Std.) nicht aus, um genug neue Tage zu schaffen,
-  // wird die Mindestgröße für NEUE Tage schrittweise gesenkt (5 -> 4 ->
-  // 3,5 Std.), damit das Ziel möglichst dennoch erreicht wird.
+  // werden nur Stunden zwischen Tagen umverteilt.
   {
     const MAX_FREE_DAYS = 7
     const TARGET_FREE_DAYS = 5 // Priorität: möglichst 4-5 statt nur irgendwo unter 7 landen
+    const MIN_NEW_SHIFT_MINUTES = BASE_MIN_NET * 60 // mind. 5 Std. für eine sinnvolle neue Schicht
     const MIN_SHIFT_FLOOR_CANDIDATES = [BASE_MIN_NET, 4, 3.5] // Std., der Reihe nach versucht
     const monthDays = daysInMonth(year, month0)
 
@@ -929,6 +927,7 @@ export function generateHoursBasedSchedule(
 
     if (freeDates().length > MAX_FREE_DAYS) {
       warnings.push(`Freie Tage (${freeDates().length}) konnten nicht auf max. 7 gesenkt werden - selbst mit auf 3,5 Std. abgesenkter Mindestschichtgröße reicht die Gesamtstundenzahl dafür nicht aus.`)
+    }
     }
   }
 
