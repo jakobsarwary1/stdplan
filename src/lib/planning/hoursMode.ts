@@ -298,7 +298,7 @@ function distributeHoursWithPerDayCap(
  * Fahrer belegt sind (bei mehreren Fahrern am selben Fahrzeug) - werden
  * nicht erneut vergeben.
  */
-export function generateHoursBasedSchedule(
+function generateHoursBasedScheduleAttempt(
   year: number,
   month0: number, // 0-basiert (0 = Januar)
   target: HoursTarget,
@@ -306,7 +306,8 @@ export function generateHoursBasedSchedule(
   nightStart: string,
   nightEnd: string,
   minRestHours: number,
-  demandProfiles: DemandProfileInput[] = []
+  demandProfiles: DemandProfileInput[] = [],
+  targetFreeDaysFloor: number = 5
 ): { shifts: HoursShift[]; warning: string | null } {
   const commuteMinutes = target.commuteMinutes > 0 ? target.commuteMinutes : DEFAULT_COMMUTE_MINUTES
 
@@ -426,8 +427,7 @@ export function generateHoursBasedSchedule(
     // funktioniert). Nach oben begrenzt durch das, was selbst mit der
     // niedrigsten zulässigen Tagesmindestzeit (3,5 Std.) noch rechnerisch
     // möglich ist, damit kein Stundenüberschuss entsteht.
-    const TARGET_FREE_DAYS_FLOOR = 5
-    const minRestDaysForFreeTarget = Math.max(0, allDays.length - TARGET_FREE_DAYS_FLOOR - chosenSundays.length)
+    const minRestDaysForFreeTarget = Math.max(0, allDays.length - targetFreeDaysFloor - chosenSundays.length)
     const maxFeasibleRestDays = restPool.length > 0 ? Math.floor(remainingHours / 3.5) : 0
     const numRestShifts = Math.min(restPool.length, Math.max(avgNetEstimate, Math.min(minRestDaysForFreeTarget, maxFeasibleRestDays)))
     restDayCountWasExpandedForFreeTarget = numRestShifts > avgNetEstimate
@@ -880,7 +880,7 @@ export function generateHoursBasedSchedule(
   // 3,5 Std.), damit das Ziel möglichst dennoch erreicht wird.
   {
     const MAX_FREE_DAYS = 7
-    const TARGET_FREE_DAYS = 5 // Priorität: möglichst 4-5 statt nur irgendwo unter 7 landen
+    const TARGET_FREE_DAYS = targetFreeDaysFloor // Priorität: möglichst im gewünschten Zielbereich landen, nicht nur irgendwo unter 7
     const MIN_SHIFT_FLOOR_CANDIDATES = [BASE_MIN_NET, 4, 3.5] // Std., der Reihe nach versucht
     const monthDays = daysInMonth(year, month0)
 
@@ -1013,6 +1013,48 @@ export function generateHoursBasedSchedule(
   }
 
   return { shifts, warning: warnings.length > 0 ? warnings.join(' ') : null }
+}
+
+/**
+ * Öffentlicher Einstiegspunkt: versucht bei gesetztem Spesen-Tage-Ziel
+ * automatisch mit steigender Anzahl freier Tage (5 -> 6 -> 7), falls das
+ * Ziel mit weniger freien Tagen nicht erreichbar ist - mehr freie Tage bei
+ * gleicher Gesamtstundenzahl bedeuten mehr Stunden pro Arbeitstag, was das
+ * Erreichen der 8h-Spesen-Grenze an mehr Tagen erleichtert. Wählt das erste
+ * Ergebnis, das das Spesen-Ziel exakt trifft, sonst das mit der geringsten
+ * Abweichung (bei Gleichstand die mit weniger freien Tagen, da 4-5 näher
+ * am bevorzugten Zielbereich liegt).
+ */
+export function generateHoursBasedSchedule(
+  year: number,
+  month0: number,
+  target: HoursTarget,
+  blockedDates: Set<string>,
+  nightStart: string,
+  nightEnd: string,
+  minRestHours: number,
+  demandProfiles: DemandProfileInput[] = []
+): { shifts: HoursShift[]; warning: string | null } {
+  if (!target.spesenDaysTarget || target.spesenDaysTarget <= 0) {
+    return generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, 5)
+  }
+
+  const spesenTarget = Math.round(target.spesenDaysTarget)
+  let best: { shifts: HoursShift[]; warning: string | null } | null = null
+  let bestGap = Infinity
+
+  for (const floor of [5, 6, 7]) {
+    const attempt = generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, floor)
+    const qualifyingDays = attempt.shifts.filter((s) => s.netHours + s.breakMinutes / 60 + s.commuteMinutes / 60 >= 7.99).length
+    const gap = Math.abs(qualifyingDays - spesenTarget)
+    if (gap === 0) return attempt // Ziel exakt getroffen, kein weiterer Versuch nötig
+    if (gap < bestGap) {
+      bestGap = gap
+      best = attempt
+    }
+  }
+
+  return best ?? generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, 5)
 }
 
 const LEVEL_WEIGHT_FOR_BREAK: Record<string, number> = { niedrig: 0.5, mittel: 1, hoch: 1.5, sehr_hoch: 2 }
