@@ -643,16 +643,31 @@ function generateHoursBasedScheduleAttempt(
   // Zahl dadurch nur angenähert statt exakt getroffen wird.
   if (target.spesenDaysTarget && target.spesenDaysTarget > 0) {
     const qualifyThresholdMinutes = TARGET_TOTAL_MIN * 60 - BUSINESS_MIN_BREAK - commuteMinutes
+    // Freitage sind bei der festen Einzelfahrer-Vorlage STRUKTURELL IMMER
+    // Spesen-berechtigt (7,5 Std. netto + 30 Min. Pause + Arbeitsweg >= 8
+    // Std. Gesamtzeit, unabhängig von Budget/Flags) - das MUSS hier
+    // abgezogen werden, sonst wird für zusätzliche Werktage mehr Budget
+    // "reserviert" (höhere Mindestzeit erzwungen) als nötig.
     const alreadyQualifyingElsewhere = isEinzelfahrer
-      ? 0
+      ? allDays.filter((d) => d.getDay() === 5).length
       : Array.from(minijobSundayHoursByDate?.values() ?? []).filter((h) => h * 60 >= qualifyThresholdMinutes).length
-    const maxQualifyingDays = Math.max(0, Math.round(target.spesenDaysTarget) - alreadyQualifyingElsewhere)
+    const minNeededForBump = Math.max(BASE_MIN_NET * 60, TARGET_TOTAL_MIN * 60 - MAX_BREAK_STEP_MINUTES - commuteMinutes)
+    // Zusätzliche, WICHTIGERE Deckelung: nie mehr Tage auf die erhöhte
+    // Mindestzeit heben, als das verbleibende Stundenbudget (remainingHours)
+    // überhaupt hergibt - sonst kann distributeHoursWithPerDayCap nicht
+    // mehr unter die Summe der (dann zu hohen) Mindestwerte sinken und die
+    // Monatssumme läuft der eingegebenen Stundenzahl davon (das widerspricht
+    // dem oben beschriebenen "Gesamtsumme hat Vorrang"-Grundsatz).
+    const affordableQualifyingDays = Math.max(0, Math.floor(remainingHours / (minNeededForBump / 60)))
+    const maxQualifyingDays = Math.min(
+      Math.max(0, Math.round(target.spesenDaysTarget) - alreadyQualifyingElsewhere),
+      affordableQualifyingDays
+    )
     const allCandidates = [...distributableWeekdayContexts, ...reserveContexts]
     const shuffled = [...allCandidates].sort(() => Math.random() - 0.5)
     const unrestrictedSet = new Set(shuffled.slice(0, maxQualifyingDays).map((c) => c.dateStr))
     spesenUnrestrictedDates = unrestrictedSet
     const safeMaxNetMinutes = Math.max(BASE_MIN_NET * 60, qualifyThresholdMinutes - 15)
-    const minNeededForBump = Math.max(BASE_MIN_NET * 60, TARGET_TOTAL_MIN * 60 - MAX_BREAK_STEP_MINUTES - commuteMinutes)
     allCandidates.forEach((c) => {
       if (!unrestrictedSet.has(c.dateStr)) {
         c.maxNetMinutes = Math.min(c.maxNetMinutes, safeMaxNetMinutes)
