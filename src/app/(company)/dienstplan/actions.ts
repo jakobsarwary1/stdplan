@@ -263,7 +263,7 @@ export async function previewHoursPlanning(
 
   if (!vehicleId || !year || !month) return { ...HOURS_EMPTY_STATE, error: 'Bitte Fahrzeug und Monat wählen.' }
 
-  const targets: { driverId: string; totalHours: number; sundayHours: number; commuteMinutes: number; breakMinutesOverride: number | null; calculateExpenses: boolean; prioritizeDemand: boolean; prioritizeSunday: boolean; maximizeNight: boolean; spesenDaysTarget: number; isEinzelfahrer: boolean }[] = []
+  const targets: { driverId: string; totalHours: number; sundayHours: number; nightHours: number; commuteMinutes: number; breakMinutesOverride: number | null; calculateExpenses: boolean; prioritizeDemand: boolean; prioritizeSunday: boolean; maximizeNight: boolean; spesenDaysTarget: number; isEinzelfahrer: boolean }[] = []
   for (const i of [1, 2]) {
     const driverId = String(formData.get(`driver${i}Id`) ?? '')
     if (!driverId) continue
@@ -272,6 +272,7 @@ export async function previewHoursPlanning(
       driverId,
       totalHours: parseFloat(String(formData.get(`driver${i}TotalHours`) ?? '0')) || 0,
       sundayHours: parseFloat(String(formData.get(`driver${i}SundayHours`) ?? '0')) || 0,
+      nightHours: parseFloat(String(formData.get(`driver${i}NightHours`) ?? '0')) || 0,
       commuteMinutes: parseInt(String(formData.get(`driver${i}CommuteMinutes`) ?? '30'), 10) || 30,
       breakMinutesOverride: breakOverrideRaw ? parseInt(breakOverrideRaw, 10) : null,
       calculateExpenses: formData.get(`driver${i}CalculateExpenses`) === 'on',

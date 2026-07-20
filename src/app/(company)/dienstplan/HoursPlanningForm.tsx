@@ -349,6 +349,11 @@ function DriverFields({ index, drivers }: { index: 1 | 2; drivers: { id: string;
           <input type="number" step="0.5" min="0" name={`driver${index}SundayHours`} className="input" placeholder="32" />
         </div>
         <div className="field">
+          <label className="label">davon Nachtstunden (20-06 Uhr)</label>
+          <input type="number" step="0.5" min="0" name={`driver${index}NightHours`} className="input" placeholder="optional" />
+          <p className="mt-1 text-xs text-textMuted">Bestmögliches Ziel, keine Garantie auf exaktes Treffen (siehe Warnung nach dem Generieren).</p>
+        </div>
+        <div className="field">
           <label className="label">Arbeitsweg (Min., je Schicht)</label>
           <input type="number" step="5" min="0" name={`driver${index}CommuteMinutes`} className="input" defaultValue={30} />
         </div>
