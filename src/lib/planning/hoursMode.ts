@@ -331,7 +331,7 @@ function generateHoursBasedScheduleAttempt(
   // die Wochenend-Pflicht und die 8h-Zwangsregel rutschen, nur weil seine
   // Stundenzahl zufällig über der Schwelle liegt.
   const isEinzelfahrer = target.isEinzelfahrer === true
-  const mustReachEightHoursGlobal = target.calculateExpenses || isEinzelfahrer
+  const mustReachEightHoursGlobal = target.calculateExpenses
   const avgNet = mustReachEightHoursGlobal ? 6.75 : (BASE_MIN_NET + BASE_MAX_NET) / 2
 
   let chosenWeekdays: Date[]
@@ -355,7 +355,7 @@ function generateHoursBasedScheduleAttempt(
   const SAT_TEMPLATE_BASE_BREAK_MINUTES = 60
 
   let satActualBreakMinutes = SAT_TEMPLATE_BASE_BREAK_MINUTES
-  const mustReachEightHoursForSat = target.calculateExpenses || isEinzelfahrer
+  const mustReachEightHoursForSat = target.calculateExpenses
   if (mustReachEightHoursForSat && SAT_TEMPLATE_NET_MINUTES + satActualBreakMinutes + commuteMinutes < TARGET_TOTAL_MIN * 60) {
     for (const step of BREAK_STEPS) {
       if (step <= satActualBreakMinutes) continue
@@ -736,7 +736,7 @@ function generateHoursBasedScheduleAttempt(
     // rechtlich zulässig, da das ArbZG nur eine Mindestpause vorschreibt,
     // keine Höchstdauer. Die Pause wird NIE verringert, nur bei Bedarf
     // angehoben. Begrenzt durch das Spesen-Euro-Budget, falls gesetzt.
-    const mustReachEightHours = target.calculateExpenses || isEinzelfahrer
+    const mustReachEightHours = target.calculateExpenses
     const spesenBudgetActive = target.spesenDaysTarget != null && target.spesenDaysTarget > 0
     let currentlyQualifies = netMinutes + ctx.breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60
 
