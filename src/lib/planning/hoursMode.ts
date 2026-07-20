@@ -331,7 +331,7 @@ function generateHoursBasedScheduleAttempt(
   // die Wochenend-Pflicht und die 8h-Zwangsregel rutschen, nur weil seine
   // Stundenzahl zufällig über der Schwelle liegt.
   const isEinzelfahrer = target.isEinzelfahrer === true
-  const mustReachEightHoursGlobal = target.calculateExpenses || isEinzelfahrer
+  const mustReachEightHoursGlobal = target.calculateExpenses
   const avgNet = mustReachEightHoursGlobal ? 6.75 : (BASE_MIN_NET + BASE_MAX_NET) / 2
 
   let chosenWeekdays: Date[]
@@ -355,7 +355,7 @@ function generateHoursBasedScheduleAttempt(
   const SAT_TEMPLATE_BASE_BREAK_MINUTES = 60
 
   let satActualBreakMinutes = SAT_TEMPLATE_BASE_BREAK_MINUTES
-  const mustReachEightHoursForSat = target.calculateExpenses || isEinzelfahrer
+  const mustReachEightHoursForSat = target.calculateExpenses
   if (mustReachEightHoursForSat && SAT_TEMPLATE_NET_MINUTES + satActualBreakMinutes + commuteMinutes < TARGET_TOTAL_MIN * 60) {
     for (const step of BREAK_STEPS) {
       if (step <= satActualBreakMinutes) continue
@@ -430,7 +430,13 @@ function generateHoursBasedScheduleAttempt(
     // funktioniert). Nach oben begrenzt durch das, was selbst mit der
     // niedrigsten zulässigen Tagesmindestzeit (3,5 Std.) noch rechnerisch
     // möglich ist, damit kein Stundenüberschuss entsteht.
-    const minRestDaysForFreeTarget = Math.max(0, allDays.length - targetFreeDaysFloor - chosenSundays.length)
+    // Das Ziel "wenige freie Tage" gilt nur für Vollzeitbeschäftigte
+    // (> 129 Std./Monat) - bei Teilzeit/Minijob soll die Tagesanzahl
+    // ausschließlich aus der Stundenzahl folgen (avgNetEstimate), nicht
+    // künstlich aufgebläht werden, nur um wenige freie Tage zu erzwingen.
+    const minRestDaysForFreeTarget = target.totalHours > 129
+      ? Math.max(0, allDays.length - targetFreeDaysFloor - chosenSundays.length)
+      : 0
     const maxFeasibleRestDays = restPool.length > 0 ? Math.floor(remainingHours / 3.5) : 0
     const numRestShifts = Math.min(restPool.length, Math.max(avgNetEstimate, Math.min(minRestDaysForFreeTarget, maxFeasibleRestDays)))
     restDayCountWasExpandedForFreeTarget = numRestShifts > avgNetEstimate
@@ -730,7 +736,7 @@ function generateHoursBasedScheduleAttempt(
     // rechtlich zulässig, da das ArbZG nur eine Mindestpause vorschreibt,
     // keine Höchstdauer. Die Pause wird NIE verringert, nur bei Bedarf
     // angehoben. Begrenzt durch das Spesen-Euro-Budget, falls gesetzt.
-    const mustReachEightHours = target.calculateExpenses || isEinzelfahrer
+    const mustReachEightHours = target.calculateExpenses
     const spesenBudgetActive = target.spesenDaysTarget != null && target.spesenDaysTarget > 0
     let currentlyQualifies = netMinutes + ctx.breakMinutes + commuteMinutes >= TARGET_TOTAL_MIN * 60
 
@@ -871,6 +877,10 @@ function generateHoursBasedScheduleAttempt(
   }
 
   // ---- Freie Tage auf 4-7 pro Monat begrenzen ----
+  // Gilt NUR für Vollzeitbeschäftigte (> 129 Std./Monat) - bei Teilzeit/
+  // Minijob ist eine hohe Zahl freier Tage normal und soll nicht künstlich
+  // durch zusätzliche, dünn belegte Arbeitstage "korrigiert" werden.
+  //
   // Sind es mehr als 7 freie Tage (weil die vorhandenen Schichten die
   // übrigen Tage nicht "sättigen"), wird schrittweise Nettoarbeitszeit von
   // Tagen OHNE Spesen-Berechtigung (< 8h Brutto) in 30-Min.-Schritten
@@ -881,7 +891,7 @@ function generateHoursBasedScheduleAttempt(
   // Mindestschichtgröße (5 Std.) nicht aus, um genug neue Tage zu schaffen,
   // wird die Mindestgröße für NEUE Tage schrittweise gesenkt (5 -> 4 ->
   // 3,5 Std.), damit das Ziel möglichst dennoch erreicht wird.
-  {
+  if (target.totalHours > 129) {
     const MAX_FREE_DAYS = 7
     const TARGET_FREE_DAYS = targetFreeDaysFloor // Priorität: möglichst im gewünschten Zielbereich landen, nicht nur irgendwo unter 7
     const MIN_SHIFT_FLOOR_CANDIDATES = [BASE_MIN_NET, 4, 3.5] // Std., der Reihe nach versucht

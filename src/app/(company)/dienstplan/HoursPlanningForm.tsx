@@ -359,11 +359,11 @@ function DriverFields({ index, drivers }: { index: 1 | 2; drivers: { id: string;
         <div className="field">
           <label className="label">Spesen-Tage (Anzahl, optional)</label>
           <input type="number" step="1" min="0" name={`driver${index}SpesenDaysTarget`} className="input" placeholder="z. B. 10" />
-          <p className="mt-1 text-xs text-textMuted">Anzahl Tage mit mind. 8 Std. Gesamtzeit (= Spesen-berechtigt). Ohne dieses Feld gilt weiterhin "alle in Frage kommenden Tage" (bei Spesen-Häkchen/Vollzeit).</p>
+          <p className="mt-1 text-xs text-textMuted">Anzahl Tage mit mind. 8 Std. Gesamtzeit (= Spesen-berechtigt). Ohne dieses Feld gilt weiterhin "alle in Frage kommenden Tage" (bei Spesen-Häkchen).</p>
         </div>
         <label className="mt-6 flex items-center gap-2 text-sm">
-          <input type="checkbox" name={`driver${index}IsEinzelfahrer`} defaultChecked={index === 1} />
-          Einzelfahrer/Vollzeit-Muster (feste Fr/Sa/So-Vorlage, 8h-Mindestgesamtzeit, nie 3 Tage frei)
+          <input type="checkbox" name={`driver${index}IsEinzelfahrer`} />
+          Einzelfahrer/Vollzeit-Muster (feste Fr/Sa/So-Vorlage, nie 3 Tage frei)
         </label>
         <label className="mt-6 flex items-center gap-2 text-sm">
           <input type="checkbox" name={`driver${index}CalculateExpenses`} defaultChecked={index === 1} />
