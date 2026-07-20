@@ -430,7 +430,13 @@ function generateHoursBasedScheduleAttempt(
     // funktioniert). Nach oben begrenzt durch das, was selbst mit der
     // niedrigsten zulässigen Tagesmindestzeit (3,5 Std.) noch rechnerisch
     // möglich ist, damit kein Stundenüberschuss entsteht.
-    const minRestDaysForFreeTarget = Math.max(0, allDays.length - targetFreeDaysFloor - chosenSundays.length)
+    // Das Ziel "wenige freie Tage" gilt nur für Vollzeitbeschäftigte
+    // (> 129 Std./Monat) - bei Teilzeit/Minijob soll die Tagesanzahl
+    // ausschließlich aus der Stundenzahl folgen (avgNetEstimate), nicht
+    // künstlich aufgebläht werden, nur um wenige freie Tage zu erzwingen.
+    const minRestDaysForFreeTarget = target.totalHours > 129
+      ? Math.max(0, allDays.length - targetFreeDaysFloor - chosenSundays.length)
+      : 0
     const maxFeasibleRestDays = restPool.length > 0 ? Math.floor(remainingHours / 3.5) : 0
     const numRestShifts = Math.min(restPool.length, Math.max(avgNetEstimate, Math.min(minRestDaysForFreeTarget, maxFeasibleRestDays)))
     restDayCountWasExpandedForFreeTarget = numRestShifts > avgNetEstimate
@@ -871,6 +877,10 @@ function generateHoursBasedScheduleAttempt(
   }
 
   // ---- Freie Tage auf 4-7 pro Monat begrenzen ----
+  // Gilt NUR für Vollzeitbeschäftigte (> 129 Std./Monat) - bei Teilzeit/
+  // Minijob ist eine hohe Zahl freier Tage normal und soll nicht künstlich
+  // durch zusätzliche, dünn belegte Arbeitstage "korrigiert" werden.
+  //
   // Sind es mehr als 7 freie Tage (weil die vorhandenen Schichten die
   // übrigen Tage nicht "sättigen"), wird schrittweise Nettoarbeitszeit von
   // Tagen OHNE Spesen-Berechtigung (< 8h Brutto) in 30-Min.-Schritten
@@ -881,7 +891,7 @@ function generateHoursBasedScheduleAttempt(
   // Mindestschichtgröße (5 Std.) nicht aus, um genug neue Tage zu schaffen,
   // wird die Mindestgröße für NEUE Tage schrittweise gesenkt (5 -> 4 ->
   // 3,5 Std.), damit das Ziel möglichst dennoch erreicht wird.
-  {
+  if (target.totalHours > 129) {
     const MAX_FREE_DAYS = 7
     const TARGET_FREE_DAYS = targetFreeDaysFloor // Priorität: möglichst im gewünschten Zielbereich landen, nicht nur irgendwo unter 7
     const MIN_SHIFT_FLOOR_CANDIDATES = [BASE_MIN_NET, 4, 3.5] // Std., der Reihe nach versucht
