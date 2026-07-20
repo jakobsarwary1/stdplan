@@ -16,6 +16,7 @@ type PdfRow = {
   night25: number
   night40: number
   sunday50: number
+  holiday125: number
   isFree?: boolean
 }
 
@@ -25,6 +26,7 @@ type PdfSummary = {
   night25: number
   night40: number
   sunday50: number
+  holiday125: number
   grossWage?: number | null
 }
 
@@ -45,6 +47,7 @@ const OPTIONAL_COLUMN_DEFS: Record<string, { label: string; width: number; value
   nacht25: { label: 'Nacht 25%', width: 36, value: (r) => (r.isFree || r.night25 <= 0.005 ? '' : `${r.night25.toFixed(2)} h`) },
   nacht40: { label: 'Nacht 40%', width: 36, value: (r) => (r.isFree || r.night40 <= 0.005 ? '' : `${r.night40.toFixed(2)} h`) },
   sonntag50: { label: 'Sonntag 50%', width: 40, value: (r) => (r.isFree || r.sunday50 <= 0.005 ? '' : `${r.sunday50.toFixed(2)} h`) },
+  feiertag125: { label: 'Feiertag 125%', width: 44, value: (r) => (r.isFree || r.holiday125 <= 0.005 ? '' : `${r.holiday125.toFixed(2)} h`) },
   fahrzeug: { label: 'Fahrzeug', width: 38, value: (r) => (r.isFree ? '' : r.vehiclePlate) }
 }
 
@@ -160,6 +163,7 @@ export async function POST(request: Request) {
           `Nachtzuschlag 25 %: ${s.night25.toFixed(2)} h`,
           `Nachtzuschlag 40 % steuerfrei: ${s.night40.toFixed(2)} h`,
           `Sonntagszuschlag 50 %: ${s.sunday50.toFixed(2)} h`,
+          `Feiertagszuschlag 125 %: ${s.holiday125.toFixed(2)} h`,
           `Bruttolohn (geschätzt): ${s.grossWage != null ? s.grossWage.toFixed(2) + ' EUR' : '- kein Stundenlohn hinterlegt -'}`
         ]
         lines.forEach((line) => {
