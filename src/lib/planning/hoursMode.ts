@@ -988,7 +988,17 @@ function generateHoursBasedScheduleAttempt(
           return runLength > 6
         }
         const candidates = freeDates().filter((d) => !wouldExceedSixConsecutive(d))
-        if (candidates.length === 0) break
+        if (candidates.length === 0) {
+          // Kein zulässiger freier Tag für die neue Schicht gefunden - die
+          // bereits vorgenommenen Spender-Kürzungen müssen rückgängig
+          // gemacht werden, sonst gehen die entnommenen Stunden ersatzlos
+          // verloren (Monatssumme würde unter die Eingabe fallen).
+          reductions.forEach(({ shift, amountMinutes }) => {
+            shift.netHours = Math.round((shift.netHours + amountMinutes / 60) * 100) / 100
+            shift.endMin += amountMinutes
+          })
+          break
+        }
         const [newDay] = pickDaysEdgeFirst(candidates, 1)
         const newCtx = buildContext(newDay)
         const netHours = accumulated / 60
