@@ -7,6 +7,7 @@ export type DriverInput = {
   status: string // active | inactive | terminated
   qualifications: string[]
   unavailability: { start: Date; end: Date }[]
+  hireDate: Date | null
 }
 
 export type ExistingShiftInput = {
@@ -90,6 +91,7 @@ export function assignDriversToSlots(
 
   function isEligible(driver: DriverInput, slot: VehicleSlot, start: Date, end: Date): boolean {
     if (driver.status !== 'active') return false
+    if (driver.hireDate && start.getTime() < driver.hireDate.getTime()) return false
     if (slot.requiredQualification) {
       const quals = driver.qualifications.map((q) => q.toLowerCase())
       if (!quals.includes(slot.requiredQualification.toLowerCase())) return false
