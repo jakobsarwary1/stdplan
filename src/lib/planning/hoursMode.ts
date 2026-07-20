@@ -7,6 +7,7 @@ export type HoursTarget = {
   hireDate: string | null // "YYYY-MM-DD" - Tage davor dürfen keine Schicht erhalten (Fahrer noch nicht eingetreten)
   totalHours: number
   sundayHours: number
+  nightHours: number // Ziel-Stundenzahl in der Nachtzeit (20-06 Uhr), analog zu sundayHours - bestmöglich, keine Garantie auf exaktes Treffen
   commuteMinutes: number
   breakMinutesOverride: number | null // bewusst gewählte, längere Pause (z. B. Split-Shift) - nie unter das gesetzliche Minimum
   calculateExpenses: boolean // Spesen/Verpflegungsmehraufwand berechnen - erzwingt 8-10h Gesamtzeit; sonst nur 5-8h Netto ohne Gesamtzeit-Zwang
@@ -103,6 +104,21 @@ function sundayOverlapMinutes(startMin: number, endMin: number, weekday: number)
     const localEnd = Math.min(endMin, (dayIndex + 1) * 1440) - dayIndex * 1440
     const isSunday = (((weekday + dayIndex) % 7) + 7) % 7 === 0
     if (isSunday) total += localEnd - localStart
+    cursor = (dayIndex + 1) * 1440
+  }
+  return total
+}
+
+/** Wie viele Minuten von [startMin, endMin) auf die Nachtzeit (20-06 Uhr, kann mehrere Tage überspannen) fallen. */
+function nightOverlapMinutes(startMin: number, endMin: number): number {
+  let total = 0
+  let cursor = startMin
+  const ov = (a1: number, a2: number, b1: number, b2: number) => Math.max(0, Math.min(a2, b2) - Math.max(a1, b1))
+  while (cursor < endMin) {
+    const dayIndex = Math.floor(cursor / 1440)
+    const localStart = cursor - dayIndex * 1440
+    const localEnd = Math.min(endMin, (dayIndex + 1) * 1440) - dayIndex * 1440
+    total += ov(localStart, localEnd, 0, 360) + ov(localStart, localEnd, 1200, 1440)
     cursor = (dayIndex + 1) * 1440
   }
   return total
@@ -529,6 +545,22 @@ function generateHoursBasedScheduleAttempt(
     }
   }
 
+  // ---- Ziel-Nachtstunden (target.nightHours): eine Teilmenge der bereits
+  // gewählten Arbeitstage wird für nachtoptimierte Startzeiten vorgemerkt -
+  // analog zur Sonntagsstunden-Zuteilung (max. 8 Std./Tag angenommen, da
+  // eine Schicht dieser Länge komplett ins 20-06-Uhr-Fenster passt). Nur
+  // FLEXIBLE Tage kommen infrage - Sonntage mit eigener dedizierter
+  // Stundenzuteilung werden ausgeschlossen, damit eine spätere Startzeit
+  // dort nicht in den Montag hinein "spillt" und die exakte Sonntagsstunden-
+  // Zuteilung verfälscht.
+  const nightTargetDates = new Set<string>()
+  if (target.nightHours > 0) {
+    const sundayDedicatedDates = new Set(minijobSundayHoursByDate ? Array.from(minijobSundayHoursByDate.keys()) : [])
+    const nightCandidatePool = chosenWeekdays.filter((d) => !sundayDedicatedDates.has(toDateStr(d)))
+    const numNightShifts = Math.max(1, Math.ceil(target.nightHours / 8))
+    pickDaysEdgeFirst(nightCandidatePool, Math.min(numNightShifts, nightCandidatePool.length)).forEach((d) => nightTargetDates.add(toDateStr(d)))
+  }
+
   // ---- Schritt 1: Pro gewähltem Tag zuerst die PAUSE bestimmen (hängt nur
   // vom Wochentag/Nachfrageprofil ab, nicht von der genauen Nettozeit),
   // daraus die tagesindividuelle 10h-Obergrenze für die Nettoarbeitszeit
@@ -547,7 +579,8 @@ function generateHoursBasedScheduleAttempt(
     const randomBreak = legalMinBreak + Math.floor(Math.random() * (randomBreakSteps + 1)) * 15
     let breakMinutes = target.breakMinutesOverride != null ? Math.max(target.breakMinutesOverride, legalMinBreak) : randomBreak
 
-    const lowestWindow = target.prioritizeDemand && !target.maximizeNight
+    const isNightTarget = nightTargetDates.has(toDateStr(day))
+    const lowestWindow = target.prioritizeDemand && !target.maximizeNight && !isNightTarget
       ? pickLowestDemandWindow(weekday, demandProfiles)
       : null
     if (lowestWindow) breakMinutes = Math.max(breakMinutes, Math.min(120, lowestWindow.durationMinutes))
@@ -800,12 +833,13 @@ function generateHoursBasedScheduleAttempt(
       const mustStayInDay = ctx.weekday === 6 && target.sundayHours > 0
       const searchLatest = mustStayInDay ? Math.max(0, 1440 - spanMinutes) : START_WINDOW.latest
 
+      const isNightTarget = nightTargetDates.has(ctx.dateStr)
       let bestStart = START_WINDOW.earliest
       let bestScore = -Infinity
       for (let cand = START_WINDOW.earliest; cand <= searchLatest; cand += 15) {
         const candStart = new Date(ctx.date.getFullYear(), ctx.date.getMonth(), ctx.date.getDate(), 0, cand, 0, 0)
         if (prevEnd && (candStart.getTime() - prevEnd.getTime()) / 3600000 < minRestHours) continue
-        const baseScore = target.maximizeNight
+        const baseScore = target.maximizeNight || isNightTarget
           // Echter Zuschlagswert (Sonntag 50 % + steuerfreie Nacht 40 % +
           // reguläre Nacht 25 %), optional zusätzlich leicht durch die
           // Nachfrage beeinflusst ("Nachfrage in der Großstadt
@@ -843,7 +877,7 @@ function generateHoursBasedScheduleAttempt(
       }
       startMin = bestStart
 
-      if (target.maximizeNight || target.prioritizeDemand) {
+      if (target.maximizeNight || target.prioritizeDemand || isNightTarget) {
         // Pause WERTSENSITIV platzieren: unter allen zulässigen Positionen
         // (2-6 Std. nach Schichtbeginn, wie gesetzlich üblich) diejenige
         // wählen, die den GERINGSTEN Zuschlagswert verliert - z. B. eine
@@ -1103,6 +1137,20 @@ function generateHoursBasedScheduleAttempt(
       if (idx === -1) break
       shifts.splice(idx, 1)
       warnings.push(`${violatingDate}: Schicht wieder freigegeben, um die gesetzliche Obergrenze von 6 aufeinanderfolgenden Arbeitstagen einzuhalten.`)
+    }
+  }
+
+  if (target.nightHours > 0) {
+    const deliveredNightMinutes = shifts.reduce((sum, s) => {
+      let mins = nightOverlapMinutes(s.startMin, s.endMin)
+      s.breaks.forEach((b) => {
+        mins -= nightOverlapMinutes(s.startMin + b.start, s.startMin + b.end)
+      })
+      return sum + mins
+    }, 0)
+    const deliveredNightHours = deliveredNightMinutes / 60
+    if (Math.abs(deliveredNightHours - target.nightHours) > 0.5) {
+      warnings.push(`Nachtstunden-Ziel (${target.nightHours}) konnte nicht exakt erreicht werden (${deliveredNightHours.toFixed(2)} Std. generiert) - vermutlich reichen die verfügbaren Tage/Zeitfenster dafür nicht aus.`)
     }
   }
 
