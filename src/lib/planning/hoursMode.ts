@@ -1111,14 +1111,21 @@ function generateHoursBasedScheduleAttempt(
 
 /**
  * Öffentlicher Einstiegspunkt: versucht bei gesetztem Spesen-Tage-Ziel
- * automatisch mit steigender Anzahl freier Tage (4 -> 5 -> 6 -> 7 - der bei
- * Vollzeit, > 129 Std./Monat, zulässige Gesamtbereich), falls das Ziel mit
- * weniger freien Tagen nicht erreichbar ist - mehr freie Tage bei gleicher
- * Gesamtstundenzahl bedeuten mehr Stunden pro Arbeitstag, was das Erreichen
- * der 8h-Spesen-Grenze an mehr Tagen erleichtert. Wählt das erste Ergebnis,
- * das das Spesen-Ziel exakt trifft, sonst das mit der geringsten Abweichung
- * (bei Gleichstand die mit weniger freien Tagen, da 4 näher am bevorzugten
- * Zielbereich liegt).
+ * automatisch mehrere Kombinationen aus freier-Tage-Untergrenze (4 -> 5 -> 6
+ * -> 7 - der bei Vollzeit, > 129 Std./Monat, zulässige Gesamtbereich) und
+ * (wegen der Zufallselemente in der Tagesauswahl/Pausenlänge) je zwei
+ * Wiederholungen pro Stufe. Mehr freie Tage bei gleicher Gesamtstundenzahl
+ * bedeuten mehr Stunden pro Arbeitstag, was das Erreichen der 8h-Spesen-
+ * Grenze an mehr Tagen erleichtert - ist aber NICHT garantiert monoton
+ * (unterschiedliche Zufallsauswahl je Versuch), daher die Wiederholungen.
+ *
+ * Auswahl: Von allen Versuchen, die (bei Vollzeit) das Freie-Tage-Ziel
+ * (<= 7) einhalten, wird der mit der geringsten Abweichung vom Spesen-Ziel
+ * gewählt - ein Versuch, der zwar näher am Spesen-Ziel liegt, aber das
+ * Freie-Tage-Ziel verfehlt, wird NICHT bevorzugt, wenn ein anderer Versuch
+ * beide Ziele besser vereint. Erfüllt keiner der Versuche das Freie-Tage-
+ * Ziel, wird unter allen Versuchen der mit der geringsten Spesen-Abweichung
+ * gewählt (bei Gleichstand der mit den wenigsten freien Tagen).
  */
 export function generateHoursBasedSchedule(
   year: number,
@@ -1135,21 +1142,29 @@ export function generateHoursBasedSchedule(
   }
 
   const spesenTarget = Math.round(target.spesenDaysTarget)
-  let best: { shifts: HoursShift[]; warning: string | null } | null = null
-  let bestGap = Infinity
+  const allDaysCount = daysInMonth(year, month0).filter(
+    (d) => !blockedDates.has(toDateStr(d)) && (!target.hireDate || toDateStr(d) >= target.hireDate)
+  ).length
+  const freeDaysOk = (workDays: number) => target.totalHours <= 129 || allDaysCount - workDays <= 7
+
+  const candidates: { attempt: { shifts: HoursShift[]; warning: string | null }; gap: number; freeDays: number }[] = []
 
   for (const floor of [4, 5, 6, 7]) {
-    const attempt = generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, floor)
-    const qualifyingDays = attempt.shifts.filter((s) => s.netHours + s.breakMinutes / 60 + s.commuteMinutes / 60 >= 7.99).length
-    const gap = Math.abs(qualifyingDays - spesenTarget)
-    if (gap === 0) return attempt // Ziel exakt getroffen, kein weiterer Versuch nötig
-    if (gap < bestGap) {
-      bestGap = gap
-      best = attempt
+    for (let retry = 0; retry < 2; retry++) {
+      const attempt = generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, floor)
+      const qualifyingDays = attempt.shifts.filter((s) => s.netHours + s.breakMinutes / 60 + s.commuteMinutes / 60 >= 7.99).length
+      const gap = Math.abs(qualifyingDays - spesenTarget)
+      const freeDays = allDaysCount - attempt.shifts.length
+      if (gap === 0 && freeDaysOk(attempt.shifts.length)) return attempt // beide Ziele exakt getroffen, kein weiterer Versuch nötig
+      candidates.push({ attempt, gap, freeDays })
     }
   }
 
-  return best ?? generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, 5)
+  const withinFreeDaysTarget = candidates.filter((c) => freeDaysOk(allDaysCount - c.freeDays))
+  const pool = withinFreeDaysTarget.length > 0 ? withinFreeDaysTarget : candidates
+  pool.sort((a, b) => (a.gap !== b.gap ? a.gap - b.gap : a.freeDays - b.freeDays))
+
+  return pool[0]?.attempt ?? generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, 5)
 }
 
 const LEVEL_WEIGHT_FOR_BREAK: Record<string, number> = { niedrig: 0.5, mittel: 1, hoch: 1.5, sehr_hoch: 2 }
