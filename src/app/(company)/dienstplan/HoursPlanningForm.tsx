@@ -14,11 +14,13 @@ const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'A
  * Berechnet je Fahrer die tatsächlich gearbeiteten Stunden (Pause
  * ausgenommen) und ordnet sie den steuerlichen Zuschlagskategorien nach
  * § 3b EStG zu: 25 % für 20-24 Uhr und 04-06 Uhr, 40 % (steuerfrei) für
- * 00-04 Uhr, 50 % für Sonntagsarbeit. Zuschläge sind kumulativ (eine
- * Sonntagsnachtstunde zählt für beide Kategorien), daher separate Summen.
+ * 00-04 Uhr, 50 % für Sonntagsarbeit, 125 % für Feiertagsarbeit. Zuschläge
+ * sind kumulativ (eine Sonntagsnachtstunde zählt für beide Kategorien),
+ * daher separate Summen. Fällt ein Feiertag auf einen Sonntag, zählt die
+ * Stunde NUR beim Sonntagszuschlag (höherwertig, kein Doppelzählen).
  */
-function computeSurcharges(rows: import('./actions').HoursPreviewRow[]) {
-  let totalNet = 0, night25 = 0, night40 = 0, sunday50 = 0
+function computeSurcharges(rows: import('./actions').HoursPreviewRow[], holidayDates: Set<string> = new Set()) {
+  let totalNet = 0, night25 = 0, night40 = 0, sunday50 = 0, holiday125 = 0
 
   rows.filter((r) => !r.isFree && r.startMin != null && r.endMin != null && r.breaks).forEach((r) => {
     const [y, m, d] = r.date.split('-').map(Number)
@@ -48,16 +50,26 @@ function computeSurcharges(rows: import('./actions').HoursPreviewRow[]) {
         const segStartMin = (cursor.getTime() - dayBase.getTime()) / 60000
         const segEndMin = (segEnd.getTime() - dayBase.getTime()) / 60000
         const isSunday = dayBase.getDay() === 0
+        const dateStr = `${dayBase.getFullYear()}-${String(dayBase.getMonth() + 1).padStart(2, '0')}-${String(dayBase.getDate()).padStart(2, '0')}`
+        const isHoliday = holidayDates.has(dateStr)
         const ov = (a1: number, a2: number, b1: number, b2: number) => Math.max(0, Math.min(a2, b2) - Math.max(a1, b1))
         night40 += ov(segStartMin, segEndMin, 0, 240) / 60
         night25 += (ov(segStartMin, segEndMin, 240, 360) + ov(segStartMin, segEndMin, 1200, 1440)) / 60
         if (isSunday) sunday50 += (segEndMin - segStartMin) / 60
+        else if (isHoliday) holiday125 += (segEndMin - segStartMin) / 60
         cursor = segEnd
       }
     })
   })
 
-  return { totalNet, night25, night40, sunday50 }
+  return { totalNet, night25, night40, sunday50, holiday125 }
+}
+
+/** Parst eine kommagetrennte Liste von Feiertagsdaten ("YYYY-MM-DD, YYYY-MM-DD") zu einem Set. */
+function parseHolidayDates(input: string): Set<string> {
+  return new Set(
+    input.split(',').map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s))
+  )
 }
 
 /**
@@ -69,7 +81,7 @@ function computeSurcharges(rows: import('./actions').HoursPreviewRow[]) {
  * Bruttolohn (Nettostunden × hinterlegter Stundenlohn, OHNE Zuschläge -
  * echte Lohnabrechnung mit Zuschlägen folgt in einer späteren Phase).
  */
-function computeExtendedStats(rows: import('./actions').HoursPreviewRow[]) {
+function computeExtendedStats(rows: import('./actions').HoursPreviewRow[], holidayDates: Set<string> = new Set()) {
   const freeDays = rows.filter((r) => r.isFree).length
   const workDays = rows.filter((r) => !r.isFree)
   // Spesen (Verpflegungsmehraufwand) stehen gesetzlich erst ab einer
@@ -86,11 +98,14 @@ function computeExtendedStats(rows: import('./actions').HoursPreviewRow[]) {
   const hourlyRate = workDays.find((r) => r.hourlyRate != null)?.hourlyRate ?? null
   // Bruttolohn = Grundlohn (alle Netto-Std. × Stundenlohn) PLUS
   // Sonntagszuschlag 50 % auf die tatsächlich am Sonntag geleisteten
-  // Stunden (zusätzlich zum ohnehin bereits enthaltenen Grundlohn für
-  // diese Stunden) - Nachtzuschläge bleiben hier bewusst außen vor, da sie
-  // steuerfrei sind und separat ausgewiesen werden.
-  const { sunday50 } = computeSurcharges(workDays)
-  const grossWage = hourlyRate != null ? totalNetHours * hourlyRate + sunday50 * hourlyRate * 0.5 : null
+  // Stunden PLUS Feiertagszuschlag 125 % auf die tatsächlich an Feiertagen
+  // geleisteten Stunden (zusätzlich zum ohnehin bereits enthaltenen
+  // Grundlohn für diese Stunden) - Nachtzuschläge bleiben hier bewusst
+  // außen vor, da sie steuerfrei sind und separat ausgewiesen werden.
+  const { sunday50, holiday125 } = computeSurcharges(workDays, holidayDates)
+  const grossWage = hourlyRate != null
+    ? totalNetHours * hourlyRate + sunday50 * hourlyRate * 0.5 + holiday125 * hourlyRate * 1.25
+    : null
   return { freeDays, spesenDays, spesenAmount, grossWage, hourlyRate }
 }
 
@@ -102,8 +117,9 @@ function Submit() {
 async function downloadPdf(
   rows: import('./actions').HoursPreviewRow[],
   title: string,
-  options: { driverNames: string[]; includeFreeDays: boolean; includeSummary: boolean; columns: string[] }
+  options: { driverNames: string[]; includeFreeDays: boolean; includeSummary: boolean; columns: string[]; holidayDates: Set<string> }
 ) {
+  const { holidayDates } = options
   const filteredRows = rows.filter((r) => options.driverNames.includes(r.driverName) && (options.includeFreeDays || !r.isFree))
   const sorted = [...filteredRows].sort((a, b) => a.driverName.localeCompare(b.driverName) || a.date.localeCompare(b.date))
 
@@ -150,11 +166,11 @@ async function downloadPdf(
         start: '', end: '', breakLabel: '', breakMinutes: 0, commuteMinutes: 0,
         netHours: 0, totalHours: 0,
         vehiclePlate: '',
-        night25: 0, night40: 0, sunday50: 0,
+        night25: 0, night40: 0, sunday50: 0, holiday125: 0,
         isFree: true
       }
     }
-    const day = computeSurcharges([r])
+    const day = computeSurcharges([r], holidayDates)
     return {
       driverName: r.driverName,
       date: fmtDateDEWithWeekday(r.date),
@@ -169,6 +185,7 @@ async function downloadPdf(
       night25: day.night25,
       night40: day.night40,
       sunday50: day.sunday50,
+      holiday125: day.holiday125,
       isFree: false
     }
   })
@@ -180,13 +197,13 @@ async function downloadPdf(
   const selectedDriverNames = options.driverNames
   const summaries = options.includeSummary
     ? selectedDriverNames.map((name) => {
-        const s = computeSurcharges(rows.filter((r) => r.driverName === name && !r.isFree))
-        const { grossWage } = computeExtendedStats(rows.filter((r) => r.driverName === name))
+        const s = computeSurcharges(rows.filter((r) => r.driverName === name && !r.isFree), holidayDates)
+        const { grossWage } = computeExtendedStats(rows.filter((r) => r.driverName === name), holidayDates)
         return { driverName: name, ...s, grossWage }
       })
     : []
   if (options.includeSummary && selectedDriverNames.length > 1) {
-    const combined = computeSurcharges(rows.filter((r) => selectedDriverNames.includes(r.driverName) && !r.isFree))
+    const combined = computeSurcharges(rows.filter((r) => selectedDriverNames.includes(r.driverName) && !r.isFree), holidayDates)
     const combinedGrossWage = summaries.reduce((sum, s) => (s.grossWage != null ? sum + s.grossWage : sum), 0)
     const anyHasWage = summaries.some((s) => s.grossWage != null)
     summaries.push({ driverName: 'Gesamt (alle Fahrer)', ...combined, grossWage: anyHasWage ? combinedGrossWage : null })
@@ -243,12 +260,13 @@ const PDF_COLUMN_OPTIONS = [
   { key: 'nacht25', label: 'Nacht 25 %' },
   { key: 'nacht40', label: 'Nacht 40 %' },
   { key: 'sonntag50', label: 'Sonntag 50 %' },
+  { key: 'feiertag125', label: 'Feiertag 125 %' },
   { key: 'fahrzeug', label: 'Fahrzeug' }
 ] as const
 type PdfColumnKey = typeof PDF_COLUMN_OPTIONS[number]['key']
 const DEFAULT_PDF_COLUMNS: PdfColumnKey[] = ['pause', 'gesamt']
 
-function PdfExportPanel({ rows }: { rows: import('./actions').HoursPreviewRow[] }) {
+function PdfExportPanel({ rows, holidayDates }: { rows: import('./actions').HoursPreviewRow[]; holidayDates: Set<string> }) {
   const allDriverNames = Array.from(new Set(rows.map((r) => r.driverName)))
   const [open, setOpen] = useState(false)
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>(allDriverNames)
@@ -311,7 +329,7 @@ function PdfExportPanel({ rows }: { rows: import('./actions').HoursPreviewRow[] 
         <Button
           type="button"
           disabled={selectedDrivers.length === 0}
-          onClick={() => downloadPdf(rows, 'Dienstplan', { driverNames: selectedDrivers, includeFreeDays, includeSummary, columns: selectedColumns })}
+          onClick={() => downloadPdf(rows, 'Dienstplan', { driverNames: selectedDrivers, includeFreeDays, includeSummary, columns: selectedColumns, holidayDates })}
         >
           PDF erstellen
         </Button>
@@ -403,6 +421,8 @@ export function HoursPlanningForm({
   defaultMonth: number
 }) {
   const [state, formAction] = useFormState(previewHoursPlanning, INITIAL_STATE)
+  const [holidayDatesInput, setHolidayDatesInput] = useState('')
+  const holidayDates = parseHolidayDates(holidayDatesInput)
 
   return (
     <Card className="mb-6">
@@ -439,6 +459,21 @@ export function HoursPlanningForm({
           </div>
         </div>
 
+        <div className="field">
+          <label className="label">Feiertage im Monat (Datum, kommagetrennt)</label>
+          <input
+            type="text"
+            className="input"
+            placeholder="z. B. 2026-04-03, 2026-05-01"
+            value={holidayDatesInput}
+            onChange={(e) => setHolidayDatesInput(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-textMuted">
+            Wirkt nur auf die Zuschlagsanzeige (Feiertagszuschlag 125 %) unten und im PDF - hat keinen Einfluss
+            auf die Tagesauswahl/Verteilung selbst. Format: YYYY-MM-DD, mehrere durch Komma getrennt.
+          </p>
+        </div>
+
         <DriverFields index={1} drivers={drivers} />
 
         <details className="mt-6 rounded-xl border border-border">
@@ -466,15 +501,15 @@ export function HoursPlanningForm({
             <input type="hidden" name="vehicleId" value={state.vehicleId} />
             <input type="hidden" name="shiftsJson" value={JSON.stringify(state.shifts)} />
             <ApplySubmit />
-            <PdfExportPanel rows={state.shifts} />
+            <PdfExportPanel rows={state.shifts} holidayDates={holidayDates} />
           </form>
 
           <div className="mt-6">
             <Badge tone="success">{state.shifts.filter((s) => !s.isFree).length} Schichten erzeugt</Badge>
 
             {Array.from(new Set(state.shifts.map((s) => s.driverName))).map((name) => {
-            const { totalNet, night25, night40, sunday50 } = computeSurcharges(state.shifts.filter((s) => s.driverName === name))
-            const { freeDays, spesenDays, spesenAmount, grossWage, hourlyRate } = computeExtendedStats(state.shifts.filter((s) => s.driverName === name))
+            const { totalNet, night25, night40, sunday50, holiday125 } = computeSurcharges(state.shifts.filter((s) => s.driverName === name), holidayDates)
+            const { freeDays, spesenDays, spesenAmount, grossWage, hourlyRate } = computeExtendedStats(state.shifts.filter((s) => s.driverName === name), holidayDates)
             return (
               <div key={name} className="mt-4 rounded-lg border border-border p-3 text-sm">
                 <p className="mb-2 font-semibold">{name} – Monatszusammenfassung</p>
@@ -483,6 +518,7 @@ export function HoursPlanningForm({
                   <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{night25.toFixed(2)} h</span></div>
                   <div><span className="text-textMuted">Nachtzuschlag 40 % steuerfrei</span><br /><span className="font-mono text-sm">{night40.toFixed(2)} h</span></div>
                   <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{sunday50.toFixed(2)} h</span></div>
+                  <div><span className="text-textMuted">Feiertagszuschlag 125 %</span><br /><span className="font-mono text-sm">{holiday125.toFixed(2)} h</span></div>
                   <div><span className="text-textMuted">Freie Tage</span><br /><span className="font-mono text-sm">{freeDays}</span></div>
                   <div><span className="text-textMuted">Spesen-Tage</span><br /><span className="font-mono text-sm">{spesenDays}</span></div>
                   <div><span className="text-textMuted">Spesen gesamt (14 €/Tag)</span><br /><span className="font-mono text-sm">{spesenAmount.toFixed(2)} €</span></div>
@@ -493,7 +529,7 @@ export function HoursPlanningForm({
                 </div>
                 {hourlyRate != null && (
                   <p className="mt-2 text-[10px] text-textMuted">
-                    Bruttolohn geschätzt aus {totalNet.toFixed(2)} Std. × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % - Nachtzuschläge (steuerfrei) und Spesen sind hier nicht enthalten.
+                    Bruttolohn geschätzt aus {totalNet.toFixed(2)} Std. × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % und Feiertagszuschlag 125 % - Nachtzuschläge (steuerfrei) und Spesen sind hier nicht enthalten.
                   </p>
                 )}
               </div>
@@ -501,7 +537,7 @@ export function HoursPlanningForm({
           })}
 
           {Array.from(new Set(state.shifts.map((s) => s.driverName))).length > 1 && (() => {
-            const combined = computeSurcharges(state.shifts)
+            const combined = computeSurcharges(state.shifts, holidayDates)
             return (
               <div className="mt-4 rounded-lg border border-accent/40 bg-accent/5 p-3 text-sm">
                 <p className="mb-2 font-semibold">Gesamt (beide Fahrer zusammen)</p>
@@ -510,6 +546,7 @@ export function HoursPlanningForm({
                   <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{combined.night25.toFixed(2)} h</span></div>
                   <div><span className="text-textMuted">Nachtzuschlag 40 % steuerfrei</span><br /><span className="font-mono text-sm">{combined.night40.toFixed(2)} h</span></div>
                   <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{combined.sunday50.toFixed(2)} h</span></div>
+                  <div><span className="text-textMuted">Feiertagszuschlag 125 %</span><br /><span className="font-mono text-sm">{combined.holiday125.toFixed(2)} h</span></div>
                 </div>
               </div>
             )
@@ -522,29 +559,31 @@ export function HoursPlanningForm({
                 <th className="pb-2">Bis</th><th className="pb-2">Pause</th><th className="pb-2">Weg</th>
                 <th className="pb-2">Netto</th><th className="pb-2">Gesamt</th>
                 <th className="pb-2">Nacht 25%</th><th className="pb-2">Nacht 40%</th><th className="pb-2">Sonntag 50%</th>
+                <th className="pb-2">Feiertag 125%</th>
               </tr>
             </thead>
             <tbody>
               {state.shifts.map((s, i) => {
+                const isHoliday = holidayDates.has(s.date)
                 if (s.isFree) {
                   return (
                     <tr key={i} className="border-t border-border text-textMuted">
                       <td className="py-2 font-medium">{s.driverName}</td>
                       <td className="py-2 font-mono">
-                        {s.isSunday && '☀️ '}{fmtDateDEWithWeekday(s.date)}
+                        {s.isSunday && '☀️ '}{isHoliday && '🎉 '}{fmtDateDEWithWeekday(s.date)}
                       </td>
-                      <td className="py-2 italic" colSpan={9}>frei</td>
+                      <td className="py-2 italic" colSpan={10}>frei</td>
                     </tr>
                   )
                 }
                 const totalHours = (s.netHours ?? 0) + (s.breakMinutes ?? 0) / 60 + (s.commuteMinutes ?? 0) / 60
-                const day = computeSurcharges([s])
+                const day = computeSurcharges([s], holidayDates)
                 const fmtHrs = (h: number) => (h > 0.005 ? h.toFixed(2) + ' h' : '–')
                 return (
                   <tr key={i} className="border-t border-border">
                     <td className="py-2 font-medium">{s.driverName}</td>
                     <td className="py-2 font-mono">
-                      {s.isSunday && '☀️ '}{s.isNightShift && '🌙 '}{fmtDateDEWithWeekday(s.date)}
+                      {s.isSunday && '☀️ '}{isHoliday && '🎉 '}{s.isNightShift && '🌙 '}{fmtDateDEWithWeekday(s.date)}
                     </td>
                     <td className="py-2 font-mono">{minToClock(s.startMin!)}</td>
                     <td className="py-2 font-mono">{minToClock(s.endMin!)}</td>
@@ -555,6 +594,7 @@ export function HoursPlanningForm({
                     <td className="py-2 font-mono">{fmtHrs(day.night25)}</td>
                     <td className="py-2 font-mono">{fmtHrs(day.night40)}</td>
                     <td className="py-2 font-mono">{fmtHrs(day.sunday50)}</td>
+                    <td className="py-2 font-mono">{fmtHrs(day.holiday125)}</td>
                   </tr>
                 )
               })}
