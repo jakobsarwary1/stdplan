@@ -839,13 +839,15 @@ function generateHoursBasedScheduleAttempt(
     } else {
       const randomPreferredStart = 5 * 60 + Math.floor(Math.random() * 4 * 60) // 05:00-09:00, zufällig
 
-      // Samstagsschichten dürfen NICHT in den Sonntag hineinreichen, wenn
-      // bereits eine eigene Sonntagsstunden-Menge vorgegeben ist (target.
-      // sundayHours > 0) - sonst würde die Gesamt-Sonntagszuschlagszeit
-      // über den vom Nutzer festgelegten Wert hinausgehen (dedizierte
-      // Sonntagsschichten + Samstags-Überlauf zusammengerechnet). Der
-      // eingegebene Wert ist eine harte Obergrenze, keine Zielgröße.
-      const mustStayInDay = ctx.weekday === 6 && target.sundayHours > 0
+      // Samstagsschichten dürfen NIE in den Sonntag hineinreichen - dieser
+      // Überlauf wird nirgends im sundayHours-Budget berücksichtigt
+      // (Sonntagsstunden entstehen in diesem Zweig AUSSCHLIESSLICH über die
+      // dedizierten Sonntagsschichten, siehe minijobSundayHoursByDate).
+      // Ohne diese Schranke könnte selbst bei sundayHours = 0 (der Nutzer
+      // will explizit KEINE Sonntagsarbeit) eine ungewollte Sonntagsstunde
+      // entstehen, z. B. wenn "Nachtzuschläge maximieren" den Samstag auf
+      // eine sehr späte Startzeit schiebt, die über Mitternacht hinausläuft.
+      const mustStayInDay = ctx.weekday === 6
       const searchLatest = mustStayInDay ? Math.max(0, 1440 - spanMinutes) : START_WINDOW.latest
 
       const isNightTarget = nightTargetDates.has(ctx.dateStr)
