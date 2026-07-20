@@ -1086,13 +1086,14 @@ function generateHoursBasedScheduleAttempt(
 
 /**
  * Öffentlicher Einstiegspunkt: versucht bei gesetztem Spesen-Tage-Ziel
- * automatisch mit steigender Anzahl freier Tage (5 -> 6 -> 7), falls das
- * Ziel mit weniger freien Tagen nicht erreichbar ist - mehr freie Tage bei
- * gleicher Gesamtstundenzahl bedeuten mehr Stunden pro Arbeitstag, was das
- * Erreichen der 8h-Spesen-Grenze an mehr Tagen erleichtert. Wählt das erste
- * Ergebnis, das das Spesen-Ziel exakt trifft, sonst das mit der geringsten
- * Abweichung (bei Gleichstand die mit weniger freien Tagen, da 4-5 näher
- * am bevorzugten Zielbereich liegt).
+ * automatisch mit steigender Anzahl freier Tage (4 -> 5 -> 6 -> 7 - der bei
+ * Vollzeit, > 129 Std./Monat, zulässige Gesamtbereich), falls das Ziel mit
+ * weniger freien Tagen nicht erreichbar ist - mehr freie Tage bei gleicher
+ * Gesamtstundenzahl bedeuten mehr Stunden pro Arbeitstag, was das Erreichen
+ * der 8h-Spesen-Grenze an mehr Tagen erleichtert. Wählt das erste Ergebnis,
+ * das das Spesen-Ziel exakt trifft, sonst das mit der geringsten Abweichung
+ * (bei Gleichstand die mit weniger freien Tagen, da 4 näher am bevorzugten
+ * Zielbereich liegt).
  */
 export function generateHoursBasedSchedule(
   year: number,
@@ -1112,7 +1113,7 @@ export function generateHoursBasedSchedule(
   let best: { shifts: HoursShift[]; warning: string | null } | null = null
   let bestGap = Infinity
 
-  for (const floor of [5, 6, 7]) {
+  for (const floor of [4, 5, 6, 7]) {
     const attempt = generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, floor)
     const qualifyingDays = attempt.shifts.filter((s) => s.netHours + s.breakMinutes / 60 + s.commuteMinutes / 60 >= 7.99).length
     const gap = Math.abs(qualifyingDays - spesenTarget)
