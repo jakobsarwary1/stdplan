@@ -62,7 +62,8 @@ export async function previewAutoPlanning(
         lastName: d.lastName,
         status: d.status,
         qualifications: d.qualifications,
-        unavailability: d.unavailability.map((u) => ({ start: u.start, end: u.end }))
+        unavailability: d.unavailability.map((u) => ({ start: u.start, end: u.end })),
+        hireDate: d.hireDate
       }))
 
       const existingShifts: ExistingShiftInput[] = existingShiftsRaw.map((s) => ({
@@ -304,6 +305,7 @@ export async function previewHoursPlanning(
       const driverNameById = new Map(drivers.map((d) => [d.id, `${d.firstName} ${d.lastName}`]))
       const driverRateById = new Map(drivers.map((d) => [d.id, d.hourlyRate ?? null]))
       const driverEmployeeNumberById = new Map(drivers.map((d) => [d.id, d.employeeNumber ?? null]))
+      const driverHireDateById = new Map(drivers.map((d) => [d.id, d.hireDate ? d.hireDate.toISOString().slice(0, 10) : null]))
       const blockedDates = new Set<string>()
       const warnings: string[] = []
       const allRows: HoursPreviewRow[] = []
@@ -321,8 +323,9 @@ export async function previewHoursPlanning(
         const name = driverNameById.get(t.driverId) ?? '—'
         const rate = driverRateById.get(t.driverId) ?? null
         const employeeNumber = driverEmployeeNumberById.get(t.driverId) ?? null
+        const hireDate = driverHireDateById.get(t.driverId) ?? null
         const { shifts, warning } = generateHoursBasedSchedule(
-          year, month - 1, { ...t, driverName: name },
+          year, month - 1, { ...t, driverName: name, hireDate },
           blockedDates, nightStart, nightEnd, minRestHours, demandProfiles
         )
         if (warning) warnings.push(`${name}: ${warning}`)

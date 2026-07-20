@@ -4,6 +4,7 @@ import { demandScore, type DemandProfileInput } from './demand'
 export type HoursTarget = {
   driverId: string
   driverName: string
+  hireDate: string | null // "YYYY-MM-DD" - Tage davor dürfen keine Schicht erhalten (Fahrer noch nicht eingetreten)
   totalHours: number
   sundayHours: number
   commuteMinutes: number
@@ -311,7 +312,9 @@ function generateHoursBasedScheduleAttempt(
 ): { shifts: HoursShift[]; warning: string | null } {
   const commuteMinutes = target.commuteMinutes > 0 ? target.commuteMinutes : DEFAULT_COMMUTE_MINUTES
 
-  const allDays = daysInMonth(year, month0).filter((d) => !blockedDates.has(toDateStr(d)))
+  const allDays = daysInMonth(year, month0).filter(
+    (d) => !blockedDates.has(toDateStr(d)) && (!target.hireDate || toDateStr(d) >= target.hireDate)
+  )
 
   // ---- Anzahl benötigter Tage grob schätzen (für die Tagesauswahl) ----
   // Bei Vollzeit (Spesen aktiv ODER Gesamtstundenziel >= 100 Std./Monat)
@@ -882,7 +885,10 @@ function generateHoursBasedScheduleAttempt(
     const MAX_FREE_DAYS = 7
     const TARGET_FREE_DAYS = targetFreeDaysFloor // Priorität: möglichst im gewünschten Zielbereich landen, nicht nur irgendwo unter 7
     const MIN_SHIFT_FLOOR_CANDIDATES = [BASE_MIN_NET, 4, 3.5] // Std., der Reihe nach versucht
-    const monthDays = daysInMonth(year, month0)
+    // NICHT der komplette Kalendermonat, sondern nur die für diesen Fahrer
+    // überhaupt zulässigen Tage (ab Eintrittsdatum) - sonst könnten hier
+    // Tage vor dem Eintritt mit einer Schicht "aufgefüllt" werden.
+    const monthDays = allDays
 
     function freeDates(): Date[] {
       const workingDateStrs = new Set(shifts.map((s) => s.date))
