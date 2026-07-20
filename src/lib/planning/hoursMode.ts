@@ -930,10 +930,24 @@ function generateHoursBasedScheduleAttempt(
         const reductions: { shift: HoursShift; amountMinutes: number }[] = []
         for (const donor of donors) {
           if (accumulated >= neededMinutes) break
-          const maxReducibleMinutes = Math.floor((donor.netHours * 60 - floorMinutes) / 30) * 30
+          // Die Kürzung darf nicht in die Pause hineinreichen - sonst
+          // stimmen die (angezeigten) Uhrzeiten nicht mehr mit der
+          // gekürzten Nettozeit überein.
+          const lastBreakEnd = donor.breaks.length > 0 ? donor.breaks[donor.breaks.length - 1].end : 0
+          const spareAfterBreak = Math.max(0, (donor.endMin - donor.startMin) - lastBreakEnd)
+          const maxReducibleMinutes = Math.min(
+            Math.floor((donor.netHours * 60 - floorMinutes) / 30) * 30,
+            Math.floor(spareAfterBreak / 30) * 30
+          )
           const take = Math.min(maxReducibleMinutes, neededMinutes - accumulated)
           if (take <= 0) continue
           donor.netHours = Math.round((donor.netHours - take / 60) * 100) / 100
+          // Uhrzeiten (endMin) MÜSSEN mit der reduzierten Nettozeit Schritt
+          // halten - sonst zeigen Vorschau/PDF/Zuschlagsberechnung (die aus
+          // startMin/endMin/breakMinutes ableiten, nicht aus netHours) nach
+          // wie vor die ungekürzte, längere Schicht an und die Monatssumme
+          // läuft der eingegebenen Stundenzahl davon.
+          donor.endMin -= take
           accumulated += take
           reductions.push({ shift: donor, amountMinutes: take })
         }
@@ -945,6 +959,7 @@ function generateHoursBasedScheduleAttempt(
           // Mindestgröße versuchen.
           reductions.forEach(({ shift, amountMinutes }) => {
             shift.netHours = Math.round((shift.netHours + amountMinutes / 60) * 100) / 100
+            shift.endMin += amountMinutes
           })
           break
         }
