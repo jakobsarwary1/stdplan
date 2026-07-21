@@ -131,38 +131,14 @@ async function downloadExcel(
     ? new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(new Date(firstDate + 'T00:00:00'))
     : ''
 
-  // Zusammenhängende freie Tage (pro Fahrer, aufeinanderfolgende
-  // Kalendertage) zu EINER Zeile zusammenfassen statt jeden Tag einzeln
-  // aufzulisten - spart massiv Papier bei Fahrern mit vielen freien Tagen.
-  type MergedFree = { driverName: string; fromDate: string; toDate: string; isFree: true; dayCount: number }
-  type MergedWork = import('./actions').HoursPreviewRow & { isFree: false }
-  const merged: (MergedFree | MergedWork)[] = []
-
-  sorted.forEach((r) => {
-    if (!r.isFree) {
-      merged.push(r as MergedWork)
-      return
-    }
-    const last = merged[merged.length - 1]
-    const prevDay = new Date(r.date)
-    prevDay.setDate(prevDay.getDate() - 1)
-    const prevDateStr = `${prevDay.getFullYear()}-${String(prevDay.getMonth() + 1).padStart(2, '0')}-${String(prevDay.getDate()).padStart(2, '0')}`
-    if (last && last.isFree && last.driverName === r.driverName && last.toDate === prevDateStr) {
-      last.toDate = r.date
-      last.dayCount += 1
-    } else {
-      merged.push({ driverName: r.driverName, fromDate: r.date, toDate: r.date, isFree: true, dayCount: 1 })
-    }
-  })
-
-  const pdfRows = merged.map((r) => {
+  // Jeder Tag (auch freie Tage) wird als EIGENE Zeile ausgegeben -
+  // freie Tage werden bewusst NICHT zu einem Zeitraum zusammengefasst,
+  // damit in der Excel-Datei wirklich jeder Kalendertag einzeln erscheint.
+  const pdfRows = sorted.map((r) => {
     if (r.isFree) {
-      const label = r.dayCount === 1
-        ? `frei (${fmtDateDEWithWeekday(r.fromDate)})`
-        : `frei: ${fmtDateDEWithWeekday(r.fromDate)} bis ${fmtDateDEWithWeekday(r.toDate)} (${r.dayCount} Tage)`
       return {
         driverName: r.driverName,
-        date: label,
+        date: `frei (${fmtDateDEWithWeekday(r.date)})`,
         start: '', end: '', breakLabel: '', breakMinutes: 0, commuteMinutes: 0,
         netHours: 0, totalHours: 0,
         vehiclePlate: '',
