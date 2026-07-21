@@ -1179,6 +1179,61 @@ function generateHoursBasedScheduleAttempt(
     }
   }
 
+  // ---- Finale Ruhezeit-Prüfung (§ 5 ArbZG: mind. `minRestHours` Std.
+  // zwischen zwei Schichten) ---- Fängt jede Verletzung ab, egal wodurch sie
+  // entstanden ist: die feste Wochenend-Vorlage (feste Startzeiten ohne
+  // Ruhezeit-Prüfung), das nachträgliche Auffüllen freier Tage (zufällige
+  // Startzeit) oder die nachträgliche Pausen-Verlängerung (verschiebt das
+  // Schichtende). Die spätere Schicht wird so weit nach hinten geschoben,
+  // bis die Ruhezeit eingehalten ist (Nettozeit und Pausen bleiben dabei
+  // unverändert - nur die Uhrzeit verschiebt sich). Lässt sich das innerhalb
+  // desselben Kalendertags nicht mehr sinnvoll erreichen, wird die Schicht
+  // freigegeben (wie bei der 6-Tage-Regel), statt einen rechtswidrigen Plan
+  // auszugeben.
+  {
+    const shiftStartAbs = (s: HoursShift) => {
+      const [y, mo, d] = s.date.split('-').map(Number)
+      return new Date(y, mo - 1, d, 0, s.startMin, 0, 0).getTime()
+    }
+    const shiftEndAbs = (s: HoursShift) => {
+      const [y, mo, d] = s.date.split('-').map(Number)
+      return new Date(y, mo - 1, d, 0, s.endMin, 0, 0).getTime()
+    }
+    const minRestMs = minRestHours * 3600000
+    const MAX_START_MIN = 22 * 60 // spätestmögliche Startzeit, damit die Schicht am selben Kalendertag beginnt
+
+    let guard = 0
+    while (guard < 200) {
+      guard++
+      const ordered = [...shifts].sort((a, b) => shiftStartAbs(a) - shiftStartAbs(b))
+      let fixedSomething = false
+      for (let i = 1; i < ordered.length; i++) {
+        const prev = ordered[i - 1]
+        const curr = ordered[i]
+        const restMs = shiftStartAbs(curr) - shiftEndAbs(prev)
+        if (restMs >= minRestMs - 1000) continue // ok (kleine Toleranz gegen Rundung)
+
+        const deltaMin = Math.ceil((minRestMs - restMs) / 60000)
+        if (curr.startMin + deltaMin <= MAX_START_MIN) {
+          // Schicht als Ganzes nach hinten schieben - Pausen sind relativ zum
+          // Schichtbeginn gespeichert und bleiben dadurch korrekt.
+          curr.startMin += deltaMin
+          curr.endMin += deltaMin
+        } else {
+          // Nicht mehr sinnvoll verschiebbar - Schicht freigeben.
+          const idx = shifts.findIndex((s) => s.date === curr.date && s.startMin === curr.startMin && s.endMin === curr.endMin)
+          if (idx !== -1) {
+            shifts.splice(idx, 1)
+            warnings.push(`${curr.date}: Schicht freigegeben, um die gesetzliche Mindestruhezeit von ${minRestHours} Std. zwischen zwei Schichten einzuhalten.`)
+          }
+        }
+        fixedSomething = true
+        break
+      }
+      if (!fixedSomething) break
+    }
+  }
+
   if (target.nightHours > 0) {
     const deliveredNightMinutes = shifts.reduce((sum, s) => {
       let mins = nightOverlapMinutes(s.startMin, s.endMin)
