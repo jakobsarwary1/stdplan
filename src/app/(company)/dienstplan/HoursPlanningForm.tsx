@@ -198,15 +198,27 @@ async function downloadPdf(
   const summaries = options.includeSummary
     ? selectedDriverNames.map((name) => {
         const s = computeSurcharges(rows.filter((r) => r.driverName === name && !r.isFree), holidayDates)
-        const { grossWage } = computeExtendedStats(rows.filter((r) => r.driverName === name), holidayDates)
-        return { driverName: name, ...s, grossWage }
+        const { grossWage, hourlyRate } = computeExtendedStats(rows.filter((r) => r.driverName === name), holidayDates)
+        return {
+          driverName: name, ...s, grossWage,
+          night25Amount: hourlyRate != null ? s.night25 * hourlyRate * 0.25 : null,
+          night40Amount: hourlyRate != null ? s.night40 * hourlyRate * 0.4 : null,
+          sunday50Amount: hourlyRate != null ? s.sunday50 * hourlyRate * 0.5 : null,
+          holiday125Amount: hourlyRate != null ? s.holiday125 * hourlyRate * 1.25 : null
+        }
       })
     : []
   if (options.includeSummary && selectedDriverNames.length > 1) {
     const combined = computeSurcharges(rows.filter((r) => selectedDriverNames.includes(r.driverName) && !r.isFree), holidayDates)
     const combinedGrossWage = summaries.reduce((sum, s) => (s.grossWage != null ? sum + s.grossWage : sum), 0)
     const anyHasWage = summaries.some((s) => s.grossWage != null)
-    summaries.push({ driverName: 'Gesamt (alle Fahrer)', ...combined, grossWage: anyHasWage ? combinedGrossWage : null })
+    const sumField = (key: 'night25Amount' | 'night40Amount' | 'sunday50Amount' | 'holiday125Amount') =>
+      anyHasWage ? summaries.reduce((sum, s) => sum + (s[key] ?? 0), 0) : null
+    summaries.push({
+      driverName: 'Gesamt (alle Fahrer)', ...combined, grossWage: anyHasWage ? combinedGrossWage : null,
+      night25Amount: sumField('night25Amount'), night40Amount: sumField('night40Amount'),
+      sunday50Amount: sumField('sunday50Amount'), holiday125Amount: sumField('holiday125Amount')
+    })
   }
 
   try {
@@ -507,50 +519,67 @@ export function HoursPlanningForm({
           <div className="mt-6">
             <Badge tone="success">{state.shifts.filter((s) => !s.isFree).length} Schichten erzeugt</Badge>
 
-            {Array.from(new Set(state.shifts.map((s) => s.driverName))).map((name) => {
-            const { totalNet, night25, night40, sunday50, holiday125 } = computeSurcharges(state.shifts.filter((s) => s.driverName === name), holidayDates)
-            const { freeDays, spesenDays, spesenAmount, grossWage, hourlyRate } = computeExtendedStats(state.shifts.filter((s) => s.driverName === name), holidayDates)
-            return (
-              <div key={name} className="mt-4 rounded-lg border border-border p-3 text-sm">
-                <p className="mb-2 font-semibold">{name} – Monatszusammenfassung</p>
-                <div className="grid grid-cols-4 gap-3 text-xs">
-                  <div><span className="text-textMuted">Gesamt</span><br /><span className="font-mono text-sm">{totalNet.toFixed(2)} h</span></div>
-                  <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{night25.toFixed(2)} h</span></div>
-                  <div><span className="text-textMuted">Nachtzuschlag 40 % steuerfrei</span><br /><span className="font-mono text-sm">{night40.toFixed(2)} h</span></div>
-                  <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{sunday50.toFixed(2)} h</span></div>
-                  <div><span className="text-textMuted">Feiertagszuschlag 125 %</span><br /><span className="font-mono text-sm">{holiday125.toFixed(2)} h</span></div>
-                  <div><span className="text-textMuted">Freie Tage</span><br /><span className="font-mono text-sm">{freeDays}</span></div>
-                  <div><span className="text-textMuted">Spesen-Tage</span><br /><span className="font-mono text-sm">{spesenDays}</span></div>
-                  <div><span className="text-textMuted">Spesen gesamt (14 €/Tag)</span><br /><span className="font-mono text-sm">{spesenAmount.toFixed(2)} €</span></div>
-                  <div>
-                    <span className="text-textMuted">Lohn brutto (geschätzt)</span><br />
-                    <span className="font-mono text-sm">{grossWage != null ? `${grossWage.toFixed(2)} €` : '– kein Stundenlohn hinterlegt –'}</span>
-                  </div>
-                </div>
-                {hourlyRate != null && (
-                  <p className="mt-2 text-[10px] text-textMuted">
-                    Bruttolohn geschätzt aus {totalNet.toFixed(2)} Std. × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % und Feiertagszuschlag 125 % - Nachtzuschläge (steuerfrei) und Spesen sind hier nicht enthalten.
-                  </p>
-                )}
-              </div>
-            )
-          })}
+            {(() => {
+              const driverStats = Array.from(new Set(state.shifts.map((s) => s.driverName))).map((name) => {
+                const rows = state.shifts.filter((s) => s.driverName === name)
+                const surcharges = computeSurcharges(rows, holidayDates)
+                const extended = computeExtendedStats(rows, holidayDates)
+                return { name, ...surcharges, ...extended }
+              })
 
-          {Array.from(new Set(state.shifts.map((s) => s.driverName))).length > 1 && (() => {
-            const combined = computeSurcharges(state.shifts, holidayDates)
-            return (
-              <div className="mt-4 rounded-lg border border-accent/40 bg-accent/5 p-3 text-sm">
-                <p className="mb-2 font-semibold">Gesamt (beide Fahrer zusammen)</p>
-                <div className="grid grid-cols-4 gap-3 text-xs">
-                  <div><span className="text-textMuted">Gesamt</span><br /><span className="font-mono text-sm">{combined.totalNet.toFixed(2)} h</span></div>
-                  <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{combined.night25.toFixed(2)} h</span></div>
-                  <div><span className="text-textMuted">Nachtzuschlag 40 % steuerfrei</span><br /><span className="font-mono text-sm">{combined.night40.toFixed(2)} h</span></div>
-                  <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{combined.sunday50.toFixed(2)} h</span></div>
-                  <div><span className="text-textMuted">Feiertagszuschlag 125 %</span><br /><span className="font-mono text-sm">{combined.holiday125.toFixed(2)} h</span></div>
-                </div>
-              </div>
-            )
-          })()}
+              return (
+                <>
+                  {driverStats.map(({ name, totalNet, night25, night40, sunday50, holiday125, freeDays, spesenDays, spesenAmount, grossWage, hourlyRate }) => {
+                    const amt = (hours: number, factor: number) => (hourlyRate != null ? `${(hours * hourlyRate * factor).toFixed(2)} €` : '– kein Stundenlohn hinterlegt –')
+                    return (
+                      <div key={name} className="mt-4 rounded-lg border border-border p-3 text-sm">
+                        <p className="mb-2 font-semibold">{name} – Monatszusammenfassung</p>
+                        <div className="grid grid-cols-4 gap-3 text-xs">
+                          <div><span className="text-textMuted">Gesamt</span><br /><span className="font-mono text-sm">{totalNet.toFixed(2)} h</span></div>
+                          <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{night25.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(night25, 0.25)}</span></div>
+                          <div><span className="text-textMuted">Nachtzuschlag 40 % steuerfrei</span><br /><span className="font-mono text-sm">{night40.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(night40, 0.4)}</span></div>
+                          <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{sunday50.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(sunday50, 0.5)}</span></div>
+                          <div><span className="text-textMuted">Feiertagszuschlag 125 %</span><br /><span className="font-mono text-sm">{holiday125.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(holiday125, 1.25)}</span></div>
+                          <div><span className="text-textMuted">Freie Tage</span><br /><span className="font-mono text-sm">{freeDays}</span></div>
+                          <div><span className="text-textMuted">Spesen-Tage</span><br /><span className="font-mono text-sm">{spesenDays}</span></div>
+                          <div><span className="text-textMuted">Spesen gesamt (14 €/Tag)</span><br /><span className="font-mono text-sm">{spesenAmount.toFixed(2)} €</span></div>
+                          <div>
+                            <span className="text-textMuted">Lohn brutto (geschätzt)</span><br />
+                            <span className="font-mono text-sm">{grossWage != null ? `${grossWage.toFixed(2)} €` : '– kein Stundenlohn hinterlegt –'}</span>
+                          </div>
+                        </div>
+                        {hourlyRate != null && (
+                          <p className="mt-2 text-[10px] text-textMuted">
+                            Bruttolohn geschätzt aus {totalNet.toFixed(2)} Std. × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % und Feiertagszuschlag 125 % - Nachtzuschläge (steuerfrei) und Spesen sind hier nicht enthalten. Die Zuschlagsbeträge oben (Nacht/Sonntag/Feiertag) sind reine Zusatzbeträge auf die ohnehin bereits im Grundlohn enthaltenen Stunden.
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+
+                  {driverStats.length > 1 && (() => {
+                    const combined = computeSurcharges(state.shifts, holidayDates)
+                    const anyHasRate = driverStats.some((d) => d.hourlyRate != null)
+                    const sumAmt = (key: 'night25' | 'night40' | 'sunday50' | 'holiday125', factor: number) =>
+                      anyHasRate
+                        ? `${driverStats.reduce((sum, d) => sum + (d.hourlyRate != null ? d[key] * d.hourlyRate * factor : 0), 0).toFixed(2)} €`
+                        : '– kein Stundenlohn hinterlegt –'
+                    return (
+                      <div className="mt-4 rounded-lg border border-accent/40 bg-accent/5 p-3 text-sm">
+                        <p className="mb-2 font-semibold">Gesamt (beide Fahrer zusammen)</p>
+                        <div className="grid grid-cols-4 gap-3 text-xs">
+                          <div><span className="text-textMuted">Gesamt</span><br /><span className="font-mono text-sm">{combined.totalNet.toFixed(2)} h</span></div>
+                          <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{combined.night25.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{sumAmt('night25', 0.25)}</span></div>
+                          <div><span className="text-textMuted">Nachtzuschlag 40 % steuerfrei</span><br /><span className="font-mono text-sm">{combined.night40.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{sumAmt('night40', 0.4)}</span></div>
+                          <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{combined.sunday50.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{sumAmt('sunday50', 0.5)}</span></div>
+                          <div><span className="text-textMuted">Feiertagszuschlag 125 %</span><br /><span className="font-mono text-sm">{combined.holiday125.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{sumAmt('holiday125', 1.25)}</span></div>
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </>
+              )
+            })()}
 
           <table className="mt-6 w-full text-sm">
             <thead className="text-left text-xs uppercase text-textMuted">
