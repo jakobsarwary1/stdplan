@@ -358,7 +358,81 @@ function ApplySubmit() {
   return <Button type="submit" disabled={pending}>{pending ? 'Wird übernommen…' : 'Dienstplan übernehmen'}</Button>
 }
 
-function DriverFields({ index, drivers }: { index: 1 | 2; drivers: { id: string; name: string }[] }) {
+const WEEKDAY_LABELS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So']
+
+/**
+ * Kalender zum Aus-/Abwählen einzelner Tage (Krankheit, Urlaub o. Ä.) für
+ * den aktuell im Formular gewählten Monat/Jahr. Die gewählten Tage werden
+ * als kommagetrennte YYYY-MM-DD-Liste in ein verstecktes Feld geschrieben,
+ * das die Server-Action (driver{index}ExcludedDates) ausliest.
+ */
+function ExcludedDaysCalendar({ index, year, month }: { index: 1 | 2; year: number; month: number }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
+  const daysInMonth = new Date(year, month, 0).getDate() // month ist 1-12
+  const firstWeekday = (new Date(year, month - 1, 1).getDay() + 6) % 7 // Montag = 0
+  const pad = (n: number) => String(n).padStart(2, '0')
+
+  function toggle(day: number) {
+    const key = `${year}-${pad(month)}-${pad(day)}`
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const cells: (number | null)[] = [
+    ...Array(firstWeekday).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1)
+  ]
+
+  return (
+    <div className="field col-span-2">
+      <label className="label">Ausschluss-Tage (z. B. Krankheit, Urlaub)</label>
+      <input type="hidden" name={`driver${index}ExcludedDates`} value={Array.from(selected).join(',')} />
+      <div className="rounded-lg border border-border p-2">
+        <div className="mb-1 grid grid-cols-7 gap-1 text-center text-[10px] font-semibold uppercase text-textMuted">
+          {WEEKDAY_LABELS.map((w) => <div key={w}>{w}</div>)}
+        </div>
+        <div className="grid grid-cols-7 gap-1">
+          {cells.map((day, i) => {
+            if (day == null) return <div key={`e${i}`} />
+            const key = `${year}-${pad(month)}-${pad(day)}`
+            const isSelected = selected.has(key)
+            const weekday = new Date(year, month - 1, day).getDay()
+            const isSunday = weekday === 0
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => toggle(day)}
+                className={`rounded py-1 text-xs font-mono transition-colors ${
+                  isSelected
+                    ? 'bg-danger text-white'
+                    : isSunday
+                      ? 'bg-surfaceAlt text-danger hover:bg-border'
+                      : 'bg-surfaceAlt hover:bg-border'
+                }`}
+                title={isSelected ? 'Ausgeschlossen - klicken zum Aufheben' : 'Klicken zum Ausschließen'}
+              >
+                {day}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      <p className="mt-1 text-xs text-textMuted">
+        {selected.size === 0
+          ? 'Tage anklicken, an denen für diesen Fahrer garantiert keine Schicht erzeugt werden soll.'
+          : `${selected.size} Tag(e) ausgeschlossen: ${Array.from(selected).sort().join(', ')}`}
+      </p>
+    </div>
+  )
+}
+
+function DriverFields({ index, drivers, year, month }: { index: 1 | 2; drivers: { id: string; name: string }[]; year: number; month: number }) {
   return (
     <div className="rounded-lg border border-border p-3">
       <p className="mb-2 text-xs font-semibold uppercase text-textMuted">Fahrer {index}{index === 2 ? ' (optional)' : ''}</p>
@@ -396,11 +470,7 @@ function DriverFields({ index, drivers }: { index: 1 | 2; drivers: { id: string;
           <input type="number" step="1" min="0" name={`driver${index}SpesenDaysTarget`} className="input" placeholder="z. B. 10" />
           <p className="mt-1 text-xs text-textMuted">Anzahl Tage mit mind. 8 Std. Gesamtzeit (= Spesen-berechtigt). Ohne dieses Feld gilt weiterhin "alle in Frage kommenden Tage" (bei Spesen-Häkchen).</p>
         </div>
-        <div className="field">
-          <label className="label">Ausschluss-Tage (z. B. Krankheit, Urlaub)</label>
-          <input type="text" name={`driver${index}ExcludedDates`} className="input" placeholder="z. B. 2026-04-15, 2026-04-16" />
-          <p className="mt-1 text-xs text-textMuted">Kommagetrennte Liste (YYYY-MM-DD). An diesen Tagen wird für diesen Fahrer garantiert keine Schicht erzeugt.</p>
-        </div>
+        <ExcludedDaysCalendar index={index} year={year} month={month} />
         <label className="mt-6 flex items-center gap-2 text-sm">
           <input type="checkbox" name={`driver${index}IsEinzelfahrer`} />
           Einzelfahrer/Vollzeit-Muster (feste Fr/Sa/So-Vorlage, nie 3 Tage frei)
@@ -440,6 +510,8 @@ export function HoursPlanningForm({
   const [state, formAction] = useFormState(previewHoursPlanning, INITIAL_STATE)
   const [holidayDatesInput, setHolidayDatesInput] = useState('')
   const holidayDates = parseHolidayDates(holidayDatesInput)
+  const [month, setMonth] = useState(defaultMonth)
+  const [year, setYear] = useState(defaultYear)
 
   return (
     <Card className="mb-6">
@@ -466,13 +538,13 @@ export function HoursPlanningForm({
           </div>
           <div className="field">
             <label className="label">Monat</label>
-            <select name="month" className="input" defaultValue={defaultMonth}>
+            <select name="month" className="input" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
               {MONTHS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
             </select>
           </div>
           <div className="field">
             <label className="label">Jahr</label>
-            <input type="number" name="year" className="input" defaultValue={defaultYear} />
+            <input type="number" name="year" className="input" value={year} onChange={(e) => setYear(Number(e.target.value))} />
           </div>
         </div>
 
@@ -491,14 +563,14 @@ export function HoursPlanningForm({
           </p>
         </div>
 
-        <DriverFields index={1} drivers={drivers} />
+        <DriverFields index={1} drivers={drivers} year={year} month={month} />
 
         <details className="mt-6 rounded-xl border border-border">
           <summary className="cursor-pointer bg-surfaceAlt px-4 py-3 text-sm font-semibold">
             Fahrer 2 (optional)
           </summary>
           <div className="p-4">
-            <DriverFields index={2} drivers={drivers} />
+            <DriverFields index={2} drivers={drivers} year={year} month={month} />
           </div>
         </details>
 
