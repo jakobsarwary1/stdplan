@@ -1,10 +1,12 @@
-// Gesetzeskonforme Pausenberechnung nach § 4 ArbZG.
-// Niemals 0 Minuten bei > 6 Std., niemals zufällige Werte, niemals Blöcke
-// unter 15 Minuten.
+// Betriebliche Pausenregelung (ersetzt die gesetzliche ArbZG-Staffelung
+// 30/45 Min. komplett): ab 6 Std. Nettoarbeitszeit gilt firmenweit ein
+// Minimum von 60 Minuten, unabhängig davon ob 6-9 Std. oder darüber -
+// nach oben ist ein Wert bis 180 Minuten zulässig (siehe BREAK_STEPS in
+// hoursMode.ts). Niemals 0 Minuten bei >= 6 Std., niemals zufällige Werte,
+// niemals Blöcke unter 15 Minuten.
 
 export function requiredBreakMinutes(netWorkHours: number): number {
-  if (netWorkHours > 9) return 45
-  if (netWorkHours > 6) return 30
+  if (netWorkHours >= 6) return 60
   return 0
 }
 
