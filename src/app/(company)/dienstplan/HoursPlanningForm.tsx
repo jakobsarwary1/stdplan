@@ -396,6 +396,11 @@ function DriverFields({ index, drivers }: { index: 1 | 2; drivers: { id: string;
           <input type="number" step="1" min="0" name={`driver${index}SpesenDaysTarget`} className="input" placeholder="z. B. 10" />
           <p className="mt-1 text-xs text-textMuted">Anzahl Tage mit mind. 8 Std. Gesamtzeit (= Spesen-berechtigt). Ohne dieses Feld gilt weiterhin "alle in Frage kommenden Tage" (bei Spesen-Häkchen).</p>
         </div>
+        <div className="field">
+          <label className="label">Ausschluss-Tage (z. B. Krankheit, Urlaub)</label>
+          <input type="text" name={`driver${index}ExcludedDates`} className="input" placeholder="z. B. 2026-04-15, 2026-04-16" />
+          <p className="mt-1 text-xs text-textMuted">Kommagetrennte Liste (YYYY-MM-DD). An diesen Tagen wird für diesen Fahrer garantiert keine Schicht erzeugt.</p>
+        </div>
         <label className="mt-6 flex items-center gap-2 text-sm">
           <input type="checkbox" name={`driver${index}IsEinzelfahrer`} />
           Einzelfahrer/Vollzeit-Muster (feste Fr/Sa/So-Vorlage, nie 3 Tage frei)
