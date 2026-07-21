@@ -114,7 +114,7 @@ function Submit() {
   return <Button type="submit" disabled={pending}>{pending ? 'Berechne…' : 'Dienstplan erzeugen'}</Button>
 }
 
-async function downloadPdf(
+async function downloadExcel(
   rows: import('./actions').HoursPreviewRow[],
   title: string,
   options: { driverNames: string[]; includeFreeDays: boolean; includeSummary: boolean; columns: string[]; holidayDates: Set<string> }
@@ -223,14 +223,14 @@ async function downloadPdf(
 
   try {
     const vehiclePlateForHeader = sorted.find((r) => !r.isFree)?.vehiclePlate ?? ''
-    const res = await fetch('/api/dienstplan/pdf', {
+    const res = await fetch('/api/dienstplan/xlsx', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, rows: pdfRows, summaries, monthLabel, columns: options.columns, vehiclePlate: vehiclePlateForHeader })
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
-      alert(`PDF-Erzeugung fehlgeschlagen (${res.status}). ${text.slice(0, 300)}`)
+      alert(`Excel-Erzeugung fehlgeschlagen (${res.status}). ${text.slice(0, 300)}`)
       return
     }
     const blob = await res.blob()
@@ -255,12 +255,12 @@ async function downloadPdf(
     } else {
       fileNameBase = `Plan_${monthFileLabel}_${vehiclePlateForFile}`
     }
-    a.download = fileNameBase.replace(/[^a-zA-Z0-9_-]/g, '') + '.pdf'
+    a.download = fileNameBase.replace(/[^a-zA-Z0-9_-]/g, '') + '.xlsx'
 
     a.click()
     URL.revokeObjectURL(url)
   } catch (err) {
-    alert(`PDF-Erzeugung fehlgeschlagen: ${(err as Error).message}`)
+    alert(`Excel-Erzeugung fehlgeschlagen: ${(err as Error).message}`)
   }
 }
 
@@ -278,7 +278,7 @@ const PDF_COLUMN_OPTIONS = [
 type PdfColumnKey = typeof PDF_COLUMN_OPTIONS[number]['key']
 const DEFAULT_PDF_COLUMNS: PdfColumnKey[] = ['pause', 'gesamt']
 
-function PdfExportPanel({ rows, holidayDates }: { rows: import('./actions').HoursPreviewRow[]; holidayDates: Set<string> }) {
+function ExcelExportPanel({ rows, holidayDates }: { rows: import('./actions').HoursPreviewRow[]; holidayDates: Set<string> }) {
   const allDriverNames = Array.from(new Set(rows.map((r) => r.driverName)))
   const [open, setOpen] = useState(false)
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>(allDriverNames)
@@ -297,14 +297,14 @@ function PdfExportPanel({ rows, holidayDates }: { rows: import('./actions').Hour
   if (!open) {
     return (
       <Button type="button" variant="ghost" onClick={() => setOpen(true)}>
-        PDF
+        Excel
       </Button>
     )
   }
 
   return (
     <div className="rounded-lg border border-border bg-surface p-4 text-sm">
-      <p className="mb-3 font-semibold">Was soll ins PDF?</p>
+      <p className="mb-3 font-semibold">Was soll in die Excel-Datei?</p>
 
       <p className="mb-1 text-xs text-textMuted">Fahrer</p>
       <div className="mb-3 flex flex-wrap gap-3">
@@ -341,9 +341,9 @@ function PdfExportPanel({ rows, holidayDates }: { rows: import('./actions').Hour
         <Button
           type="button"
           disabled={selectedDrivers.length === 0}
-          onClick={() => downloadPdf(rows, 'Dienstplan', { driverNames: selectedDrivers, includeFreeDays, includeSummary, columns: selectedColumns, holidayDates })}
+          onClick={() => downloadExcel(rows, 'Dienstplan', { driverNames: selectedDrivers, includeFreeDays, includeSummary, columns: selectedColumns, holidayDates })}
         >
-          PDF erstellen
+          Excel erstellen
         </Button>
         <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
           Abbrechen
@@ -590,7 +590,7 @@ export function HoursPlanningForm({
             <input type="hidden" name="vehicleId" value={state.vehicleId} />
             <input type="hidden" name="shiftsJson" value={JSON.stringify(state.shifts)} />
             <ApplySubmit />
-            <PdfExportPanel rows={state.shifts} holidayDates={holidayDates} />
+            <ExcelExportPanel rows={state.shifts} holidayDates={holidayDates} />
           </form>
 
           <div className="mt-6">
