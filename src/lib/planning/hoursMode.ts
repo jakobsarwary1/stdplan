@@ -5,6 +5,7 @@ export type HoursTarget = {
   driverId: string
   driverName: string
   hireDate: string | null // "YYYY-MM-DD" - Tage davor dürfen keine Schicht erhalten (Fahrer noch nicht eingetreten)
+  excludedDates: string[] // "YYYY-MM-DD" - einzelne Tage, für die explizit KEINE Schicht erzeugt werden soll (z. B. Krankheit, Urlaub)
   totalHours: number
   sundayHours: number
   nightHours: number // Ziel-Stundenzahl in der Nachtzeit (20-06 Uhr), analog zu sundayHours - bestmöglich, keine Garantie auf exaktes Treffen
@@ -328,8 +329,9 @@ function generateHoursBasedScheduleAttempt(
 ): { shifts: HoursShift[]; warning: string | null } {
   const commuteMinutes = target.commuteMinutes > 0 ? target.commuteMinutes : DEFAULT_COMMUTE_MINUTES
 
+  const excludedDateSet = new Set(target.excludedDates ?? [])
   const allDays = daysInMonth(year, month0).filter(
-    (d) => !blockedDates.has(toDateStr(d)) && (!target.hireDate || toDateStr(d) >= target.hireDate)
+    (d) => !blockedDates.has(toDateStr(d)) && !excludedDateSet.has(toDateStr(d)) && (!target.hireDate || toDateStr(d) >= target.hireDate)
   )
 
   // ---- Anzahl benötigter Tage grob schätzen (für die Tagesauswahl) ----
@@ -1227,8 +1229,9 @@ export function generateHoursBasedSchedule(
   }
 
   const spesenTarget = Math.round(target.spesenDaysTarget)
+  const excludedDateSetForCount = new Set(target.excludedDates ?? [])
   const allDaysCount = daysInMonth(year, month0).filter(
-    (d) => !blockedDates.has(toDateStr(d)) && (!target.hireDate || toDateStr(d) >= target.hireDate)
+    (d) => !blockedDates.has(toDateStr(d)) && !excludedDateSetForCount.has(toDateStr(d)) && (!target.hireDate || toDateStr(d) >= target.hireDate)
   ).length
   const freeDaysOk = (workDays: number) => target.totalHours <= 129 || allDaysCount - workDays <= 7
 
