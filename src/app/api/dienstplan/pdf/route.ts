@@ -28,6 +28,10 @@ type PdfSummary = {
   sunday50: number
   holiday125: number
   grossWage?: number | null
+  night25Amount?: number | null
+  night40Amount?: number | null
+  sunday50Amount?: number | null
+  holiday125Amount?: number | null
 }
 
 // Immer dabei: Fahrer, Datum, Von, Bis. Alles danach ist über die
@@ -158,12 +162,13 @@ export async function POST(request: Request) {
         if (sy < 100) return // Sicherheitsgrenze, falls sehr viele Fahrer
         summaryPage.drawText(sanitizeForPdf(s.driverName), { x: marginX, y: sy, size: 11, font: fontBold, color: rgb(0.1, 0.1, 0.1) })
         sy -= 18
+        const amountSuffix = (amount?: number | null) => (amount != null ? ` (${amount.toFixed(2)} EUR)` : '')
         const lines = [
           `Gesamt: ${s.totalNet.toFixed(2)} h`,
-          `Nachtzuschlag 25 %: ${s.night25.toFixed(2)} h`,
-          `Nachtzuschlag 40 % steuerfrei: ${s.night40.toFixed(2)} h`,
-          `Sonntagszuschlag 50 %: ${s.sunday50.toFixed(2)} h`,
-          `Feiertagszuschlag 125 %: ${s.holiday125.toFixed(2)} h`,
+          `Nachtzuschlag 25 %: ${s.night25.toFixed(2)} h${amountSuffix(s.night25Amount)}`,
+          `Nachtzuschlag 40 % steuerfrei: ${s.night40.toFixed(2)} h${amountSuffix(s.night40Amount)}`,
+          `Sonntagszuschlag 50 %: ${s.sunday50.toFixed(2)} h${amountSuffix(s.sunday50Amount)}`,
+          `Feiertagszuschlag 125 %: ${s.holiday125.toFixed(2)} h${amountSuffix(s.holiday125Amount)}`,
           `Bruttolohn (geschätzt): ${s.grossWage != null ? s.grossWage.toFixed(2) + ' EUR' : '- kein Stundenlohn hinterlegt -'}`
         ]
         lines.forEach((line) => {
