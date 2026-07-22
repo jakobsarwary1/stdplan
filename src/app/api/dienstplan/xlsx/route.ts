@@ -224,51 +224,44 @@ export async function POST(request: Request) {
     sheet.getColumn(COLS.pBeginn).hidden = true
     sheet.getColumn(COLS.pEnde).hidden = true
 
-    // Erläuterung unter die Tabelle
-    sheet.addRow([])
-    const note = sheet.addRow([
-      'Gelbe Felder (Beginn, Ende, Pause, Weg, Pausenlage) sind editierbar - alle übrigen Spalten (Netto, Gesamt, Ruhezeit, Zuschläge) sind Formeln und berechnen sich beim Ändern automatisch neu. Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause.'
-    ])
-    note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
-    sheet.mergeCells(note.number, 1, note.number, nCols)
-    note.getCell(1).alignment = { wrapText: true }
+    // ---- Monatszusammenfassung DIREKT unter der Tabelle (gleiches Blatt),
+    // je Fahrer als Live-Formeln (SUMIFS über die Spalten oberhalb). Der
+    // Stundenlohn ist ein editierbares Eingabefeld; Beträge/Bruttolohn
+    // rechnen sich mit. ----
+    if (summaries && summaries.length > 0 && lastDataRow >= firstDataRow) {
+      const colRange = (c: number) => `$${L(c)}$${firstDataRow}:$${L(c)}$${lastDataRow}`
+      const fahrerRange = `$${L(COLS.fahrer)}$${firstDataRow}:$${L(COLS.fahrer)}$${lastDataRow}`
 
-    // ---- Blatt 2: Zusammenfassung (live, per SUMIFS auf den Dienstplan) ----
-    if (summaries && summaries.length > 0) {
-      const sum = workbook.addWorksheet('Zusammenfassung')
-      sum.getColumn(1).width = 32; sum.getColumn(2).width = 16; sum.getColumn(3).width = 16
-      const dp = 'Dienstplan!'
-      const colRange = (c: number) => `${dp}$${L(c)}$${firstDataRow}:$${L(c)}$${lastDataRow || firstDataRow}`
-      const fahrerRange = `${dp}$${L(COLS.fahrer)}$${firstDataRow}:$${L(COLS.fahrer)}$${lastDataRow || firstDataRow}`
+      sheet.addRow([])
+      const head = sheet.addRow(['Monatszusammenfassung']); head.font = { bold: true, size: 13 }
 
-      const t = sum.addRow(['Monatszusammenfassung']); t.font = { bold: true, size: 14 }
-      sum.addRow([])
-
-      const perDriverEuroCells: string[] = []
-      const perDriverBruttoCells: string[] = []
-
+      const perDriverBruttoRefs: string[] = []
       summaries.filter((s) => s.driverName !== 'Gesamt (alle Fahrer)').forEach((s) => {
         const surname = lastName(s.driverName)
-        const nameRow = sum.addRow([surname]); nameRow.font = { bold: true, size: 12 }
-        const nameRef = `A${nameRow.number}`
+        const nameRow = sheet.addRow([surname]); nameRow.getCell(1).font = { bold: true, size: 12 }
+        const nameRef = `$${L(COLS.fahrer)}$${nameRow.number}`
 
-        const rateRow = sum.addRow(['Stundenlohn (EUR, editierbar)', s.hourlyRate ?? null])
-        const rateCell = rateRow.getCell(2)
+        // Editierbarer Stundenlohn (Eingabefeld)
+        const rateRow = sheet.addRow(['Stundenlohn (EUR)'])
+        sheet.mergeCells(rateRow.number, 1, rateRow.number, 3)
+        const rateCell = rateRow.getCell(4)
+        rateCell.value = s.hourlyRate ?? null
         rateCell.numFmt = '0.00'; rateCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF7D6' } }
-        const rateRef = `B${rateRow.number}`
+        const rateRef = `$${L(4)}$${rateRow.number}`
 
-        // Std.-Summen per SUMIFS (live)
+        // Std. (SUMIFS, live) in Spalte 4, Betrag (EUR) in Spalte 5
         const addStat = (label: string, col: number, result: number, factor: number | null, amountResult: number | null | undefined) => {
-          const row = sum.addRow([label])
-          const stdCell = row.getCell(2)
+          const row = sheet.addRow([label])
+          sheet.mergeCells(row.number, 1, row.number, 3)
+          const stdCell = row.getCell(4)
           stdCell.value = { formula: `SUMIFS(${colRange(col)},${fahrerRange},${nameRef})`, result }
           stdCell.numFmt = '0.00'
           if (factor != null) {
-            const amtCell = row.getCell(3)
-            amtCell.value = { formula: `B${row.number}*${rateRef}*${factor}`, result: amountResult ?? 0 }
+            const amtCell = row.getCell(5)
+            amtCell.value = { formula: `${L(4)}${row.number}*${rateRef}*${factor}`, result: amountResult ?? 0 }
             amtCell.numFmt = '0.00 "EUR"'
           }
-          return `B${row.number}`
+          return `${L(4)}${row.number}`
         }
         const nettoRef = addStat('Netto (Std.)', COLS.netto, s.totalNet, null, null)
         addStat('Nachtzuschlag 25 %', COLS.n25, s.night25, 0.25, s.night25Amount)
@@ -276,30 +269,33 @@ export async function POST(request: Request) {
         const soRef = addStat('Sonntagszuschlag 50 %', COLS.so50, s.sunday50, 0.5, s.sunday50Amount)
         const feRef = addStat('Feiertagszuschlag 125 %', COLS.fe125, s.holiday125, 1.25, s.holiday125Amount)
 
-        // Bruttolohn (geschätzt) = Netto*Satz + Sonntag*Satz*0,5 + Feiertag*Satz*1,25
-        const bruttoRow = sum.addRow(['Bruttolohn (geschätzt)'])
-        const bruttoCell = bruttoRow.getCell(2)
+        const bruttoRow = sheet.addRow(['Bruttolohn (geschätzt)'])
+        bruttoRow.getCell(1).font = { bold: true }
+        sheet.mergeCells(bruttoRow.number, 1, bruttoRow.number, 3)
+        const bruttoCell = bruttoRow.getCell(4)
         bruttoCell.value = { formula: `${nettoRef}*${rateRef}+${soRef}*${rateRef}*0.5+${feRef}*${rateRef}*1.25`, result: s.grossWage ?? 0 }
-        bruttoCell.numFmt = '0.00 "EUR"'
-        perDriverEuroCells.push(`B${bruttoRow.number}`)
-        perDriverBruttoCells.push(`B${bruttoRow.number}`)
-        sum.addRow([])
+        bruttoCell.numFmt = '0.00 "EUR"'; bruttoCell.font = { bold: true }
+        perDriverBruttoRefs.push(`${L(4)}${bruttoRow.number}`)
+        sheet.addRow([])
       })
 
-      // Gesamt über alle Fahrer (Summe der Fahrer-Bruttolöhne)
-      if (perDriverBruttoCells.length > 1) {
-        const gRow = sum.addRow(['Bruttolohn gesamt (alle Fahrer)'])
-        gRow.font = { bold: true }
-        const gCell = gRow.getCell(2)
-        gCell.value = { formula: perDriverBruttoCells.join('+'), result: 0 }
-        gCell.numFmt = '0.00 "EUR"'
+      if (perDriverBruttoRefs.length > 1) {
+        const gRow = sheet.addRow(['Bruttolohn gesamt (alle Fahrer)']); gRow.getCell(1).font = { bold: true }
+        sheet.mergeCells(gRow.number, 1, gRow.number, 3)
+        const gCell = gRow.getCell(4)
+        gCell.value = { formula: perDriverBruttoRefs.join('+'), result: 0 }
+        gCell.numFmt = '0.00 "EUR"'; gCell.font = { bold: true }
       }
-
-      const legend = sum.addRow(['Gelbe Felder (Stundenlohn) editierbar - Beträge und Bruttolohn rechnen sich automatisch neu. Stunden per SUMIFS direkt aus dem Blatt "Dienstplan".'])
-      legend.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
-      sum.mergeCells(legend.number, 1, legend.number, 3)
-      legend.getCell(1).alignment = { wrapText: true }
     }
+
+    // Erläuterung unter die Zusammenfassung
+    sheet.addRow([])
+    const note = sheet.addRow([
+      'Gelbe Felder (Beginn, Ende, Pause, Weg, Pausenlage) sind editierbar - alle übrigen Spalten (Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause.'
+    ])
+    note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
+    sheet.mergeCells(note.number, 1, note.number, nCols)
+    note.getCell(1).alignment = { wrapText: true }
 
     const buffer = await workbook.xlsx.writeBuffer()
     return new NextResponse(Buffer.from(buffer), {
