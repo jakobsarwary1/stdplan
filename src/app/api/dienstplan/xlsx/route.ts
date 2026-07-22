@@ -98,13 +98,13 @@ export async function POST(request: Request) {
       pOffset: 14, pBeginn: 15, pEnde: 16
     }
     const HEADERS: [number, string, number][] = [
-      [COLS.fahrer, 'Fahrer', 18], [COLS.datum, 'Datum', 16],
-      [COLS.beginn, 'Beginn', 17], [COLS.ende, 'Ende', 17],
-      [COLS.pause, 'Pause (Min.)', 11], [COLS.weg, 'Weg (Min.)', 10],
-      [COLS.netto, 'Netto (Std.)', 11], [COLS.gesamt, 'Gesamt (Std.)', 12],
-      [COLS.ruhe, 'Ruhezeit vorher (Std.)', 20],
-      [COLS.n25, 'Nacht 25%', 11], [COLS.n40, 'Nacht 40%', 11],
-      [COLS.so50, 'Sonntag 50%', 12], [COLS.fe125, 'Feiertag 125%', 13],
+      [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 13],
+      [COLS.beginn, 'Beginn', 14], [COLS.ende, 'Ende', 14],
+      [COLS.pause, 'Pause', 7], [COLS.weg, 'Weg', 6],
+      [COLS.netto, 'Netto', 7], [COLS.gesamt, 'Gesamt', 8],
+      [COLS.ruhe, 'Ruhezeit', 9],
+      [COLS.n25, 'Nacht 25%', 8], [COLS.n40, 'Nacht 40%', 8],
+      [COLS.so50, 'Sonntag 50%', 8], [COLS.fe125, 'Feiertag 125%', 9],
       [COLS.pOffset, 'Pausenlage (Hilfsspalte)', 22], [COLS.pBeginn, 'Pause-Beginn (Hilfsspalte)', 16], [COLS.pEnde, 'Pause-Ende (Hilfsspalte)', 16]
     ]
     const nCols = HEADERS.length
@@ -115,7 +115,17 @@ export async function POST(request: Request) {
     workbook.created = new Date()
     workbook.calcProperties.fullCalcOnLoad = true // erzwingt Neuberechnung beim Öffnen
 
-    const sheet = workbook.addWorksheet('Dienstplan')
+    const sheet = workbook.addWorksheet('Dienstplan', {
+      // Auf A4 quer, auf Seitenbreite skaliert (eine Seite breit, beliebig
+      // viele Seiten hoch), schmale Ränder - für einen übersichtlichen
+      // Ausdruck.
+      pageSetup: {
+        paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+        horizontalCentered: true, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 }
+      }
+    })
+    // Kopfzeile (Zeile 3) auf jeder Druckseite wiederholen.
+    sheet.pageSetup.printTitlesRow = '3:3'
     // Alle Spalten linksbündig (Excel würde Zahlen/Datum sonst rechtsbündig
     // ausrichten).
     HEADERS.forEach(([c, , w]) => { sheet.getColumn(c).width = w; sheet.getColumn(c).alignment = { horizontal: 'left' } })
@@ -134,7 +144,7 @@ export async function POST(request: Request) {
       cell.alignment = { wrapText: true, vertical: 'middle', horizontal: 'left' }
     })
 
-    const DT = 'dd.mm.yyyy hh:mm'
+    const DT = 'dd.mm.yy hh:mm'
     const inputFill: ExcelJS.Fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF7D6' } } // hellgelb = editierbar
 
     // Inline-Ausdruck: Überlappung von [a,b] mit dem Tagesfenster [w1,w2]
