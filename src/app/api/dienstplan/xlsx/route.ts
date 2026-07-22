@@ -105,7 +105,7 @@ export async function POST(request: Request) {
       [COLS.ruhe, 'Ruhezeit vorher (Std.)', 20],
       [COLS.n25, 'Nacht 25%', 11], [COLS.n40, 'Nacht 40%', 11],
       [COLS.so50, 'Sonntag 50%', 12], [COLS.fe125, 'Feiertag 125%', 13],
-      [COLS.pOffset, 'Pausenlage (Min. n. Beginn)', 24], [COLS.pBeginn, 'Pause-Beginn', 16], [COLS.pEnde, 'Pause-Ende', 16]
+      [COLS.pOffset, 'Pausenlage (Hilfsspalte)', 22], [COLS.pBeginn, 'Pause-Beginn (Hilfsspalte)', 16], [COLS.pEnde, 'Pause-Ende (Hilfsspalte)', 16]
     ]
     const nCols = HEADERS.length
     const L = (c: number) => colLetter(c)
@@ -222,7 +222,11 @@ export async function POST(request: Request) {
       prevWorkEndeSerial = endeSerial
     })
 
-    // Hilfsspalten (Pause-Beginn/-Ende) ausblenden - stören sonst nur.
+    // Hilfsspalten (Pausenlage/Pause-Beginn/Pause-Ende) ausblenden - sie
+    // werden nur intern von den Zuschlagsformeln gebraucht (sie legen fest,
+    // WANN die Pause innerhalb der Schicht liegt) und würden die Tabelle
+    // sonst nur unnötig verbreitern/verwirren.
+    sheet.getColumn(COLS.pOffset).hidden = true
     sheet.getColumn(COLS.pBeginn).hidden = true
     sheet.getColumn(COLS.pEnde).hidden = true
 
@@ -293,7 +297,7 @@ export async function POST(request: Request) {
     // Erläuterung unter die Zusammenfassung
     sheet.addRow([])
     const note = sheet.addRow([
-      'Gelbe Felder (Beginn, Ende, Pause, Weg, Pausenlage) sind editierbar - alle übrigen Spalten (Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause.'
+      'Gelbe Felder (Beginn, Ende, Pause, Weg) sind editierbar - alle übrigen Spalten (Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause.'
     ])
     note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
     sheet.mergeCells(note.number, 1, note.number, nCols)
