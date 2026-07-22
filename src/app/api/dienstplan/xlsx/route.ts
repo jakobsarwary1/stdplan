@@ -181,11 +181,14 @@ export async function POST(request: Request) {
       // Eingabefelder
       const beginnSerial = excelSerial(r.isoDate, r.startMin)
       const endeSerial = excelSerial(r.isoDate, r.endMin)
-      const cB = cell(COLS.beginn); cB.value = beginnSerial; cB.numFmt = DT; cB.fill = inputFill
-      const cE = cell(COLS.ende); cE.value = endeSerial; cE.numFmt = DT; cE.fill = inputFill
-      const cP = cell(COLS.pause); cP.value = r.breakMinutes; cP.numFmt = '0'; cP.fill = inputFill
-      const cW = cell(COLS.weg); cW.value = r.commuteMinutes; cW.numFmt = '0'; cW.fill = inputFill
-      const cO = cell(COLS.pOffset); cO.value = r.breakOffsetMin; cO.numFmt = '0'; cO.fill = inputFill
+      const unlocked = { locked: false } // nur diese Felder bleiben bei aktivem Blattschutz editierbar
+      const cB = cell(COLS.beginn); cB.value = beginnSerial; cB.numFmt = DT; cB.fill = inputFill; cB.protection = unlocked
+      const cE = cell(COLS.ende); cE.value = endeSerial; cE.numFmt = DT; cE.fill = inputFill; cE.protection = unlocked
+      const cP = cell(COLS.pause); cP.value = r.breakMinutes; cP.numFmt = '0'; cP.fill = inputFill; cP.protection = unlocked
+      const cW = cell(COLS.weg); cW.value = r.commuteMinutes; cW.numFmt = '0'; cW.fill = inputFill; cW.protection = unlocked
+      // Pausenlage bleibt (als versteckte Hilfsspalte) ebenfalls editierbar,
+      // falls jemand die Pause bewusst verschieben will.
+      const cO = cell(COLS.pOffset); cO.value = r.breakOffsetMin; cO.numFmt = '0'; cO.fill = inputFill; cO.protection = unlocked
 
       const bRef = `${L(COLS.beginn)}${R}`, eRef = `${L(COLS.ende)}${R}`
       const pRef = `${L(COLS.pause)}${R}`, wRef = `${L(COLS.weg)}${R}`, oRef = `${L(COLS.pOffset)}${R}`
@@ -280,6 +283,7 @@ export async function POST(request: Request) {
         const rateCell = rateRow.getCell(STD_COL)
         rateCell.value = s.hourlyRate ?? null
         rateCell.numFmt = '0.00'; rateCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF7D6' } }
+        rateCell.protection = { locked: false }
         const rateRef = `$${L(STD_COL)}$${rateRow.number}`
 
         const addStat = (label: string, col: number, result: number, factor: number | null, amountResult: number | null | undefined) => {
@@ -333,6 +337,9 @@ export async function POST(request: Request) {
     sheet.mergeCells(note.number, 1, note.number, nCols)
     note.getCell(1).alignment = { wrapText: true }
 
+    // Aktualisieren-Ergänzung im Hinweis (Blattschutz)
+    note.getCell(1).value = `${note.getCell(1).value} — Zum Schutz vor versehentlichen Fehlern ist das Blatt gesperrt: NUR die gelben Felder lassen sich bearbeiten. Der Schutz kann bei Bedarf über „Überprüfen › Blattschutz aufheben" (ohne Passwort) entfernt werden.`
+
     // Sicherstellen, dass ALLE Zellen linksbündig sind (Zahlen/Datum wären
     // sonst rechtsbündig) - vorhandene Ausrichtung (z. B. Zeilenumbruch)
     // bleibt erhalten, nur die horizontale Ausrichtung wird auf links gesetzt.
@@ -340,6 +347,17 @@ export async function POST(request: Request) {
       row.eachCell({ includeEmpty: false }, (cell) => {
         cell.alignment = { ...(cell.alignment ?? {}), horizontal: 'left' }
       })
+    })
+
+    // Blattschutz aktivieren: alle Zellen sind standardmäßig gesperrt, nur
+    // die oben mit protection.locked = false markierten (gelben) Eingabe-
+    // felder bleiben editierbar. Kein Passwort - der Schutz dient nur der
+    // Fehlervermeidung und kann jederzeit ohne Passwort aufgehoben werden.
+    await sheet.protect('', {
+      selectLockedCells: true, selectUnlockedCells: true,
+      formatCells: false, formatColumns: false, formatRows: false,
+      insertColumns: false, insertRows: false, insertHyperlinks: false,
+      deleteColumns: false, deleteRows: false, sort: false, autoFilter: false, pivotTables: false
     })
 
     const buffer = await workbook.xlsx.writeBuffer()
