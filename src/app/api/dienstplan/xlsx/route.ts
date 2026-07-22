@@ -125,8 +125,10 @@ export async function POST(request: Request) {
         horizontalCentered: true, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 }
       }
     })
-    // Kopfzeile (Zeile 3) auf jeder Druckseite wiederholen.
-    sheet.pageSetup.printTitlesRow = '3:3'
+    // Hinweis: KEINE Wiederholung der Kopfzeile auf jeder Druckseite
+    // (printTitlesRow) - sonst würde die Spaltenüberschrift der
+    // Schichttabelle auch auf der (per Seitenumbruch getrennten)
+    // Monatszusammenfassung erscheinen, was dort nur verwirrt.
     // Alle Spalten linksbündig (Excel würde Zahlen/Datum sonst rechtsbündig
     // ausrichten).
     HEADERS.forEach(([c, , w]) => { sheet.getColumn(c).width = w; sheet.getColumn(c).alignment = { horizontal: 'left' } })
