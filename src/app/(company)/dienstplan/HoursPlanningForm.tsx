@@ -139,6 +139,7 @@ async function downloadExcel(
       return {
         driverName: r.driverName,
         date: `frei (${fmtDateDEWithWeekday(r.date)})`,
+        isoDate: r.date, startMin: 0, endMin: 0,
         start: '', end: '', breakLabel: '', breakMinutes: 0, commuteMinutes: 0,
         netHours: 0, totalHours: 0,
         vehiclePlate: '',
@@ -150,6 +151,7 @@ async function downloadExcel(
     return {
       driverName: r.driverName,
       date: fmtDateDEWithWeekday(r.date),
+      isoDate: r.date, startMin: r.startMin ?? 0, endMin: r.endMin ?? 0,
       start: minToClock(r.startMin!),
       end: minToClock(r.endMin!),
       breakLabel: formatBreakRanges(r.startMin!, r.breaks!),
