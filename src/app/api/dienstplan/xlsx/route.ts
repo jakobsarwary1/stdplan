@@ -4,6 +4,7 @@ import { getCurrentUser } from '@/lib/auth'
 
 type XlsxRow = {
   driverName: string
+  employeeNumber?: string | null
   date: string // bereits formatiert (nur für freie Tage als Text verwendet)
   isoDate: string // "YYYY-MM-DD"
   startMin: number
@@ -133,9 +134,16 @@ export async function POST(request: Request) {
     // ausrichten).
     HEADERS.forEach(([c, , w]) => { sheet.getColumn(c).width = w; sheet.getColumn(c).alignment = { horizontal: 'left' } })
 
-    // Voller Name (Vor- und Nachname) des/der Fahrer(s) für die Überschrift.
-    const driverFullNames = Array.from(new Set(rows.filter((r) => !r.isFree).map((r) => r.driverName)))
-    const titleParts = [title, driverFullNames.join(', '), monthLabel, vehiclePlate ? `[${vehiclePlate}]` : ''].filter(Boolean)
+    // Voller Name (Vor- und Nachname) + Personalnummer des/der Fahrer(s)
+    // für die Überschrift.
+    const workRows = rows.filter((r) => !r.isFree)
+    const driverKeys = Array.from(new Set(workRows.map((r) => r.driverName)))
+    const persNrByName = new Map(workRows.map((r) => [r.driverName, r.employeeNumber ?? null]))
+    const driverLabels = driverKeys.map((name) => {
+      const nr = persNrByName.get(name)
+      return nr ? `${name} (Pers.-Nr.: ${nr})` : name
+    })
+    const titleParts = [title, driverLabels.join(', '), monthLabel, vehiclePlate ? `[${vehiclePlate}]` : ''].filter(Boolean)
     const titleRow = sheet.addRow([titleParts.join('  ·  ')])
     titleRow.font = { bold: true, size: 14 }
     sheet.mergeCells(1, 1, 1, nCols)
@@ -269,8 +277,17 @@ export async function POST(request: Request) {
       const perDriverBruttoRefs: string[] = []
       summaries.filter((s) => s.driverName !== 'Gesamt (alle Fahrer)').forEach((s) => {
         const surname = lastName(s.driverName)
+        // Nachname MUSS allein in Spalte 1 stehen - die SUMIFS-Formeln
+        // vergleichen genau diese Zelle mit der Fahrer-Spalte im Dienstplan.
         const nameRow = sheet.addRow([surname]); nameRow.getCell(1).font = { bold: true, size: 12 }
         const nameRef = `$${L(COLS.fahrer)}$${nameRow.number}`
+        // Personalnummer als eigene Zeile darunter (beeinflusst die SUMIFS
+        // nicht).
+        const persNr = persNrByName.get(s.driverName)
+        if (persNr) {
+          const pnRow = sheet.addRow([`Pers.-Nr.: ${persNr}`])
+          sheet.mergeCells(pnRow.number, 1, pnRow.number, 5)
+        }
 
         // Zellen für die Zusammenfassung großzügig verbinden, damit die
         // (teils langen) Euro-Beträge nicht als "######" abgeschnitten

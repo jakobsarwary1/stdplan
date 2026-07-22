@@ -135,9 +135,11 @@ async function downloadExcel(
   // freie Tage werden bewusst NICHT zu einem Zeitraum zusammengefasst,
   // damit in der Excel-Datei wirklich jeder Kalendertag einzeln erscheint.
   const pdfRows = sorted.map((r) => {
+    const persNr = r.employeeNumber ? stripEmployeeNumberPadding(r.employeeNumber) || r.employeeNumber : null
     if (r.isFree) {
       return {
         driverName: r.driverName,
+        employeeNumber: persNr,
         date: fmtDateDEWithWeekday(r.date), // nur das Datum, kein "frei" (bläht die Zelle sonst auf)
         isoDate: r.date, startMin: 0, endMin: 0,
         start: '', end: '', breakLabel: '', breakMinutes: 0, commuteMinutes: 0,
@@ -150,6 +152,7 @@ async function downloadExcel(
     const day = computeSurcharges([r], holidayDates)
     return {
       driverName: r.driverName,
+      employeeNumber: persNr,
       date: fmtDateDEWithWeekday(r.date),
       isoDate: r.date, startMin: r.startMin ?? 0, endMin: r.endMin ?? 0,
       breakOffsetMin: r.breaks?.[0]?.start ?? Math.round((r.netHours ?? 0) * 60 / 2),
