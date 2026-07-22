@@ -98,9 +98,9 @@ export async function POST(request: Request) {
       pOffset: 16, pBeginn: 17, pEnde: 18
     }
     const HEADERS: [number, string, number][] = [
-      [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 13],
+      [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 14],
       [COLS.von, 'Von', 7], [COLS.bis, 'Bis', 7],
-      [COLS.beginn, 'Beginn', 14], [COLS.ende, 'Ende', 14],
+      [COLS.beginn, 'Beginn', 16], [COLS.ende, 'Ende', 16],
       [COLS.pause, 'Pause (Min.)', 9], [COLS.weg, 'Weg (Min.)', 8],
       [COLS.netto, 'Netto (Std.)', 9], [COLS.gesamt, 'Gesamt (Std.)', 10],
       [COLS.ruhe, 'Ruhezeit (Std.)', 10],
@@ -195,7 +195,7 @@ export async function POST(request: Request) {
       const pbRef = `${L(COLS.pBeginn)}${R}`, peRef = `${L(COLS.pEnde)}${R}`
 
       // Datum = Beginn (nur anders formatiert)
-      const cD = cell(COLS.datum); cD.value = { formula: bRef, result: beginnSerial }; cD.numFmt = 'ddd dd.mm.yyyy'
+      const cD = cell(COLS.datum); cD.value = { formula: bRef, result: beginnSerial }; cD.numFmt = 'ddd dd.mm.yy'
       // Von/Bis = reine Uhrzeit (klassischer Dienstplan-Look), Formeln auf
       // Beginn/Ende - aktualisieren sich also automatisch mit.
       const cVon = cell(COLS.von); cVon.value = { formula: bRef, result: beginnSerial }; cVon.numFmt = 'hh:mm'
