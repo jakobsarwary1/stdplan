@@ -152,6 +152,7 @@ async function downloadExcel(
       driverName: r.driverName,
       date: fmtDateDEWithWeekday(r.date),
       isoDate: r.date, startMin: r.startMin ?? 0, endMin: r.endMin ?? 0,
+      breakOffsetMin: r.breaks?.[0]?.start ?? Math.round((r.netHours ?? 0) * 60 / 2),
       start: minToClock(r.startMin!),
       end: minToClock(r.endMin!),
       breakLabel: formatBreakRanges(r.startMin!, r.breaks!),
@@ -178,7 +179,7 @@ async function downloadExcel(
         const s = computeSurcharges(rows.filter((r) => r.driverName === name && !r.isFree), holidayDates)
         const { grossWage, hourlyRate } = computeExtendedStats(rows.filter((r) => r.driverName === name), holidayDates)
         return {
-          driverName: name, ...s, grossWage,
+          driverName: name, ...s, grossWage, hourlyRate,
           night25Amount: hourlyRate != null ? s.night25 * hourlyRate * 0.25 : null,
           night40Amount: hourlyRate != null ? s.night40 * hourlyRate * 0.4 : null,
           sunday50Amount: hourlyRate != null ? s.sunday50 * hourlyRate * 0.5 : null,
@@ -193,7 +194,7 @@ async function downloadExcel(
     const sumField = (key: 'night25Amount' | 'night40Amount' | 'sunday50Amount' | 'holiday125Amount') =>
       anyHasWage ? summaries.reduce((sum, s) => sum + (s[key] ?? 0), 0) : null
     summaries.push({
-      driverName: 'Gesamt (alle Fahrer)', ...combined, grossWage: anyHasWage ? combinedGrossWage : null,
+      driverName: 'Gesamt (alle Fahrer)', ...combined, grossWage: anyHasWage ? combinedGrossWage : null, hourlyRate: null,
       night25Amount: sumField('night25Amount'), night40Amount: sumField('night40Amount'),
       sunday50Amount: sumField('sunday50Amount'), holiday125Amount: sumField('holiday125Amount')
     })
@@ -204,7 +205,7 @@ async function downloadExcel(
     const res = await fetch('/api/dienstplan/xlsx', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, rows: pdfRows, summaries, monthLabel, columns: options.columns, vehiclePlate: vehiclePlateForHeader })
+      body: JSON.stringify({ title, rows: pdfRows, summaries, monthLabel, vehiclePlate: vehiclePlateForHeader, holidayDates: Array.from(holidayDates) })
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
@@ -268,10 +269,6 @@ function ExcelExportPanel({ rows, holidayDates }: { rows: import('./actions').Ho
     setSelectedDrivers((prev) => (prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]))
   }
 
-  function toggleColumn(key: PdfColumnKey) {
-    setSelectedColumns((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
-  }
-
   if (!open) {
     return (
       <Button type="button" variant="ghost" onClick={() => setOpen(true)}>
@@ -294,15 +291,10 @@ function ExcelExportPanel({ rows, holidayDates }: { rows: import('./actions').Ho
         ))}
       </div>
 
-      <p className="mb-1 text-xs text-textMuted">Spalten (Fahrer, Datum, Von, Bis sind immer dabei)</p>
-      <div className="mb-3 flex flex-wrap gap-3">
-        {PDF_COLUMN_OPTIONS.map((col) => (
-          <label key={col.key} className="flex items-center gap-1.5">
-            <input type="checkbox" checked={selectedColumns.includes(col.key)} onChange={() => toggleColumn(col.key)} />
-            {col.label}
-          </label>
-        ))}
-      </div>
+      <p className="mb-3 text-xs text-textMuted">
+        Die Excel-Datei enthält Beginn/Ende/Pause/Weg als editierbare Felder; Netto, Gesamt, Ruhezeit und alle
+        Zuschläge sind Formeln und rechnen sich beim Ändern automatisch neu.
+      </p>
 
       <div className="mb-3 flex flex-wrap gap-4">
         <label className="flex items-center gap-1.5">
