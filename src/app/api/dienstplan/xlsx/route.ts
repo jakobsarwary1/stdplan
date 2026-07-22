@@ -4,13 +4,11 @@ import { getCurrentUser } from '@/lib/auth'
 
 type XlsxRow = {
   driverName: string
-  date: string // bereits formatiert, z. B. "Mo. 01.06.26"
-  isoDate: string // "YYYY-MM-DD" - Roh-Datum für die Datums-/Ruhezeit-Berechnung
-  startMin: number // Minuten seit Mitternacht des isoDate
-  endMin: number // kann > 1440 sein (Schicht über Mitternacht)
-  start: string
-  end: string
-  breakLabel: string
+  date: string // bereits formatiert (nur für freie Tage als Text verwendet)
+  isoDate: string // "YYYY-MM-DD"
+  startMin: number
+  endMin: number
+  breakOffsetMin: number // Pausenbeginn als Offset (Min.) nach Schichtbeginn
   breakMinutes: number
   commuteMinutes: number
   netHours: number
@@ -23,27 +21,6 @@ type XlsxRow = {
   isFree?: boolean
 }
 
-// Wandelt (isoDate + Minuten seit Mitternacht) in eine Excel-Datumszahl
-// (Tage seit 1899-12-30) um. Bewusst über Date.UTC gerechnet, damit keine
-// Zeitzonen-Verschiebung entsteht - Minuten > 1440 rollen automatisch in
-// den Folgetag (Schicht über Mitternacht).
-function excelSerial(isoDate: string, minutes: number): number {
-  const [y, m, d] = isoDate.split('-').map(Number)
-  const ms = Date.UTC(y, m - 1, d) + minutes * 60000
-  return ms / 86400000 + 25569
-}
-
-// Spaltenindex (1-basiert) -> Excel-Spaltenbuchstabe (1 -> A, 27 -> AA).
-function colLetter(n: number): string {
-  let s = ''
-  while (n > 0) {
-    const rem = (n - 1) % 26
-    s = String.fromCharCode(65 + rem) + s
-    n = Math.floor((n - 1) / 26)
-  }
-  return s
-}
-
 type XlsxSummary = {
   driverName: string
   totalNet: number
@@ -52,31 +29,52 @@ type XlsxSummary = {
   sunday50: number
   holiday125: number
   grossWage?: number | null
+  hourlyRate?: number | null
   night25Amount?: number | null
   night40Amount?: number | null
   sunday50Amount?: number | null
   holiday125Amount?: number | null
 }
 
-// Immer dabei: Fahrer, Datum, Von, Bis. Alles danach ist über die
-// Spalten-Auswahl im Formular steuerbar - konsistent mit dem PDF-Export.
-const BASE_COLUMNS = [
-  { key: 'driverName', label: 'Fahrer', width: 22 },
-  { key: 'date', label: 'Datum', width: 18 },
-  { key: 'start', label: 'Von', width: 8 },
-  { key: 'end', label: 'Bis', width: 8 }
-]
+// (isoDate + Minuten seit Mitternacht) -> Excel-Datumszahl (Tage seit
+// 1899-12-30). Über Date.UTC, damit keine Zeitzonen-Verschiebung entsteht;
+// Minuten > 1440 rollen automatisch in den Folgetag.
+function excelSerial(isoDate: string, minutes: number): number {
+  const [y, m, d] = isoDate.split('-').map(Number)
+  const ms = Date.UTC(y, m - 1, d) + minutes * 60000
+  return ms / 86400000 + 25569
+}
+function colLetter(n: number): string {
+  let s = ''
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26) }
+  return s
+}
+// Nachname = ganzer Name ohne den ersten Namensteil (Vorname).
+function lastName(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/)
+  return parts.length > 1 ? parts.slice(1).join(' ') : fullName.trim()
+}
 
-const OPTIONAL_COLUMN_DEFS: Record<string, { label: string; width: number; value: (r: XlsxRow) => string | number }> = {
-  pause: { label: 'Pause', width: 10, value: (r) => (r.isFree ? '' : `${r.breakMinutes} min`) },
-  weg: { label: 'Weg', width: 10, value: (r) => (r.isFree ? '' : `${r.commuteMinutes} min`) },
-  netto: { label: 'Netto', width: 10, value: (r) => (r.isFree ? '' : r.netHours) },
-  gesamt: { label: 'Gesamt', width: 10, value: (r) => (r.isFree ? '' : r.totalHours) },
-  nacht25: { label: 'Nacht 25%', width: 12, value: (r) => (r.isFree || r.night25 <= 0.005 ? '' : r.night25) },
-  nacht40: { label: 'Nacht 40%', width: 12, value: (r) => (r.isFree || r.night40 <= 0.005 ? '' : r.night40) },
-  sonntag50: { label: 'Sonntag 50%', width: 12, value: (r) => (r.isFree || r.sunday50 <= 0.005 ? '' : r.sunday50) },
-  feiertag125: { label: 'Feiertag 125%', width: 13, value: (r) => (r.isFree || r.holiday125 <= 0.005 ? '' : r.holiday125) },
-  fahrzeug: { label: 'Fahrzeug', width: 12, value: (r) => (r.isFree ? '' : r.vehiclePlate) }
+// ---- JS-Spiegel der Excel-Zuschlagsformeln (identische Fenster/Logik),
+// nur um die `result`-Werte vorzuberechnen, damit die Datei sofort korrekte
+// Zahlen zeigt. In Excel rechnen die FORMELN bei jeder Änderung neu. ----
+function ov2day(a: number, b: number, w1: number, w2: number): number {
+  const D = Math.floor(a)
+  return Math.max(0, Math.min(b, D + w2) - Math.max(a, D + w1)) + Math.max(0, Math.min(b, D + 1 + w2) - Math.max(a, D + 1 + w1))
+}
+function weekday2(D: number): number {
+  const dow = new Date((Math.round(D) - 25569) * 86400000).getUTCDay()
+  return dow === 0 ? 7 : dow
+}
+function fullDay(a: number, b: number, sunday: boolean, holidaySerials: Set<number>): number {
+  const D = Math.floor(a)
+  let t = 0
+  for (const dd of [D, D + 1]) {
+    const isSun = weekday2(dd) === 7
+    const gate = sunday ? isSun : (holidaySerials.has(dd) && !isSun)
+    if (gate) t += Math.max(0, Math.min(b, dd + 1) - Math.max(a, dd))
+  }
+  return t
 }
 
 export async function POST(request: Request) {
@@ -86,119 +84,224 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Kein Firmenzugriff.' }, { status: 403 })
     }
 
-    const { title, rows, summaries, monthLabel, columns, vehiclePlate }: { title: string; rows: XlsxRow[]; summaries?: XlsxSummary[]; monthLabel?: string; columns?: string[]; vehiclePlate?: string } = await request.json()
+    const { title, rows, summaries, monthLabel, vehiclePlate, holidayDates: holidayDatesRaw }:
+      { title: string; rows: XlsxRow[]; summaries?: XlsxSummary[]; monthLabel?: string; vehiclePlate?: string; holidayDates?: string[] } = await request.json()
 
-    const activeOptionalColumns = (columns ?? ['pause', 'gesamt'])
-      .filter((key) => OPTIONAL_COLUMN_DEFS[key])
-      .map((key) => ({ key, ...OPTIONAL_COLUMN_DEFS[key] }))
-    // Am Ende immer drei zusätzliche Spalten: Beginn/Ende als echte
-    // Excel-Datums-/Zeitwerte und die Ruhezeit als NACHVOLLZIEHBARE FORMEL
-    // (Beginn dieser Schicht minus Ende der vorherigen Schicht, in Stunden).
-    const allColumns = [
-      ...BASE_COLUMNS,
-      ...activeOptionalColumns,
-      { key: 'beginn', label: 'Beginn (Datum/Zeit)', width: 18 },
-      { key: 'ende', label: 'Ende (Datum/Zeit)', width: 18 },
-      { key: 'ruhezeit', label: 'Ruhezeit vorher (Std.)', width: 20 }
+    const holidaySerials = (holidayDatesRaw ?? []).map((h) => Math.floor(excelSerial(h, 0)))
+    const holidaySerialSet = new Set(holidaySerials)
+
+    // ---- Spaltenlayout (fest, alle Felder sind Formeln außer den
+    // Eingabefeldern Beginn/Ende/Pause/Weg/Pause-Offset) ----
+    const COLS = {
+      fahrer: 1, datum: 2, beginn: 3, ende: 4, pause: 5, weg: 6,
+      netto: 7, gesamt: 8, ruhe: 9, n25: 10, n40: 11, so50: 12, fe125: 13,
+      pOffset: 14, pBeginn: 15, pEnde: 16
+    }
+    const HEADERS: [number, string, number][] = [
+      [COLS.fahrer, 'Fahrer', 18], [COLS.datum, 'Datum', 16],
+      [COLS.beginn, 'Beginn', 17], [COLS.ende, 'Ende', 17],
+      [COLS.pause, 'Pause (Min.)', 11], [COLS.weg, 'Weg (Min.)', 10],
+      [COLS.netto, 'Netto (Std.)', 11], [COLS.gesamt, 'Gesamt (Std.)', 12],
+      [COLS.ruhe, 'Ruhezeit vorher (Std.)', 20],
+      [COLS.n25, 'Nacht 25%', 11], [COLS.n40, 'Nacht 40%', 11],
+      [COLS.so50, 'Sonntag 50%', 12], [COLS.fe125, 'Feiertag 125%', 13],
+      [COLS.pOffset, 'Pausenlage (Min. n. Beginn)', 24], [COLS.pBeginn, 'Pause-Beginn', 16], [COLS.pEnde, 'Pause-Ende', 16]
     ]
-    const nCols = allColumns.length
-    const beginnCol = BASE_COLUMNS.length + activeOptionalColumns.length + 1
-    const endeCol = beginnCol + 1
-    const ruheCol = beginnCol + 2
+    const nCols = HEADERS.length
+    const L = (c: number) => colLetter(c)
 
     const workbook = new ExcelJS.Workbook()
     workbook.creator = 'FleetOS'
     workbook.created = new Date()
+    workbook.calcProperties.fullCalcOnLoad = true // erzwingt Neuberechnung beim Öffnen
 
-    // ---- Blatt 1: Dienstplan ----
     const sheet = workbook.addWorksheet('Dienstplan')
-    sheet.columns = allColumns.map((c) => ({ width: c.width }))
+    HEADERS.forEach(([c, , w]) => { sheet.getColumn(c).width = w })
 
-    // Kopfzeile mit Titel + Monat/Fahrzeug
     const titleParts = [title, monthLabel, vehiclePlate ? `[${vehiclePlate}]` : ''].filter(Boolean)
     const titleRow = sheet.addRow([titleParts.join('  ·  ')])
     titleRow.font = { bold: true, size: 14 }
     sheet.mergeCells(1, 1, 1, nCols)
     sheet.addRow([])
 
-    const headerRow = sheet.addRow(allColumns.map((c) => c.label))
+    const headerRow = sheet.addRow(HEADERS.map(([, label]) => label))
     headerRow.font = { bold: true }
     headerRow.eachCell((cell) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFEFEF' } }
       cell.border = { bottom: { style: 'thin', color: { argb: 'FFB0B0B0' } } }
+      cell.alignment = { wrapText: true, vertical: 'middle' }
     })
 
-    const DATETIME_FMT = 'dd.mm.yyyy hh:mm'
-    let prevWorkEndeRow = 0 // Excel-Zeilennummer der Ende-Zelle der zuletzt geschriebenen Arbeitsschicht
-    let prevWorkEndeSerial = 0 // deren Datums-/Zeitwert (für das vorberechnete Formel-Ergebnis)
+    const DT = 'dd.mm.yyyy hh:mm'
+    const inputFill: ExcelJS.Fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF7D6' } } // hellgelb = editierbar
+
+    // Inline-Ausdruck: Überlappung von [a,b] mit dem Tagesfenster [w1,w2]
+    // über zwei Tage (Schicht ≤ 2 Kalendertage).
+    const ov = (a: string, b: string, w1: string, w2: string) =>
+      `MAX(0,MIN(${b},INT(${a})+${w2})-MAX(${a},INT(${a})+${w1}))+MAX(0,MIN(${b},INT(${a})+1+${w2})-MAX(${a},INT(${a})+1+${w1}))`
+    const fullSun = (a: string, b: string) =>
+      `(WEEKDAY(INT(${a}),2)=7)*MAX(0,MIN(${b},INT(${a})+1)-MAX(${a},INT(${a})))+(WEEKDAY(INT(${a})+1,2)=7)*MAX(0,MIN(${b},INT(${a})+2)-MAX(${a},INT(${a})+1))`
+    const holGate = (dd: string) =>
+      holidaySerials.length === 0 ? '0' : `(OR(${holidaySerials.map((s) => `INT(${dd})=${s}`).join(',')}))*(WEEKDAY(${dd},2)<>7)`
+    const fullHol = (a: string, b: string) =>
+      holidaySerials.length === 0 ? '0'
+        : `(${holGate(`INT(${a})`)})*MAX(0,MIN(${b},INT(${a})+1)-MAX(${a},INT(${a})))+(${holGate(`INT(${a})+1`)})*MAX(0,MIN(${b},INT(${a})+2)-MAX(${a},INT(${a})+1))`
+
+    let firstDataRow = 0, lastDataRow = 0
+    let prevWorkEndeRow = 0, prevWorkEndeSerial = 0
+
     rows.forEach((r) => {
-      const baseValues = r.isFree
-        ? [r.driverName, r.date, '', '', ...activeOptionalColumns.map(() => '')]
-        : [r.driverName, r.date, r.start, r.end, ...activeOptionalColumns.map((c) => c.value(r))]
-      const row = sheet.addRow(baseValues)
       if (r.isFree) {
+        const row = sheet.addRow([lastName(r.driverName), r.date])
         row.font = { color: { argb: 'FF999999' }, italic: true }
+        if (firstDataRow === 0) firstDataRow = row.number
+        lastDataRow = row.number
         return
       }
+      const R = sheet.addRow([lastName(r.driverName)]).number
+      if (firstDataRow === 0) firstDataRow = R
+      lastDataRow = R
+      const cell = (c: number) => sheet.getCell(R, c)
 
-      // Beginn/Ende als echte Datums-/Zeitwerte (für die Ruhezeit-Formel).
+      // Eingabefelder
       const beginnSerial = excelSerial(r.isoDate, r.startMin)
       const endeSerial = excelSerial(r.isoDate, r.endMin)
-      const beginnCell = row.getCell(beginnCol)
-      beginnCell.value = beginnSerial
-      beginnCell.numFmt = DATETIME_FMT
-      const endeCell = row.getCell(endeCol)
-      endeCell.value = endeSerial
-      endeCell.numFmt = DATETIME_FMT
+      const cB = cell(COLS.beginn); cB.value = beginnSerial; cB.numFmt = DT; cB.fill = inputFill
+      const cE = cell(COLS.ende); cE.value = endeSerial; cE.numFmt = DT; cE.fill = inputFill
+      const cP = cell(COLS.pause); cP.value = r.breakMinutes; cP.numFmt = '0'; cP.fill = inputFill
+      const cW = cell(COLS.weg); cW.value = r.commuteMinutes; cW.numFmt = '0'; cW.fill = inputFill
+      const cO = cell(COLS.pOffset); cO.value = r.breakOffsetMin; cO.numFmt = '0'; cO.fill = inputFill
 
-      // Ruhezeit = (Beginn dieser Schicht − Ende der vorherigen Schicht) × 24
-      // als echte Excel-Formel, damit in der Datei nachvollziehbar ist, wie
-      // der Wert zustande kommt. Erste Arbeitsschicht: keine Vorschicht.
-      const ruheCell = row.getCell(ruheCol)
+      const bRef = `${L(COLS.beginn)}${R}`, eRef = `${L(COLS.ende)}${R}`
+      const pRef = `${L(COLS.pause)}${R}`, wRef = `${L(COLS.weg)}${R}`, oRef = `${L(COLS.pOffset)}${R}`
+      const pbRef = `${L(COLS.pBeginn)}${R}`, peRef = `${L(COLS.pEnde)}${R}`
+
+      // Datum = Beginn (nur anders formatiert)
+      const cD = cell(COLS.datum); cD.value = { formula: bRef, result: beginnSerial }; cD.numFmt = 'ddd dd.mm.yyyy'
+
+      // Pause-Beginn / Pause-Ende (Hilfsspalten für die Zuschlagsformeln)
+      const pbSerial = excelSerial(r.isoDate, r.startMin + r.breakOffsetMin)
+      const peSerial = excelSerial(r.isoDate, r.startMin + r.breakOffsetMin + r.breakMinutes)
+      const cPB = cell(COLS.pBeginn); cPB.value = { formula: `${bRef}+${oRef}/1440`, result: pbSerial }; cPB.numFmt = DT
+      const cPE = cell(COLS.pEnde); cPE.value = { formula: `${pbRef}+${pRef}/1440`, result: peSerial }; cPE.numFmt = DT
+
+      // Netto / Gesamt
+      const cN = cell(COLS.netto); cN.value = { formula: `(${eRef}-${bRef})*24-${pRef}/60`, result: r.netHours }; cN.numFmt = '0.00'
+      const cG = cell(COLS.gesamt); cG.value = { formula: `(${eRef}-${bRef})*24+${wRef}/60`, result: r.totalHours }; cG.numFmt = '0.00'
+
+      // Ruhezeit gegenüber der vorherigen Arbeitsschicht
+      const cR = cell(COLS.ruhe)
       if (prevWorkEndeRow > 0) {
-        const beginnRef = `${colLetter(beginnCol)}${row.number}`
-        const endePrevRef = `${colLetter(endeCol)}${prevWorkEndeRow}`
-        ruheCell.value = { formula: `(${beginnRef}-${endePrevRef})*24`, result: (beginnSerial - prevWorkEndeSerial) * 24 }
+        cR.value = { formula: `(${bRef}-${L(COLS.ende)}${prevWorkEndeRow})*24`, result: (beginnSerial - prevWorkEndeSerial) * 24 }
       }
-      ruheCell.numFmt = '0.00'
-      prevWorkEndeRow = row.number
+      cR.numFmt = '0.00'
+
+      // Zuschläge (Formel = Überlappung Schicht − Überlappung Pause)
+      const n40 = (ov2day(beginnSerial, endeSerial, 0, 4 / 24) - ov2day(pbSerial, peSerial, 0, 4 / 24)) * 24
+      const n25 = ((ov2day(beginnSerial, endeSerial, 4 / 24, 6 / 24) + ov2day(beginnSerial, endeSerial, 20 / 24, 1))
+        - (ov2day(pbSerial, peSerial, 4 / 24, 6 / 24) + ov2day(pbSerial, peSerial, 20 / 24, 1))) * 24
+      const so50 = (fullDay(beginnSerial, endeSerial, true, holidaySerialSet) - fullDay(pbSerial, peSerial, true, holidaySerialSet)) * 24
+      const fe125 = (fullDay(beginnSerial, endeSerial, false, holidaySerialSet) - fullDay(pbSerial, peSerial, false, holidaySerialSet)) * 24
+
+      const cN25 = cell(COLS.n25)
+      cN25.value = { formula: `((${ov(bRef, eRef, '4/24', '6/24')})+(${ov(bRef, eRef, '20/24', '1')})-((${ov(pbRef, peRef, '4/24', '6/24')})+(${ov(pbRef, peRef, '20/24', '1')})))*24`, result: n25 }
+      cN25.numFmt = '0.00'
+      const cN40 = cell(COLS.n40)
+      cN40.value = { formula: `((${ov(bRef, eRef, '0', '4/24')})-(${ov(pbRef, peRef, '0', '4/24')}))*24`, result: n40 }
+      cN40.numFmt = '0.00'
+      const cSo = cell(COLS.so50)
+      cSo.value = { formula: `((${fullSun(bRef, eRef)})-(${fullSun(pbRef, peRef)}))*24`, result: so50 }
+      cSo.numFmt = '0.00'
+      const cFe = cell(COLS.fe125)
+      cFe.value = { formula: `((${fullHol(bRef, eRef)})-(${fullHol(pbRef, peRef)}))*24`, result: fe125 }
+      cFe.numFmt = '0.00'
+
+      prevWorkEndeRow = R
       prevWorkEndeSerial = endeSerial
     })
 
-    // Erläuterung zur Ruhezeit-Berechnung unter die Tabelle setzen
+    // Hilfsspalten (Pause-Beginn/-Ende) ausblenden - stören sonst nur.
+    sheet.getColumn(COLS.pBeginn).hidden = true
+    sheet.getColumn(COLS.pEnde).hidden = true
+
+    // Erläuterung unter die Tabelle
     sheet.addRow([])
-    const noteRow = sheet.addRow([
-      'Ruhezeit vorher (Std.) = (Beginn dieser Schicht − Ende der vorherigen Schicht) × 24. Gesetzliche Mindestruhezeit i. d. R. 11 Std. (§ 5 ArbZG). Die Spalten Beginn/Ende sind echte Datums-/Zeitwerte; die Ruhezeit-Zelle enthält die Formel und rechnet sich in Excel automatisch neu.'
+    const note = sheet.addRow([
+      'Gelbe Felder (Beginn, Ende, Pause, Weg, Pausenlage) sind editierbar - alle übrigen Spalten (Netto, Gesamt, Ruhezeit, Zuschläge) sind Formeln und berechnen sich beim Ändern automatisch neu. Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause.'
     ])
-    noteRow.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
-    sheet.mergeCells(noteRow.number, 1, noteRow.number, nCols)
-    noteRow.getCell(1).alignment = { wrapText: true }
+    note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
+    sheet.mergeCells(note.number, 1, note.number, nCols)
+    note.getCell(1).alignment = { wrapText: true }
 
-    // ---- Blatt 2: Monatszusammenfassung ----
+    // ---- Blatt 2: Zusammenfassung (live, per SUMIFS auf den Dienstplan) ----
     if (summaries && summaries.length > 0) {
-      const sumSheet = workbook.addWorksheet('Zusammenfassung')
-      sumSheet.columns = [{ width: 32 }, { width: 16 }, { width: 16 }]
+      const sum = workbook.addWorksheet('Zusammenfassung')
+      sum.getColumn(1).width = 32; sum.getColumn(2).width = 16; sum.getColumn(3).width = 16
+      const dp = 'Dienstplan!'
+      const colRange = (c: number) => `${dp}$${L(c)}$${firstDataRow}:$${L(c)}$${lastDataRow || firstDataRow}`
+      const fahrerRange = `${dp}$${L(COLS.fahrer)}$${firstDataRow}:$${L(COLS.fahrer)}$${lastDataRow || firstDataRow}`
 
-      const fmtEur = (v?: number | null) => (v != null ? `${v.toFixed(2)} EUR` : '–')
-      const t = sumSheet.addRow(['Monatszusammenfassung'])
-      t.font = { bold: true, size: 14 }
-      sumSheet.addRow([])
+      const t = sum.addRow(['Monatszusammenfassung']); t.font = { bold: true, size: 14 }
+      sum.addRow([])
 
-      summaries.forEach((s) => {
-        const nameRow = sumSheet.addRow([s.driverName])
-        nameRow.font = { bold: true, size: 12 }
-        sumSheet.addRow(['Gesamt (Netto)', `${s.totalNet.toFixed(2)} h`])
-        sumSheet.addRow(['Nachtzuschlag 25 %', `${s.night25.toFixed(2)} h`, fmtEur(s.night25Amount)])
-        sumSheet.addRow(['Nachtzuschlag 40 % steuerfrei', `${s.night40.toFixed(2)} h`, fmtEur(s.night40Amount)])
-        sumSheet.addRow(['Sonntagszuschlag 50 %', `${s.sunday50.toFixed(2)} h`, fmtEur(s.sunday50Amount)])
-        sumSheet.addRow(['Feiertagszuschlag 125 %', `${s.holiday125.toFixed(2)} h`, fmtEur(s.holiday125Amount)])
-        sumSheet.addRow(['Bruttolohn (geschätzt)', fmtEur(s.grossWage)])
-        sumSheet.addRow([])
+      const perDriverEuroCells: string[] = []
+      const perDriverBruttoCells: string[] = []
+
+      summaries.filter((s) => s.driverName !== 'Gesamt (alle Fahrer)').forEach((s) => {
+        const surname = lastName(s.driverName)
+        const nameRow = sum.addRow([surname]); nameRow.font = { bold: true, size: 12 }
+        const nameRef = `A${nameRow.number}`
+
+        const rateRow = sum.addRow(['Stundenlohn (EUR, editierbar)', s.hourlyRate ?? null])
+        const rateCell = rateRow.getCell(2)
+        rateCell.numFmt = '0.00'; rateCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF7D6' } }
+        const rateRef = `B${rateRow.number}`
+
+        // Std.-Summen per SUMIFS (live)
+        const addStat = (label: string, col: number, result: number, factor: number | null, amountResult: number | null | undefined) => {
+          const row = sum.addRow([label])
+          const stdCell = row.getCell(2)
+          stdCell.value = { formula: `SUMIFS(${colRange(col)},${fahrerRange},${nameRef})`, result }
+          stdCell.numFmt = '0.00'
+          if (factor != null) {
+            const amtCell = row.getCell(3)
+            amtCell.value = { formula: `B${row.number}*${rateRef}*${factor}`, result: amountResult ?? 0 }
+            amtCell.numFmt = '0.00 "EUR"'
+          }
+          return `B${row.number}`
+        }
+        const nettoRef = addStat('Netto (Std.)', COLS.netto, s.totalNet, null, null)
+        addStat('Nachtzuschlag 25 %', COLS.n25, s.night25, 0.25, s.night25Amount)
+        addStat('Nachtzuschlag 40 % steuerfrei', COLS.n40, s.night40, 0.4, s.night40Amount)
+        const soRef = addStat('Sonntagszuschlag 50 %', COLS.so50, s.sunday50, 0.5, s.sunday50Amount)
+        const feRef = addStat('Feiertagszuschlag 125 %', COLS.fe125, s.holiday125, 1.25, s.holiday125Amount)
+
+        // Bruttolohn (geschätzt) = Netto*Satz + Sonntag*Satz*0,5 + Feiertag*Satz*1,25
+        const bruttoRow = sum.addRow(['Bruttolohn (geschätzt)'])
+        const bruttoCell = bruttoRow.getCell(2)
+        bruttoCell.value = { formula: `${nettoRef}*${rateRef}+${soRef}*${rateRef}*0.5+${feRef}*${rateRef}*1.25`, result: s.grossWage ?? 0 }
+        bruttoCell.numFmt = '0.00 "EUR"'
+        perDriverEuroCells.push(`B${bruttoRow.number}`)
+        perDriverBruttoCells.push(`B${bruttoRow.number}`)
+        sum.addRow([])
       })
+
+      // Gesamt über alle Fahrer (Summe der Fahrer-Bruttolöhne)
+      if (perDriverBruttoCells.length > 1) {
+        const gRow = sum.addRow(['Bruttolohn gesamt (alle Fahrer)'])
+        gRow.font = { bold: true }
+        const gCell = gRow.getCell(2)
+        gCell.value = { formula: perDriverBruttoCells.join('+'), result: 0 }
+        gCell.numFmt = '0.00 "EUR"'
+      }
+
+      const legend = sum.addRow(['Gelbe Felder (Stundenlohn) editierbar - Beträge und Bruttolohn rechnen sich automatisch neu. Stunden per SUMIFS direkt aus dem Blatt "Dienstplan".'])
+      legend.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
+      sum.mergeCells(legend.number, 1, legend.number, 3)
+      legend.getCell(1).alignment = { wrapText: true }
     }
 
     const buffer = await workbook.xlsx.writeBuffer()
-
     return new NextResponse(Buffer.from(buffer), {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
