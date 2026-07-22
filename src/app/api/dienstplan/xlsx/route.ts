@@ -116,7 +116,9 @@ export async function POST(request: Request) {
     workbook.calcProperties.fullCalcOnLoad = true // erzwingt Neuberechnung beim Öffnen
 
     const sheet = workbook.addWorksheet('Dienstplan')
-    HEADERS.forEach(([c, , w]) => { sheet.getColumn(c).width = w })
+    // Alle Spalten linksbündig (Excel würde Zahlen/Datum sonst rechtsbündig
+    // ausrichten).
+    HEADERS.forEach(([c, , w]) => { sheet.getColumn(c).width = w; sheet.getColumn(c).alignment = { horizontal: 'left' } })
 
     const titleParts = [title, monthLabel, vehiclePlate ? `[${vehiclePlate}]` : ''].filter(Boolean)
     const titleRow = sheet.addRow([titleParts.join('  ·  ')])
@@ -129,7 +131,7 @@ export async function POST(request: Request) {
     headerRow.eachCell((cell) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFEFEF' } }
       cell.border = { bottom: { style: 'thin', color: { argb: 'FFB0B0B0' } } }
-      cell.alignment = { wrapText: true, vertical: 'middle' }
+      cell.alignment = { wrapText: true, vertical: 'middle', horizontal: 'left' }
     })
 
     const DT = 'dd.mm.yyyy hh:mm'
@@ -296,6 +298,15 @@ export async function POST(request: Request) {
     note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
     sheet.mergeCells(note.number, 1, note.number, nCols)
     note.getCell(1).alignment = { wrapText: true }
+
+    // Sicherstellen, dass ALLE Zellen linksbündig sind (Zahlen/Datum wären
+    // sonst rechtsbündig) - vorhandene Ausrichtung (z. B. Zeilenumbruch)
+    // bleibt erhalten, nur die horizontale Ausrichtung wird auf links gesetzt.
+    sheet.eachRow((row) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        cell.alignment = { ...(cell.alignment ?? {}), horizontal: 'left' }
+      })
+    })
 
     const buffer = await workbook.xlsx.writeBuffer()
     return new NextResponse(Buffer.from(buffer), {
