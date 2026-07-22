@@ -267,27 +267,35 @@ export async function POST(request: Request) {
         const nameRow = sheet.addRow([surname]); nameRow.getCell(1).font = { bold: true, size: 12 }
         const nameRef = `$${L(COLS.fahrer)}$${nameRow.number}`
 
+        // Zellen für die Zusammenfassung großzügig verbinden, damit die
+        // (teils langen) Euro-Beträge nicht als "######" abgeschnitten
+        // werden: Label = Spalten 1-3, Std.-Wert = Spalten 4-5, Betrag =
+        // Spalten 6-8.
+        const LABEL_TO = 3, STD_COL = 4, STD_TO = 5, AMT_COL = 6, AMT_TO = 8
+
         // Editierbarer Stundenlohn (Eingabefeld)
         const rateRow = sheet.addRow(['Stundenlohn (EUR)'])
-        sheet.mergeCells(rateRow.number, 1, rateRow.number, 3)
-        const rateCell = rateRow.getCell(4)
+        sheet.mergeCells(rateRow.number, 1, rateRow.number, LABEL_TO)
+        sheet.mergeCells(rateRow.number, STD_COL, rateRow.number, STD_TO)
+        const rateCell = rateRow.getCell(STD_COL)
         rateCell.value = s.hourlyRate ?? null
         rateCell.numFmt = '0.00'; rateCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF7D6' } }
-        const rateRef = `$${L(4)}$${rateRow.number}`
+        const rateRef = `$${L(STD_COL)}$${rateRow.number}`
 
-        // Std. (SUMIFS, live) in Spalte 4, Betrag (EUR) in Spalte 5
         const addStat = (label: string, col: number, result: number, factor: number | null, amountResult: number | null | undefined) => {
           const row = sheet.addRow([label])
-          sheet.mergeCells(row.number, 1, row.number, 3)
-          const stdCell = row.getCell(4)
+          sheet.mergeCells(row.number, 1, row.number, LABEL_TO)
+          sheet.mergeCells(row.number, STD_COL, row.number, STD_TO)
+          const stdCell = row.getCell(STD_COL)
           stdCell.value = { formula: `SUMIFS(${colRange(col)},${fahrerRange},${nameRef})`, result }
           stdCell.numFmt = '0.00'
           if (factor != null) {
-            const amtCell = row.getCell(5)
-            amtCell.value = { formula: `${L(4)}${row.number}*${rateRef}*${factor}`, result: amountResult ?? 0 }
+            sheet.mergeCells(row.number, AMT_COL, row.number, AMT_TO)
+            const amtCell = row.getCell(AMT_COL)
+            amtCell.value = { formula: `${L(STD_COL)}${row.number}*${rateRef}*${factor}`, result: amountResult ?? 0 }
             amtCell.numFmt = '0.00 "EUR"'
           }
-          return `${L(4)}${row.number}`
+          return `${L(STD_COL)}${row.number}`
         }
         const nettoRef = addStat('Netto (Std.)', COLS.netto, s.totalNet, null, null)
         addStat('Nachtzuschlag 25 %', COLS.n25, s.night25, 0.25, s.night25Amount)
@@ -297,17 +305,19 @@ export async function POST(request: Request) {
 
         const bruttoRow = sheet.addRow(['Bruttolohn (geschätzt)'])
         bruttoRow.getCell(1).font = { bold: true }
-        sheet.mergeCells(bruttoRow.number, 1, bruttoRow.number, 3)
-        const bruttoCell = bruttoRow.getCell(4)
+        sheet.mergeCells(bruttoRow.number, 1, bruttoRow.number, LABEL_TO)
+        sheet.mergeCells(bruttoRow.number, STD_COL, bruttoRow.number, AMT_TO)
+        const bruttoCell = bruttoRow.getCell(STD_COL)
         bruttoCell.value = { formula: `${nettoRef}*${rateRef}+${soRef}*${rateRef}*0.5+${feRef}*${rateRef}*1.25`, result: s.grossWage ?? 0 }
         bruttoCell.numFmt = '0.00 "EUR"'; bruttoCell.font = { bold: true }
-        perDriverBruttoRefs.push(`${L(4)}${bruttoRow.number}`)
+        perDriverBruttoRefs.push(`${L(STD_COL)}${bruttoRow.number}`)
         sheet.addRow([])
       })
 
       if (perDriverBruttoRefs.length > 1) {
         const gRow = sheet.addRow(['Bruttolohn gesamt (alle Fahrer)']); gRow.getCell(1).font = { bold: true }
         sheet.mergeCells(gRow.number, 1, gRow.number, 3)
+        sheet.mergeCells(gRow.number, 4, gRow.number, 8)
         const gCell = gRow.getCell(4)
         gCell.value = { formula: perDriverBruttoRefs.join('+'), result: 0 }
         gCell.numFmt = '0.00 "EUR"'; gCell.font = { bold: true }
