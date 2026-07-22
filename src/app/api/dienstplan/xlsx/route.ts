@@ -93,16 +93,17 @@ export async function POST(request: Request) {
     // ---- Spaltenlayout (fest, alle Felder sind Formeln außer den
     // Eingabefeldern Beginn/Ende/Pause/Weg/Pause-Offset) ----
     const COLS = {
-      fahrer: 1, datum: 2, beginn: 3, ende: 4, pause: 5, weg: 6,
-      netto: 7, gesamt: 8, ruhe: 9, n25: 10, n40: 11, so50: 12, fe125: 13,
-      pOffset: 14, pBeginn: 15, pEnde: 16
+      fahrer: 1, datum: 2, von: 3, bis: 4, beginn: 5, ende: 6, pause: 7, weg: 8,
+      netto: 9, gesamt: 10, ruhe: 11, n25: 12, n40: 13, so50: 14, fe125: 15,
+      pOffset: 16, pBeginn: 17, pEnde: 18
     }
     const HEADERS: [number, string, number][] = [
       [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 13],
+      [COLS.von, 'Von', 7], [COLS.bis, 'Bis', 7],
       [COLS.beginn, 'Beginn', 14], [COLS.ende, 'Ende', 14],
-      [COLS.pause, 'Pause', 7], [COLS.weg, 'Weg', 6],
-      [COLS.netto, 'Netto', 7], [COLS.gesamt, 'Gesamt', 8],
-      [COLS.ruhe, 'Ruhezeit', 9],
+      [COLS.pause, 'Pause (Min.)', 9], [COLS.weg, 'Weg (Min.)', 8],
+      [COLS.netto, 'Netto (Std.)', 9], [COLS.gesamt, 'Gesamt (Std.)', 10],
+      [COLS.ruhe, 'Ruhezeit (Std.)', 10],
       [COLS.n25, 'Nacht 25%', 8], [COLS.n40, 'Nacht 40%', 8],
       [COLS.so50, 'Sonntag 50%', 8], [COLS.fe125, 'Feiertag 125%', 9],
       [COLS.pOffset, 'Pausenlage (Hilfsspalte)', 22], [COLS.pBeginn, 'Pause-Beginn (Hilfsspalte)', 16], [COLS.pEnde, 'Pause-Ende (Hilfsspalte)', 16]
@@ -192,6 +193,10 @@ export async function POST(request: Request) {
 
       // Datum = Beginn (nur anders formatiert)
       const cD = cell(COLS.datum); cD.value = { formula: bRef, result: beginnSerial }; cD.numFmt = 'ddd dd.mm.yyyy'
+      // Von/Bis = reine Uhrzeit (klassischer Dienstplan-Look), Formeln auf
+      // Beginn/Ende - aktualisieren sich also automatisch mit.
+      const cVon = cell(COLS.von); cVon.value = { formula: bRef, result: beginnSerial }; cVon.numFmt = 'hh:mm'
+      const cBis = cell(COLS.bis); cBis.value = { formula: eRef, result: endeSerial }; cBis.numFmt = 'hh:mm'
 
       // Pause-Beginn / Pause-Ende (Hilfsspalten für die Zuschlagsformeln)
       const pbSerial = excelSerial(r.isoDate, r.startMin + r.breakOffsetMin)
@@ -312,7 +317,7 @@ export async function POST(request: Request) {
     // Erläuterung unter die Zusammenfassung
     sheet.addRow([])
     const note = sheet.addRow([
-      'Gelbe Felder (Beginn, Ende, Pause, Weg) sind editierbar - alle übrigen Spalten (Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause.'
+      'Gelbe Felder (Beginn, Ende, Pause, Weg) sind editierbar - alle übrigen Spalten (Von/Bis, Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Von/Bis zeigen nur die Uhrzeit von Beginn/Ende (klassischer Dienstplan-Look); Beginn/Ende enthalten zusätzlich das Datum (wichtig bei Schichten über Mitternacht). Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause.'
     ])
     note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
     sheet.mergeCells(note.number, 1, note.number, nCols)
