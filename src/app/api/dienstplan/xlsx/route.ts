@@ -130,7 +130,9 @@ export async function POST(request: Request) {
     // ausrichten).
     HEADERS.forEach(([c, , w]) => { sheet.getColumn(c).width = w; sheet.getColumn(c).alignment = { horizontal: 'left' } })
 
-    const titleParts = [title, monthLabel, vehiclePlate ? `[${vehiclePlate}]` : ''].filter(Boolean)
+    // Voller Name (Vor- und Nachname) des/der Fahrer(s) für die Überschrift.
+    const driverFullNames = Array.from(new Set(rows.filter((r) => !r.isFree).map((r) => r.driverName)))
+    const titleParts = [title, driverFullNames.join(', '), monthLabel, vehiclePlate ? `[${vehiclePlate}]` : ''].filter(Boolean)
     const titleRow = sheet.addRow([titleParts.join('  ·  ')])
     titleRow.font = { bold: true, size: 14 }
     sheet.mergeCells(1, 1, 1, nCols)
@@ -248,7 +250,10 @@ export async function POST(request: Request) {
       const colRange = (c: number) => `$${L(c)}$${firstDataRow}:$${L(c)}$${lastDataRow}`
       const fahrerRange = `$${L(COLS.fahrer)}$${firstDataRow}:$${L(COLS.fahrer)}$${lastDataRow}`
 
-      sheet.addRow([])
+      const spacer = sheet.addRow([])
+      // Seitenumbruch nach dem Dienstplan: die Monatszusammenfassung wird
+      // dadurch auf einer separaten Seite ausgedruckt.
+      spacer.addPageBreak()
       const head = sheet.addRow(['Monatszusammenfassung']); head.font = { bold: true, size: 13 }
 
       const perDriverBruttoRefs: string[] = []
