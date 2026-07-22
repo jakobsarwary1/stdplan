@@ -138,7 +138,7 @@ async function downloadExcel(
     if (r.isFree) {
       return {
         driverName: r.driverName,
-        date: `frei (${fmtDateDEWithWeekday(r.date)})`,
+        date: fmtDateDEWithWeekday(r.date), // nur das Datum, kein "frei" (bläht die Zelle sonst auf)
         isoDate: r.date, startMin: 0, endMin: 0,
         start: '', end: '', breakLabel: '', breakMinutes: 0, commuteMinutes: 0,
         netHours: 0, totalHours: 0,
