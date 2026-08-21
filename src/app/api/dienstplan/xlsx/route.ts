@@ -20,6 +20,8 @@ type XlsxRow = {
   sunday50: number
   holiday125: number
   isFree?: boolean
+  /** Grund der Abwesenheit ("Beurlaubt", "Krankgeschrieben"); leer = einfach frei. */
+  freeLabel?: string | null
 }
 
 type XlsxSummary = {
@@ -177,7 +179,9 @@ export async function POST(request: Request) {
 
     rows.forEach((r) => {
       if (r.isFree) {
-        const row = sheet.addRow([lastName(r.driverName), r.date])
+        // Beurlaubt/Krankgeschrieben stehen als Wort daneben; ein schlicht
+        // freier Tag bleibt wie bisher ohne Zusatz (sonst blähen die Zeilen auf).
+        const row = sheet.addRow([lastName(r.driverName), r.date, r.freeLabel ?? ''])
         row.font = { color: { argb: 'FF999999' }, italic: true }
         if (firstDataRow === 0) firstDataRow = row.number
         lastDataRow = row.number

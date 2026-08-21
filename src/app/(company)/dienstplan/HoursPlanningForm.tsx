@@ -146,7 +146,10 @@ async function downloadExcel(
         netHours: 0, totalHours: 0,
         vehiclePlate: '',
         night25: 0, night40: 0, sunday50: 0, holiday125: 0,
-        isFree: true
+        isFree: true,
+        // Nur die vom Nutzer gewählten Gründe wandern in die Datei; ein
+        // planerisch freier Tag bleibt wie bisher ohne Zusatztext.
+        freeLabel: r.absenceKind === 'urlaub' ? 'Beurlaubt' : r.absenceKind === 'krank' ? 'Krankgeschrieben' : null
       }
     }
     const day = computeSurcharges([r], holidayDates)
@@ -339,19 +342,40 @@ const WEEKDAY_LABELS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So']
  * als kommagetrennte YYYY-MM-DD-Liste in ein verstecktes Feld geschrieben,
  * das die Server-Action (driver{index}ExcludedDates) ausliest.
  */
+/** Abwesenheitsarten, die im Kalender je Tag gewählt werden können. */
+const ABSENCE_KINDS = [
+  { key: 'frei', label: 'Frei', kurz: 'F', klasse: 'bg-textMuted text-white' },
+  { key: 'urlaub', label: 'Beurlaubt', kurz: 'U', klasse: 'bg-accent text-white' },
+  { key: 'krank', label: 'Krankgeschrieben', kurz: 'K', klasse: 'bg-danger text-white' }
+] as const
+type AbsenceKind = (typeof ABSENCE_KINDS)[number]['key']
+
+/**
+ * Kalender zum Markieren einzelner Tage für den aktuell gewählten Monat.
+ * Ein Klick schaltet den Tag weiter: frei → beurlaubt → krankgeschrieben →
+ * wieder ohne Eintrag. Für die Planung wirken alle drei gleich (an dem Tag
+ * entsteht keine Schicht); der Unterschied zählt für Lohnabrechnung und
+ * Nachweis, deshalb wird die Art mitgeführt.
+ *
+ * Geschrieben wird eine Liste "YYYY-MM-DD:art" in ein verstecktes Feld, das
+ * die Server-Action (driver{index}ExcludedDates) ausliest.
+ */
 function ExcludedDaysCalendar({ index, year, month }: { index: 1 | 2; year: number; month: number }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [marked, setMarked] = useState<Map<string, AbsenceKind>>(new Map())
 
   const daysInMonth = new Date(year, month, 0).getDate() // month ist 1-12
   const firstWeekday = (new Date(year, month - 1, 1).getDay() + 6) % 7 // Montag = 0
   const pad = (n: number) => String(n).padStart(2, '0')
 
-  function toggle(day: number) {
+  function cycle(day: number) {
     const key = `${year}-${pad(month)}-${pad(day)}`
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
+    setMarked((prev) => {
+      const next = new Map(prev)
+      const aktuell = next.get(key)
+      const idx = ABSENCE_KINDS.findIndex((a) => a.key === aktuell)
+      // -1 (nicht gesetzt) -> 0, letzter Eintrag -> wieder entfernen
+      if (idx === ABSENCE_KINDS.length - 1) next.delete(key)
+      else next.set(key, ABSENCE_KINDS[idx + 1].key)
       return next
     })
   }
@@ -361,10 +385,20 @@ function ExcludedDaysCalendar({ index, year, month }: { index: 1 | 2; year: numb
     ...Array.from({ length: daysInMonth }, (_, i) => i + 1)
   ]
 
+  const wert = Array.from(marked.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([datum, art]) => `${datum}:${art}`)
+    .join(',')
+
+  const zusammenfassung = ABSENCE_KINDS.map((a) => {
+    const tage = Array.from(marked.entries()).filter(([, art]) => art === a.key).map(([d]) => d.slice(8))
+    return tage.length ? `${a.label}: ${tage.sort().join(', ')}` : null
+  }).filter(Boolean).join(' · ')
+
   return (
     <div className="field col-span-2">
-      <label className="label">Ausschluss-Tage (z. B. Krankheit, Urlaub)</label>
-      <input type="hidden" name={`driver${index}ExcludedDates`} value={Array.from(selected).join(',')} />
+      <label className="label">Abwesenheiten (Frei, Beurlaubt, Krankgeschrieben)</label>
+      <input type="hidden" name={`driver${index}ExcludedDates`} value={wert} />
       <div className="rounded-lg border border-border p-2">
         <div className="mb-1 grid grid-cols-7 gap-1 text-center text-[10px] font-semibold uppercase text-textMuted">
           {WEEKDAY_LABELS.map((w) => <div key={w}>{w}</div>)}
@@ -373,33 +407,37 @@ function ExcludedDaysCalendar({ index, year, month }: { index: 1 | 2; year: numb
           {cells.map((day, i) => {
             if (day == null) return <div key={`e${i}`} />
             const key = `${year}-${pad(month)}-${pad(day)}`
-            const isSelected = selected.has(key)
+            const art = marked.get(key)
+            const eintrag = ABSENCE_KINDS.find((a) => a.key === art)
             const weekday = new Date(year, month - 1, day).getDay()
             const isSunday = weekday === 0
+            const naechste = eintrag
+              ? (ABSENCE_KINDS[ABSENCE_KINDS.findIndex((a) => a.key === art) + 1]?.label ?? 'ohne Eintrag')
+              : ABSENCE_KINDS[0].label
             return (
               <button
                 key={key}
                 type="button"
-                onClick={() => toggle(day)}
+                onClick={() => cycle(day)}
                 className={`rounded py-1 text-xs font-mono transition-colors ${
-                  isSelected
-                    ? 'bg-danger text-white'
+                  eintrag
+                    ? eintrag.klasse
                     : isSunday
                       ? 'bg-surfaceAlt text-danger hover:bg-border'
                       : 'bg-surfaceAlt hover:bg-border'
                 }`}
-                title={isSelected ? 'Ausgeschlossen - klicken zum Aufheben' : 'Klicken zum Ausschließen'}
+                title={eintrag ? `${eintrag.label} – klicken für ${naechste}` : `Klicken für ${naechste}`}
               >
-                {day}
+                {day}{eintrag ? ` ${eintrag.kurz}` : ''}
               </button>
             )
           })}
         </div>
       </div>
       <p className="mt-1 text-xs text-textMuted">
-        {selected.size === 0
-          ? 'Tage anklicken, an denen für diesen Fahrer garantiert keine Schicht erzeugt werden soll.'
-          : `${selected.size} Tag(e) ausgeschlossen: ${Array.from(selected).sort().join(', ')}`}
+        {marked.size === 0
+          ? 'Tag anklicken und durchschalten: Frei (F) → Beurlaubt (U) → Krankgeschrieben (K) → ohne Eintrag. An allen drei Arten entsteht keine Schicht.'
+          : zusammenfassung}
       </p>
     </div>
   )
@@ -660,7 +698,9 @@ export function HoursPlanningForm({
                       <td className="py-2 font-mono">
                         {s.isSunday && '☀️ '}{isHoliday && '🎉 '}{fmtDateDEWithWeekday(s.date)}
                       </td>
-                      <td className="py-2 italic" colSpan={10}>frei</td>
+                      <td className="py-2 italic" colSpan={10}>
+                        {s.absenceKind === 'urlaub' ? 'beurlaubt' : s.absenceKind === 'krank' ? 'krankgeschrieben' : 'frei'}
+                      </td>
                     </tr>
                   )
                 }

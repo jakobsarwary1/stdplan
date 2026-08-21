@@ -218,6 +218,31 @@ export type HoursPreviewRow = Partial<HoursShift> & {
   hourlyRate: number | null
   employeeNumber: string | null
   calculateExpenses: boolean
+  /** An freien Tagen: der im Kalender gewählte Grund der Abwesenheit. */
+  absenceKind?: AbsenceKind | null
+}
+
+/**
+ * Im Kalender je Tag wählbare Abwesenheitsart. Für die Planung wirken alle
+ * drei gleich (an dem Tag entsteht keine Schicht) – unterschieden werden sie
+ * für Lohnabrechnung und Nachweis.
+ */
+export type AbsenceKind = 'frei' | 'urlaub' | 'krank'
+export const ABSENCE_LABEL: Record<AbsenceKind, string> = {
+  frei: 'Frei',
+  urlaub: 'Beurlaubt',
+  krank: 'Krankgeschrieben',
+}
+
+/** Liest "YYYY-MM-DD:art, YYYY-MM-DD" – die Art ist optional, Vorgabe "frei". */
+export function parseAbsences(raw: string): Map<string, AbsenceKind> {
+  const map = new Map<string, AbsenceKind>()
+  raw.split(',').forEach((eintrag) => {
+    const [datum, art] = eintrag.trim().split(':')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(datum ?? '')) return
+    map.set(datum, art === 'urlaub' || art === 'krank' ? art : 'frei')
+  })
+  return map
 }
 
 export type HoursPreviewState = {
@@ -263,13 +288,16 @@ export async function previewHoursPlanning(
 
   if (!vehicleId || !year || !month) return { ...HOURS_EMPTY_STATE, error: 'Bitte Fahrzeug und Monat wählen.' }
 
-  const targets: { driverId: string; totalHours: number; sundayHours: number; nightHours: number; commuteMinutes: number; breakMinutesOverride: number | null; calculateExpenses: boolean; prioritizeDemand: boolean; prioritizeSunday: boolean; maximizeNight: boolean; spesenDaysTarget: number; isEinzelfahrer: boolean; excludedDates: string[]; maxFreeDays: number | null }[] = []
+  const targets: { driverId: string; totalHours: number; sundayHours: number; nightHours: number; commuteMinutes: number; breakMinutesOverride: number | null; calculateExpenses: boolean; prioritizeDemand: boolean; prioritizeSunday: boolean; maximizeNight: boolean; spesenDaysTarget: number; isEinzelfahrer: boolean; excludedDates: string[]; maxFreeDays: number | null; absences: Map<string, AbsenceKind> }[] = []
   for (const i of [1, 2]) {
     const driverId = String(formData.get(`driver${i}Id`) ?? '')
     if (!driverId) continue
     const breakOverrideRaw = String(formData.get(`driver${i}BreakMinutes`) ?? '').trim()
     const excludedDatesRaw = String(formData.get(`driver${i}ExcludedDates`) ?? '')
     const maxFreeRaw = String(formData.get(`driver${i}MaxFreeDays`) ?? '').trim()
+    // Der Kalender liefert "YYYY-MM-DD:art". Geplant wird an allen drei Arten
+    // gleich (keine Schicht) – die Art wird nur zur Anzeige mitgeführt.
+    const absences = parseAbsences(excludedDatesRaw)
     targets.push({
       driverId,
       totalHours: parseFloat(String(formData.get(`driver${i}TotalHours`) ?? '0')) || 0,
@@ -283,7 +311,8 @@ export async function previewHoursPlanning(
       prioritizeDemand: formData.get(`driver${i}PrioritizeDemand`) === 'on',
       prioritizeSunday: formData.get(`driver${i}PrioritizeSunday`) === 'on',
       maximizeNight: formData.get(`driver${i}MaximizeNight`) === 'on',
-      excludedDates: excludedDatesRaw.split(',').map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s)),
+      excludedDates: Array.from(absences.keys()),
+      absences,
       // Leeres Feld = keine Vorgabe (null), nicht "0 freie Tage".
       maxFreeDays: maxFreeRaw === '' ? null : Math.max(0, parseInt(maxFreeRaw, 10) || 0)
     })
@@ -384,7 +413,10 @@ export async function previewHoursPlanning(
               isNightShift: false,
               hourlyRate: rate,
               employeeNumber,
-              calculateExpenses: t.calculateExpenses
+              calculateExpenses: t.calculateExpenses,
+              // Vom Nutzer markierte Tage behalten ihren Grund; alle übrigen
+              // freien Tage entstehen aus der Planung und sind schlicht "Frei".
+              absenceKind: t.absences.get(dateStr) ?? 'frei'
             })
           }
         })
