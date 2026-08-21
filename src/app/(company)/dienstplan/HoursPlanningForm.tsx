@@ -81,7 +81,12 @@ function parseHolidayDates(input: string): Set<string> {
  * oder ausgewiesen.
  */
 function computeExtendedStats(rows: import('./actions').HoursPreviewRow[], holidayDates: Set<string> = new Set()) {
-  const freeDays = rows.filter((r) => r.isFree).length
+  // Getrennt zaehlen: Urlaub und Krankheit sind KEINE freien Tage, auch wenn
+  // an allen dreien keine Schicht entsteht.
+  const absent = rows.filter((r) => r.isFree)
+  const freeDays = absent.filter((r) => (r.absenceKind ?? 'frei') === 'frei').length
+  const urlaubDays = absent.filter((r) => r.absenceKind === 'urlaub').length
+  const krankDays = absent.filter((r) => r.absenceKind === 'krank').length
   const workDays = rows.filter((r) => !r.isFree)
   const totalNetHours = workDays.reduce((sum, r) => sum + (r.netHours ?? 0), 0)
   const hourlyRate = workDays.find((r) => r.hourlyRate != null)?.hourlyRate ?? null
@@ -95,7 +100,7 @@ function computeExtendedStats(rows: import('./actions').HoursPreviewRow[], holid
   const grossWage = hourlyRate != null
     ? totalNetHours * hourlyRate + sunday50 * hourlyRate * 0.5 + holiday125 * hourlyRate * 1.25
     : null
-  return { freeDays, grossWage, hourlyRate }
+  return { freeDays, urlaubDays, krankDays, grossWage, hourlyRate }
 }
 
 function Submit() {
@@ -611,7 +616,7 @@ export function HoursPlanningForm({
 
               return (
                 <>
-                  {driverStats.map(({ name, totalNet, night25, night40, sunday50, holiday125, freeDays, grossWage, hourlyRate }) => {
+                  {driverStats.map(({ name, totalNet, night25, night40, sunday50, holiday125, freeDays, urlaubDays, krankDays, grossWage, hourlyRate }) => {
                     const amt = (hours: number, factor: number) => (hourlyRate != null ? `${(hours * hourlyRate * factor).toFixed(2)} €` : '– kein Stundenlohn hinterlegt –')
                     return (
                       <div key={name} className="mt-4 rounded-lg border border-border p-3 text-sm">
@@ -623,6 +628,8 @@ export function HoursPlanningForm({
                           <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{sunday50.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(sunday50, 0.5)}</span></div>
                           <div><span className="text-textMuted">Feiertagszuschlag 125 %</span><br /><span className="font-mono text-sm">{holiday125.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(holiday125, 1.25)}</span></div>
                           <div><span className="text-textMuted">Freie Tage</span><br /><span className="font-mono text-sm">{freeDays}</span></div>
+                          <div><span className="text-textMuted">Beurlaubt</span><br /><span className="font-mono text-sm">{urlaubDays}</span></div>
+                          <div><span className="text-textMuted">Krankgeschrieben</span><br /><span className="font-mono text-sm">{krankDays}</span></div>
                           <div>
                             <span className="text-textMuted">Lohn brutto (geschätzt)</span><br />
                             <span className="font-mono text-sm">{grossWage != null ? `${grossWage.toFixed(2)} €` : '– kein Stundenlohn hinterlegt –'}</span>

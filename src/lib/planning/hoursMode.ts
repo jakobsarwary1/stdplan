@@ -17,6 +17,11 @@ export type HoursTarget = {
   maximizeNight: boolean
   spesenDaysTarget?: number // optionale Ziel-Anzahl an Spesen-Tagen (>=8h Brutto) - direkt als Tageszahl, keine Euro-Umrechnung mehr
   maxFreeDays?: number | null // ausdrueckliche Obergrenze fuer freie Tage aus dem Formular; null = automatische Regel
+  // Im Kalender bereits als "Frei" markierte Tage. Sie zaehlen gegen
+  // maxFreeDays (der Planer darf entsprechend weniger zusaetzliche freie Tage
+  // vergeben). Als "Beurlaubt" oder "Krankgeschrieben" markierte Tage zaehlen
+  // NICHT mit - Urlaub und Krankheit sind keine freien Tage.
+  preFreeDays?: number
   isEinzelfahrer?: boolean // explizit gesetzt: feste Fr/Sa/So-Vorlage, 8h-Mindestgesamtzeit, "nie 3 Tage frei" - NICHT mehr automatisch aus der Stundenzahl abgeleitet
 }
 
@@ -418,7 +423,13 @@ function generateHoursBasedScheduleAttempt(
   // Ausdrückliche Vorgabe aus dem Formular hat Vorrang – sie gilt bei JEDER
   // Stundenzahl, auch unter 100 Std. Ohne Vorgabe greift die automatische
   // Regel erst ab FREE_DAY_RULE_MIN_HOURS.
-  const freieTageVorgabe = target.maxFreeDays != null && target.maxFreeDays >= 0 ? target.maxFreeDays : null
+  // Bereits im Kalender als "Frei" markierte Tage sind Teil des Kontingents:
+  // wer 7 freie Tage vorgibt und 7 davon selbst gesetzt hat, bekommt vom
+  // Planer keinen weiteren freien Tag mehr dazu. Urlaubs- und Krankheitstage
+  // zaehlen hier bewusst nicht mit.
+  const freieTageVorgabeGesamt = target.maxFreeDays != null && target.maxFreeDays >= 0 ? target.maxFreeDays : null
+  const freieTageVorgabe =
+    freieTageVorgabeGesamt != null ? Math.max(0, freieTageVorgabeGesamt - (target.preFreeDays ?? 0)) : null
   const freieTageRegelGilt =
     !isEinzelfahrer && (freieTageVorgabe != null || target.totalHours >= FREE_DAY_RULE_MIN_HOURS)
   const mustReachEightHoursGlobal = target.calculateExpenses
@@ -1396,7 +1407,14 @@ function generateHoursBasedScheduleAttempt(
             `in diesem Monat sind das mindestens ${freiNachGesetz} freie Tage.`
           : `Die Schichten liessen sich nicht dichter legen, ohne Ruhezeiten oder die ` +
             `Stundenvorgabe zu verletzen. Ein erneuter Durchlauf kann ein anderes Muster ergeben.`
-      warnings.push(`${freieTage} freie Tage statt der gewünschten ${freieTageVorgabe}. ${grund}`)
+      // In der Meldung die GESAMTZAHL nennen (selbst markierte freie Tage
+      // eingerechnet) - das ist die Zahl, die der Nutzer im Formular vorgibt
+      // und hinterher in der Zusammenfassung wiederfindet.
+      const vorab = target.preFreeDays ?? 0
+      warnings.push(
+        `${freieTage + vorab} freie Tage statt der gewünschten ${freieTageVorgabeGesamt}` +
+        `${vorab > 0 ? ` (davon ${vorab} selbst im Kalender markiert)` : ''}. ${grund}`
+      )
     }
   }
 

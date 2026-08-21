@@ -354,8 +354,11 @@ export async function previewHoursPlanning(
         const rate = driverRateById.get(t.driverId) ?? null
         const employeeNumber = driverEmployeeNumberById.get(t.driverId) ?? null
         const hireDate = driverHireDateById.get(t.driverId) ?? null
+        // Selbst markierte "Frei"-Tage zaehlen gegen die Obergrenze im
+        // Formular; Urlaub und Krankheit nicht.
+        const preFreeDays = Array.from(t.absences.values()).filter((art) => art === 'frei').length
         const { shifts, warning } = generateHoursBasedSchedule(
-          year, month - 1, { ...t, driverName: name, hireDate },
+          year, month - 1, { ...t, driverName: name, hireDate, preFreeDays },
           blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, vehicleBusy
         )
         if (warning) warnings.push(`${name}: ${warning}`)
