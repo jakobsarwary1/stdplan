@@ -6,7 +6,7 @@ import { withTenantContext } from '@/lib/prisma'
 import { generateSlotsForVehicle, type TemplateShiftInput } from '@/lib/planning/slots'
 import { assignDriversToSlots, type AssignedSlot, type DriverInput, type ExistingShiftInput } from '@/lib/planning/assign'
 import type { DemandProfileInput } from '@/lib/planning/demand'
-import { generateHoursBasedSchedule, type HoursShift } from '@/lib/planning/hoursMode'
+import { generateHoursBasedSchedule, type HoursShift, type VehicleBusy } from '@/lib/planning/hoursMode'
 
 export type PlanningPreviewState = {
   slots: (AssignedSlot & { driverName: string | null })[]
@@ -320,7 +320,19 @@ export async function previewHoursPlanning(
       // eigenes Sonntagsstunden-Feld ebenfalls einzelne Sonntage
       // beansprucht) dem Vollzeit-Fahrer die für seine Pflicht-Vorlage
       // benötigten Wochenendtage wegnehmen.
-      const orderedTargets = [...targets].sort((a, b) => (b.isEinzelfahrer ? 1 : 0) - (a.isEinzelfahrer ? 1 : 0))
+      // Zusätzlich der Fahrer mit den MEISTEN Stunden zuerst: Er ist der
+      // Hauptfahrer des Wagens und bekommt die Schichtlage vorgegeben; die
+      // Aushilfe legt sich anschließend in die verbliebenen Lücken (z. B.
+      // Hauptfahrer nachts, Aushilfe tagsüber am selben Datum).
+      const orderedTargets = [...targets].sort(
+        (a, b) => ((b.isEinzelfahrer ? 1 : 0) - (a.isEinzelfahrer ? 1 : 0)) || (b.totalHours - a.totalHours)
+      )
+
+      // Belegung des FAHRZEUGS als Zeitfenster je Datum. Früher wurde der
+      // ganze Tag gesperrt, sobald ein Fahrer dort eine Schicht hatte -
+      // dadurch konnten zwei Fahrer nie am selben Tag fahren, auch nicht
+      // Nachtschicht plus Tagschicht.
+      const vehicleBusy: VehicleBusy = new Map()
 
       for (const t of orderedTargets) {
         const name = driverNameById.get(t.driverId) ?? '—'
@@ -329,12 +341,18 @@ export async function previewHoursPlanning(
         const hireDate = driverHireDateById.get(t.driverId) ?? null
         const { shifts, warning } = generateHoursBasedSchedule(
           year, month - 1, { ...t, driverName: name, hireDate },
-          blockedDates, nightStart, nightEnd, minRestHours, demandProfiles
+          blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, vehicleBusy
         )
         if (warning) warnings.push(`${name}: ${warning}`)
 
         const shiftsByDate = new Map<string, HoursShift>(shifts.map((s) => [s.date, s]))
-        shifts.forEach((s) => blockedDates.add(s.date))
+        // Das Fahrzeug für die gefahrenen ZEITEN belegen, nicht für den
+        // ganzen Tag – sonst bekäme der zweite Fahrer diesen Tag gar nicht.
+        shifts.forEach((s) => {
+          const liste = vehicleBusy.get(s.date) ?? []
+          liste.push({ start: s.startMin, end: s.endMin })
+          vehicleBusy.set(s.date, liste)
+        })
 
         allDays.forEach((dateStr) => {
           const isSunday = new Date(dateStr).getDay() === 0

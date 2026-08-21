@@ -59,6 +59,49 @@ const BREAK_STEPS = [60, 90, 120, 150, 180]
 const MAX_BREAK_STEP_MINUTES = BREAK_STEPS[BREAK_STEPS.length - 1]
 const START_WINDOW = { earliest: 4 * 60, latest: 22 * 60 } // 04:00-22:00, in 15-Minuten-Schritten durchsucht
 
+/**
+ * Belegung EINES Fahrzeugs durch bereits verplante Fahrer: je Datum die
+ * Zeitfenster, in denen der Wagen unterwegs ist. Minuten ab Mitternacht des
+ * jeweiligen Datums; ein Wert über 1440 bedeutet, die Schicht läuft in den
+ * Folgetag (Nachtschicht 21:00-05:00 = 1260 bis 1740).
+ */
+export type VehicleBusy = Map<string, { start: number; end: number }[]>
+
+/**
+ * Übergabepuffer zwischen zwei Schichten desselben Fahrzeugs: eine Stunde.
+ * Vorbild ist der gewünschte Zwei-Schicht-Betrieb Früh 06:00-17:00 und
+ * Spät 18:00-05:00 – dazwischen liegt jeweils genau diese Stunde.
+ */
+const HANDOVER_MINUTES = 60
+
+/** Datum um `delta` Tage verschieben, als "YYYY-MM-DD". */
+function shiftDateStr(dateStr: string, delta: number): string {
+  const d = new Date(`${dateStr}T00:00:00.000Z`)
+  d.setUTCDate(d.getUTCDate() + delta)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * Überschneidet sich [start, end) am Tag `dateStr` mit einer bestehenden
+ * Belegung des Fahrzeugs? Geprüft wird der Vortag mit (dessen Nachtschicht
+ * kann hereinragen), der Tag selbst und der Folgetag (falls die eigene
+ * Schicht über Mitternacht läuft). Der Übergabepuffer zählt als belegt.
+ */
+function vehicleConflict(busy: VehicleBusy | undefined, dateStr: string, start: number, end: number): boolean {
+  if (!busy || busy.size === 0) return false
+  for (const delta of [-1, 0, 1]) {
+    const eintraege = busy.get(shiftDateStr(dateStr, delta))
+    if (!eintraege) continue
+    const versatz = delta * 1440 // Fenster des Nachbartags in unsere Zeitachse umrechnen
+    for (const b of eintraege) {
+      const bStart = b.start + versatz - HANDOVER_MINUTES
+      const bEnd = b.end + versatz + HANDOVER_MINUTES
+      if (start < bEnd && end > bStart) return true
+    }
+  }
+  return false
+}
+
 function daysInMonth(year: number, month0: number): Date[] {
   const days: Date[] = []
   const d = new Date(year, month0, 1)
@@ -334,7 +377,8 @@ function generateHoursBasedScheduleAttempt(
   nightEnd: string,
   minRestHours: number,
   demandProfiles: DemandProfileInput[] = [],
-  targetFreeDaysFloor: number = 5
+  targetFreeDaysFloor: number = 5,
+  vehicleBusy?: VehicleBusy
 ): { shifts: HoursShift[]; warning: string | null } {
   const commuteMinutes = target.commuteMinutes > 0 ? target.commuteMinutes : DEFAULT_COMMUTE_MINUTES
 
@@ -901,9 +945,15 @@ function generateHoursBasedScheduleAttempt(
       const workBeforeBreak = Math.round(netMinutes / 2)
       let breakStartAbs = ctx.lowestWindow.startMinOfDay
       let candidateStart = breakStartAbs - workBeforeBreak
-      while (prevEnd) {
+      // Verschieben, bis sowohl die Ruhezeit des Fahrers als auch die
+      // Belegung des Fahrzeugs passen. Die Obergrenze verhindert eine
+      // Endlosschleife, falls beides nie gleichzeitig erfüllbar ist.
+      let versuche = 0
+      while (versuche++ < 96) {
         const candDate = new Date(ctx.date.getFullYear(), ctx.date.getMonth(), ctx.date.getDate(), 0, candidateStart, 0, 0)
-        if ((candDate.getTime() - prevEnd.getTime()) / 3600000 >= minRestHours) break
+        const ruheOk = !prevEnd || (candDate.getTime() - prevEnd.getTime()) / 3600000 >= minRestHours
+        const wagenFrei = !vehicleConflict(vehicleBusy, ctx.dateStr, candidateStart, candidateStart + spanMinutes)
+        if (ruheOk && wagenFrei) break
         candidateStart += 15
         breakStartAbs += 15
       }
@@ -930,6 +980,10 @@ function generateHoursBasedScheduleAttempt(
       for (let cand = START_WINDOW.earliest; cand <= searchLatest; cand += 15) {
         const candStart = new Date(ctx.date.getFullYear(), ctx.date.getMonth(), ctx.date.getDate(), 0, cand, 0, 0)
         if (prevEnd && (candStart.getTime() - prevEnd.getTime()) / 3600000 < minRestHours) continue
+        // Das Fahrzeug darf zu dieser Zeit nicht schon mit einem anderen
+        // Fahrer unterwegs sein (Nacht- und Tagschicht am selben Datum sind
+        // erlaubt, solange sie sich nicht überschneiden).
+        if (vehicleConflict(vehicleBusy, ctx.dateStr, cand, cand + spanMinutes)) continue
         const baseScore = target.maximizeNight || isNightTarget
           // Echter Zuschlagswert (Sonntag 50 % + steuerfreie Nacht 40 % +
           // reguläre Nacht 25 %), optional zusätzlich leicht durch die
@@ -1332,10 +1386,11 @@ export function generateHoursBasedSchedule(
   nightStart: string,
   nightEnd: string,
   minRestHours: number,
-  demandProfiles: DemandProfileInput[] = []
+  demandProfiles: DemandProfileInput[] = [],
+  vehicleBusy?: VehicleBusy
 ): { shifts: HoursShift[]; warning: string | null } {
   if (!target.spesenDaysTarget || target.spesenDaysTarget <= 0) {
-    return generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, 5)
+    return generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, 5, vehicleBusy)
   }
 
   const spesenTarget = Math.round(target.spesenDaysTarget)
@@ -1349,7 +1404,7 @@ export function generateHoursBasedSchedule(
 
   for (const floor of [4, 5, 6, 7]) {
     for (let retry = 0; retry < 2; retry++) {
-      const attempt = generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, floor)
+      const attempt = generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, floor, vehicleBusy)
       const qualifyingDays = attempt.shifts.filter((s) => s.netHours + s.breakMinutes / 60 + s.commuteMinutes / 60 >= 7.99).length
       const gap = Math.abs(qualifyingDays - spesenTarget)
       const freeDays = allDaysCount - attempt.shifts.length
@@ -1362,7 +1417,7 @@ export function generateHoursBasedSchedule(
   const pool = withinFreeDaysTarget.length > 0 ? withinFreeDaysTarget : candidates
   pool.sort((a, b) => (a.gap !== b.gap ? a.gap - b.gap : a.freeDays - b.freeDays))
 
-  return pool[0]?.attempt ?? generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, 5)
+  return pool[0]?.attempt ?? generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, 5, vehicleBusy)
 }
 
 const LEVEL_WEIGHT_FOR_BREAK: Record<string, number> = { niedrig: 0.5, mittel: 1, hoch: 1.5, sehr_hoch: 2 }
