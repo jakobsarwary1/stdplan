@@ -90,20 +90,21 @@ function computeExtendedStats(rows: import('./actions').HoursPreviewRow[], holid
   const workDays = rows.filter((r) => !r.isFree)
   const totalNetHours = workDays.reduce((sum, r) => sum + (r.netHours ?? 0), 0)
   const hourlyRate = workDays.find((r) => r.hourlyRate != null)?.hourlyRate ?? null
-  // Bruttolohn = Grundlohn (alle Netto-Std. × Stundenlohn) PLUS
-  // Sonntagszuschlag 50 % auf die tatsächlich am Sonntag geleisteten
-  // Stunden PLUS Feiertagszuschlag 125 % auf die tatsächlich an Feiertagen
-  // geleisteten Stunden (zusätzlich zum ohnehin bereits enthaltenen
-  // Grundlohn für diese Stunden) - Nachtzuschläge bleiben hier bewusst
-  // außen vor, da sie steuerfrei sind und separat ausgewiesen werden.
+  // Lohn gesamt = Grundlohn (alle Netto-Std. × Stundenlohn) PLUS SAEMTLICHE
+  // Zuschlaege auf die jeweils tatsaechlich geleisteten Stunden: Nacht 25 %,
+  // Nacht 40 %, Sonntag 50 %, Feiertag 125 %. Die Nachtzuschlaege sind nach
+  // § 3b EStG steuerfrei - ausgezahlt werden sie trotzdem, deshalb gehoeren
+  // sie in die Gesamtsumme.
   // Krankenstunden: Entgeltfortzahlung nach § 3 EntgFG. Sie sind keine
   // geleistete Arbeitszeit (daher getrennt gefuehrt), zaehlen aber zur
   // Monatsgesamtzahl und werden zum Grundlohn verguetet - ohne Zuschlaege.
   const sickHours = rows.find((r) => r.sickHours != null)?.sickHours ?? 0
   const totalWithSick = totalNetHours + sickHours
-  const { sunday50, holiday125 } = computeSurcharges(workDays, holidayDates)
+  const { night25, night40, sunday50, holiday125 } = computeSurcharges(workDays, holidayDates)
   const grossWage = hourlyRate != null
-    ? totalNetHours * hourlyRate + sickHours * hourlyRate + sunday50 * hourlyRate * 0.5 + holiday125 * hourlyRate * 1.25
+    ? totalNetHours * hourlyRate + sickHours * hourlyRate +
+      night25 * hourlyRate * 0.25 + night40 * hourlyRate * 0.4 +
+      sunday50 * hourlyRate * 0.5 + holiday125 * hourlyRate * 1.25
     : null
   return { freeDays, urlaubDays, krankDays, sickHours, totalWithSick, grossWage, hourlyRate }
 }
@@ -671,13 +672,13 @@ export function HoursPlanningForm({
                           <div><span className="text-textMuted">Beurlaubt</span><br /><span className="font-mono text-sm">{urlaubDays}</span></div>
                           <div><span className="text-textMuted">Krankgeschrieben</span><br /><span className="font-mono text-sm">{krankDays}</span></div>
                           <div>
-                            <span className="text-textMuted">Lohn brutto (geschätzt)</span><br />
+                            <span className="text-textMuted">Lohn gesamt (brutto, geschätzt)</span><br />
                             <span className="font-mono text-sm">{grossWage != null ? `${grossWage.toFixed(2)} €` : '– kein Stundenlohn hinterlegt –'}</span>
                           </div>
                         </div>
                         {hourlyRate != null && (
                           <p className="mt-2 text-[10px] text-textMuted">
-                            Bruttolohn geschätzt aus {totalWithSick.toFixed(2)} Std. (davon {sickHours.toFixed(2)} Std. Entgeltfortzahlung im Krankheitsfall) × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % und Feiertagszuschlag 125 % - Nachtzuschläge (steuerfrei) sind hier nicht enthalten. Die Zuschlagsbeträge oben (Nacht/Sonntag/Feiertag) sind reine Zusatzbeträge auf die ohnehin bereits im Grundlohn enthaltenen Stunden.
+                            Grundlohn {totalWithSick.toFixed(2)} Std. (davon {sickHours.toFixed(2)} Std. Entgeltfortzahlung im Krankheitsfall) × {hourlyRate.toFixed(2)} €/Std. = {(totalWithSick * hourlyRate).toFixed(2)} €, zzgl. ALLER Zuschläge oben (Nacht 25 %, Nacht 40 %, Sonntag 50 %, Feiertag 125 %) = {(grossWage! - totalWithSick * hourlyRate).toFixed(2)} €. Die Nachtzuschläge sind nach § 3b EStG steuerfrei, werden aber ausgezahlt und zählen deshalb mit. Die Zuschlagsbeträge sind reine Zusatzbeträge auf die ohnehin im Grundlohn enthaltenen Stunden.
                           </p>
                         )}
                       </div>

@@ -349,17 +349,25 @@ export async function POST(request: Request) {
         gesamtCell.value = { formula: `${nettoRef}+${krankRef}`, result: s.totalNet + (s.sickHours ?? 0) }
         gesamtCell.numFmt = '0.00'
         gesamtCell.font = { bold: true }
-        addStat('Nachtzuschlag 25 %', COLS.n25, s.night25, 0.25, s.night25Amount)
-        addStat('Nachtzuschlag 40 % steuerfrei', COLS.n40, s.night40, 0.4, s.night40Amount)
+        const n25Ref = addStat('Nachtzuschlag 25 %', COLS.n25, s.night25, 0.25, s.night25Amount)
+        const n40Ref = addStat('Nachtzuschlag 40 % steuerfrei', COLS.n40, s.night40, 0.4, s.night40Amount)
         const soRef = addStat('Sonntagszuschlag 50 %', COLS.so50, s.sunday50, 0.5, s.sunday50Amount)
         const feRef = addStat('Feiertagszuschlag 125 %', COLS.fe125, s.holiday125, 1.25, s.holiday125Amount)
 
-        const bruttoRow = sheet.addRow(['Bruttolohn (geschätzt)'])
+        const bruttoRow = sheet.addRow(['Lohn gesamt (brutto, geschätzt)'])
         bruttoRow.getCell(1).font = { bold: true }
         sheet.mergeCells(bruttoRow.number, 1, bruttoRow.number, LABEL_TO)
         sheet.mergeCells(bruttoRow.number, STD_COL, bruttoRow.number, AMT_TO)
         const bruttoCell = bruttoRow.getCell(STD_COL)
-        bruttoCell.value = { formula: `(${nettoRef}+${krankRef})*${rateRef}+${soRef}*${rateRef}*0.5+${feRef}*${rateRef}*1.25`, result: s.grossWage ?? 0 }
+        // Grundlohn (inkl. Krankenstunden) plus SAEMTLICHE Zuschlaege - auch
+        // die steuerfreien Nachtzuschlaege, die ja ebenfalls ausgezahlt werden.
+        bruttoCell.value = {
+          formula:
+            `(${nettoRef}+${krankRef})*${rateRef}` +
+            `+${n25Ref}*${rateRef}*0.25+${n40Ref}*${rateRef}*0.4` +
+            `+${soRef}*${rateRef}*0.5+${feRef}*${rateRef}*1.25`,
+          result: s.grossWage ?? 0
+        }
         bruttoCell.numFmt = '0.00 "EUR"'; bruttoCell.font = { bold: true }
         perDriverBruttoRefs.push(`${L(STD_COL)}${bruttoRow.number}`)
         sheet.addRow([])
@@ -378,7 +386,7 @@ export async function POST(request: Request) {
     // Erläuterung unter die Zusammenfassung
     sheet.addRow([])
     const note = sheet.addRow([
-      'Gelbe Felder (Beginn, Ende, Pause, Weg) sind editierbar - alle übrigen Spalten (Von/Bis, Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Von/Bis zeigen nur die Uhrzeit von Beginn/Ende (klassischer Dienstplan-Look); Beginn/Ende enthalten zusätzlich das Datum (wichtig bei Schichten über Mitternacht). Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause.'
+      'Gelbe Felder (Beginn, Ende, Pause, Weg) sind editierbar - alle übrigen Spalten (Von/Bis, Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Von/Bis zeigen nur die Uhrzeit von Beginn/Ende (klassischer Dienstplan-Look); Beginn/Ende enthalten zusätzlich das Datum (wichtig bei Schichten über Mitternacht). Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause. Lohn gesamt = (Netto + Krank) x Stundenlohn plus alle vier Zuschlaege; die Nachtzuschlaege sind steuerfrei, werden aber ausgezahlt und zaehlen deshalb mit.'
     ])
     note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
     sheet.mergeCells(note.number, 1, note.number, nCols)
