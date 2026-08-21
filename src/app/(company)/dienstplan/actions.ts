@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { parseAbsences, type AbsenceKind } from '@/lib/planning/absence'
 import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
 import { generateSlotsForVehicle, type TemplateShiftInput } from '@/lib/planning/slots'
@@ -221,30 +222,6 @@ export type HoursPreviewRow = Partial<HoursShift> & {
   /** An freien Tagen: der im Kalender gewählte Grund der Abwesenheit. */
   absenceKind?: AbsenceKind | null
 }
-
-/**
- * Im Kalender je Tag wählbare Abwesenheitsart. Für die Planung wirken alle
- * drei gleich (an dem Tag entsteht keine Schicht) – unterschieden werden sie
- * für Lohnabrechnung und Nachweis.
- */
-export type AbsenceKind = 'frei' | 'urlaub' | 'krank'
-export const ABSENCE_LABEL: Record<AbsenceKind, string> = {
-  frei: 'Frei',
-  urlaub: 'Beurlaubt',
-  krank: 'Krankgeschrieben',
-}
-
-/** Liest "YYYY-MM-DD:art, YYYY-MM-DD" – die Art ist optional, Vorgabe "frei". */
-export function parseAbsences(raw: string): Map<string, AbsenceKind> {
-  const map = new Map<string, AbsenceKind>()
-  raw.split(',').forEach((eintrag) => {
-    const [datum, art] = eintrag.trim().split(':')
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(datum ?? '')) return
-    map.set(datum, art === 'urlaub' || art === 'krank' ? art : 'frei')
-  })
-  return map
-}
-
 export type HoursPreviewState = {
   vehicleId: string
   shifts: HoursPreviewRow[]
