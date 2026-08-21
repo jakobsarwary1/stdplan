@@ -364,9 +364,15 @@ function distributeHoursWithPerDayCap(
  * automatisch (§ 4 ArbZG) und wählt bei `maximizeNight` die Startzeit je
  * Tag so, dass möglichst viele Stunden in das Nachtfenster fallen.
  *
- * `blockedDates`: Tage, die für dieses Fahrzeug bereits durch einen anderen
- * Fahrer belegt sind (bei mehreren Fahrern am selben Fahrzeug) - werden
- * nicht erneut vergeben.
+ * `blockedDates`: Tage, an denen das FAHRZEUG komplett ausfällt (z. B.
+ * Werkstatt) - dort entsteht für niemanden eine Schicht. NICHT mehr für die
+ * Belegung durch einen anderen Fahrer: die läuft über `vehicleBusy` und
+ * sperrt nur die gefahrenen Zeiten, damit sich Nacht- und Tagschicht ein
+ * Datum teilen können.
+ *
+ * Abwesenheiten eines FAHRERS (Krankheit, Urlaub) stehen dagegen in
+ * `target.excludedDates` und gelten ausschließlich für ihn - der zweite
+ * Fahrer desselben Fahrzeugs kann an solchen Tagen normal arbeiten.
  */
 function generateHoursBasedScheduleAttempt(
   year: number,
