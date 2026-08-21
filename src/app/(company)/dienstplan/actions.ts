@@ -220,6 +220,8 @@ export type HoursPreviewRow = Partial<HoursShift> & {
   hourlyRate: number | null
   employeeNumber: string | null
   calculateExpenses: boolean
+  /** Krankenstunden des Fahrers im Monat (Entgeltfortzahlung) - je Zeile derselbe Monatswert. */
+  sickHours?: number
   /** An freien Tagen: der im Kalender gewählte Grund der Abwesenheit. */
   absenceKind?: AbsenceKind | null
 }
@@ -266,7 +268,7 @@ export async function previewHoursPlanning(
 
   if (!vehicleId || !year || !month) return { ...HOURS_EMPTY_STATE, error: 'Bitte Fahrzeug und Monat wählen.' }
 
-  const targets: { driverId: string; totalHours: number; sundayHours: number; nightHours: number; commuteMinutes: number; breakMinutesOverride: number | null; calculateExpenses: boolean; prioritizeDemand: boolean; prioritizeSunday: boolean; maximizeNight: boolean; spesenDaysTarget: number; isEinzelfahrer: boolean; excludedDates: string[]; maxFreeDays: number | null; absences: Map<string, AbsenceKind> }[] = []
+  const targets: { driverId: string; totalHours: number; sundayHours: number; nightHours: number; commuteMinutes: number; breakMinutesOverride: number | null; calculateExpenses: boolean; prioritizeDemand: boolean; prioritizeSunday: boolean; maximizeNight: boolean; spesenDaysTarget: number; isEinzelfahrer: boolean; excludedDates: string[]; maxFreeDays: number | null; absences: Map<string, AbsenceKind>; sickHours: number }[] = []
   for (const i of [1, 2]) {
     const driverId = String(formData.get(`driver${i}Id`) ?? '')
     if (!driverId) continue
@@ -276,6 +278,7 @@ export async function previewHoursPlanning(
     // Der Kalender liefert "YYYY-MM-DD:art". Geplant wird an allen drei Arten
     // gleich (keine Schicht) – die Art wird nur zur Anzeige mitgeführt.
     const absences = parseAbsences(excludedDatesRaw)
+    const sickHours = Math.max(0, parseFloat(String(formData.get(`driver${i}SickHours`) ?? '0')) || 0)
     targets.push({
       driverId,
       totalHours: parseFloat(String(formData.get(`driver${i}TotalHours`) ?? '0')) || 0,
@@ -295,6 +298,7 @@ export async function previewHoursPlanning(
       prioritizeSunday: formData.get(`driver${i}PrioritizeSunday`) === 'on',
       maximizeNight: formData.get(`driver${i}MaximizeNight`) === 'on',
       excludedDates: Array.from(absences.keys()),
+      sickHours,
       absences,
       // Leeres Feld = keine Vorgabe (null), nicht "0 freie Tage".
       maxFreeDays: maxFreeRaw === '' ? null : Math.max(0, parseInt(maxFreeRaw, 10) || 0)
@@ -386,7 +390,8 @@ export async function previewHoursPlanning(
               isNightShift: isNightShiftRow(minToClock(s.startMin), minToClock(s.endMin), nightStart, nightEnd),
               hourlyRate: rate,
               employeeNumber,
-              calculateExpenses: t.calculateExpenses
+              calculateExpenses: t.calculateExpenses,
+              sickHours: t.sickHours
             })
           } else {
             allRows.push({
@@ -400,6 +405,7 @@ export async function previewHoursPlanning(
               hourlyRate: rate,
               employeeNumber,
               calculateExpenses: t.calculateExpenses,
+              sickHours: t.sickHours,
               // Vom Nutzer markierte Tage behalten ihren Grund; alle übrigen
               // freien Tage entstehen aus der Planung und sind schlicht "Frei".
               absenceKind: t.absences.get(dateStr) ?? 'frei'

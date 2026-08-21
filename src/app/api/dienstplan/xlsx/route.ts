@@ -27,6 +27,8 @@ type XlsxRow = {
 type XlsxSummary = {
   driverName: string
   totalNet: number
+  /** Entgeltfortzahlung im Krankheitsfall - keine geleistete Arbeitszeit, aber Teil der Monatssumme. */
+  sickHours?: number
   night25: number
   night40: number
   sunday50: number
@@ -325,6 +327,28 @@ export async function POST(request: Request) {
           return `${L(STD_COL)}${row.number}`
         }
         const nettoRef = addStat('Netto (Std.)', COLS.netto, s.totalNet, null, null)
+
+        // Krankenstunden (Entgeltfortzahlung, § 3 EntgFG) stehen in keiner
+        // Tagesspalte - daher als gelbes Eingabefeld, damit sie sich in der
+        // Datei noch korrigieren lassen; Summe und Bruttolohn rechnen mit.
+        const krankRow = sheet.addRow(['Krank (Std.)'])
+        sheet.mergeCells(krankRow.number, 1, krankRow.number, LABEL_TO)
+        sheet.mergeCells(krankRow.number, STD_COL, krankRow.number, STD_TO)
+        const krankCell = krankRow.getCell(STD_COL)
+        krankCell.value = s.sickHours ?? 0
+        krankCell.numFmt = '0.00'
+        krankCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF7D6' } }
+        krankCell.protection = { locked: false }
+        const krankRef = `${L(STD_COL)}${krankRow.number}`
+
+        const gesamtRow = sheet.addRow(['Gesamt inkl. Krank (Std.)'])
+        gesamtRow.getCell(1).font = { bold: true }
+        sheet.mergeCells(gesamtRow.number, 1, gesamtRow.number, LABEL_TO)
+        sheet.mergeCells(gesamtRow.number, STD_COL, gesamtRow.number, STD_TO)
+        const gesamtCell = gesamtRow.getCell(STD_COL)
+        gesamtCell.value = { formula: `${nettoRef}+${krankRef}`, result: s.totalNet + (s.sickHours ?? 0) }
+        gesamtCell.numFmt = '0.00'
+        gesamtCell.font = { bold: true }
         addStat('Nachtzuschlag 25 %', COLS.n25, s.night25, 0.25, s.night25Amount)
         addStat('Nachtzuschlag 40 % steuerfrei', COLS.n40, s.night40, 0.4, s.night40Amount)
         const soRef = addStat('Sonntagszuschlag 50 %', COLS.so50, s.sunday50, 0.5, s.sunday50Amount)
@@ -335,7 +359,7 @@ export async function POST(request: Request) {
         sheet.mergeCells(bruttoRow.number, 1, bruttoRow.number, LABEL_TO)
         sheet.mergeCells(bruttoRow.number, STD_COL, bruttoRow.number, AMT_TO)
         const bruttoCell = bruttoRow.getCell(STD_COL)
-        bruttoCell.value = { formula: `${nettoRef}*${rateRef}+${soRef}*${rateRef}*0.5+${feRef}*${rateRef}*1.25`, result: s.grossWage ?? 0 }
+        bruttoCell.value = { formula: `(${nettoRef}+${krankRef})*${rateRef}+${soRef}*${rateRef}*0.5+${feRef}*${rateRef}*1.25`, result: s.grossWage ?? 0 }
         bruttoCell.numFmt = '0.00 "EUR"'; bruttoCell.font = { bold: true }
         perDriverBruttoRefs.push(`${L(STD_COL)}${bruttoRow.number}`)
         sheet.addRow([])

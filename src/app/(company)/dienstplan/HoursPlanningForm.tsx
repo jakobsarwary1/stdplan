@@ -96,11 +96,16 @@ function computeExtendedStats(rows: import('./actions').HoursPreviewRow[], holid
   // geleisteten Stunden (zusätzlich zum ohnehin bereits enthaltenen
   // Grundlohn für diese Stunden) - Nachtzuschläge bleiben hier bewusst
   // außen vor, da sie steuerfrei sind und separat ausgewiesen werden.
+  // Krankenstunden: Entgeltfortzahlung nach § 3 EntgFG. Sie sind keine
+  // geleistete Arbeitszeit (daher getrennt gefuehrt), zaehlen aber zur
+  // Monatsgesamtzahl und werden zum Grundlohn verguetet - ohne Zuschlaege.
+  const sickHours = rows.find((r) => r.sickHours != null)?.sickHours ?? 0
+  const totalWithSick = totalNetHours + sickHours
   const { sunday50, holiday125 } = computeSurcharges(workDays, holidayDates)
   const grossWage = hourlyRate != null
-    ? totalNetHours * hourlyRate + sunday50 * hourlyRate * 0.5 + holiday125 * hourlyRate * 1.25
+    ? totalNetHours * hourlyRate + sickHours * hourlyRate + sunday50 * hourlyRate * 0.5 + holiday125 * hourlyRate * 1.25
     : null
-  return { freeDays, urlaubDays, krankDays, grossWage, hourlyRate }
+  return { freeDays, urlaubDays, krankDays, sickHours, totalWithSick, grossWage, hourlyRate }
 }
 
 function Submit() {
@@ -177,9 +182,9 @@ async function downloadExcel(
   const summaries = options.includeSummary
     ? selectedDriverNames.map((name) => {
         const s = computeSurcharges(rows.filter((r) => r.driverName === name && !r.isFree), holidayDates)
-        const { grossWage, hourlyRate } = computeExtendedStats(rows.filter((r) => r.driverName === name), holidayDates)
+        const { grossWage, hourlyRate, sickHours } = computeExtendedStats(rows.filter((r) => r.driverName === name), holidayDates)
         return {
-          driverName: name, ...s, grossWage, hourlyRate,
+          driverName: name, ...s, grossWage, hourlyRate, sickHours,
           night25Amount: hourlyRate != null ? s.night25 * hourlyRate * 0.25 : null,
           night40Amount: hourlyRate != null ? s.night40 * hourlyRate * 0.4 : null,
           sunday50Amount: hourlyRate != null ? s.sunday50 * hourlyRate * 0.5 : null,
@@ -195,6 +200,7 @@ async function downloadExcel(
       anyHasWage ? summaries.reduce((sum, s) => sum + (s[key] ?? 0), 0) : null
     summaries.push({
       driverName: 'Gesamt (alle Fahrer)', ...combined, grossWage: anyHasWage ? combinedGrossWage : null, hourlyRate: null,
+      sickHours: summaries.reduce((sum, x) => sum + (x.sickHours ?? 0), 0),
       night25Amount: sumField('night25Amount'), night40Amount: sumField('night40Amount'),
       sunday50Amount: sumField('sunday50Amount'), holiday125Amount: sumField('holiday125Amount')
     })
@@ -476,6 +482,15 @@ function DriverFields({ index, drivers, year, month }: { index: 1 | 2; drivers: 
           </p>
         </div>
         <div className="field">
+          <label className="label">Krankenstunden (Std., optional)</label>
+          <input type="number" step="0.25" min="0" name={`driver${index}SickHours`} className="input" placeholder="z. B. 30" />
+          <p className="mt-1 text-xs text-textMuted">
+            Stunden der Entgeltfortzahlung im Krankheitsfall (§ 3 EntgFG). Sie erzeugen keine Schicht,
+            werden in der Monatszusammenfassung aber getrennt ausgewiesen, zur Gesamtstundenzahl addiert
+            und im Bruttolohn mitgerechnet. Welche Tage krankgeschrieben sind, wird unten im Kalender markiert.
+          </p>
+        </div>
+        <div className="field">
           <label className="label">Freie Tage (max., optional)</label>
           <input type="number" step="1" min="0" max="31" name={`driver${index}MaxFreeDays`} className="input" placeholder="z. B. 6" />
           <p className="mt-1 text-xs text-textMuted">
@@ -616,13 +631,15 @@ export function HoursPlanningForm({
 
               return (
                 <>
-                  {driverStats.map(({ name, totalNet, night25, night40, sunday50, holiday125, freeDays, urlaubDays, krankDays, grossWage, hourlyRate }) => {
+                  {driverStats.map(({ name, totalNet, night25, night40, sunday50, holiday125, freeDays, urlaubDays, krankDays, sickHours, totalWithSick, grossWage, hourlyRate }) => {
                     const amt = (hours: number, factor: number) => (hourlyRate != null ? `${(hours * hourlyRate * factor).toFixed(2)} €` : '– kein Stundenlohn hinterlegt –')
                     return (
                       <div key={name} className="mt-4 rounded-lg border border-border p-3 text-sm">
                         <p className="mb-2 font-semibold">{name} – Monatszusammenfassung</p>
                         <div className="grid grid-cols-4 gap-3 text-xs">
-                          <div><span className="text-textMuted">Gesamt</span><br /><span className="font-mono text-sm">{totalNet.toFixed(2)} h</span></div>
+                          <div><span className="text-textMuted">Gearbeitet</span><br /><span className="font-mono text-sm">{totalNet.toFixed(2)} h</span></div>
+                          <div><span className="text-textMuted">Krank (Std.)</span><br /><span className="font-mono text-sm">{sickHours.toFixed(2)} h</span></div>
+                          <div><span className="text-textMuted">Gesamt inkl. Krank</span><br /><span className="font-mono text-sm font-semibold">{totalWithSick.toFixed(2)} h</span></div>
                           <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{night25.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(night25, 0.25)}</span></div>
                           <div><span className="text-textMuted">Nachtzuschlag 40 % steuerfrei</span><br /><span className="font-mono text-sm">{night40.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(night40, 0.4)}</span></div>
                           <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{sunday50.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(sunday50, 0.5)}</span></div>
@@ -637,7 +654,7 @@ export function HoursPlanningForm({
                         </div>
                         {hourlyRate != null && (
                           <p className="mt-2 text-[10px] text-textMuted">
-                            Bruttolohn geschätzt aus {totalNet.toFixed(2)} Std. × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % und Feiertagszuschlag 125 % - Nachtzuschläge (steuerfrei) sind hier nicht enthalten. Die Zuschlagsbeträge oben (Nacht/Sonntag/Feiertag) sind reine Zusatzbeträge auf die ohnehin bereits im Grundlohn enthaltenen Stunden.
+                            Bruttolohn geschätzt aus {totalWithSick.toFixed(2)} Std. (davon {sickHours.toFixed(2)} Std. Entgeltfortzahlung im Krankheitsfall) × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % und Feiertagszuschlag 125 % - Nachtzuschläge (steuerfrei) sind hier nicht enthalten. Die Zuschlagsbeträge oben (Nacht/Sonntag/Feiertag) sind reine Zusatzbeträge auf die ohnehin bereits im Grundlohn enthaltenen Stunden.
                           </p>
                         )}
                       </div>
