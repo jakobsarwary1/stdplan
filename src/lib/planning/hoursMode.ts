@@ -40,6 +40,15 @@ const DEFAULT_COMMUTE_MINUTES = 30
 const BUSINESS_MIN_BREAK = 30
 const BASE_MIN_NET = 5
 const BASE_MAX_NET = 8
+// Ab dieser Monatsstundenzahl gilt die Obergrenze für freie Tage. Darunter
+// (Teilzeit/Minijob) folgt die Tagesanzahl weiterhin allein der Stundenzahl.
+const FREE_DAY_RULE_MIN_HOURS = 100
+// Mehr freie Tage als das nicht – im Monat insgesamt und je Kalenderwoche.
+// Notfalls werden dafür die einzelnen Tage kürzer.
+const MAX_FREE_DAYS = 6
+const MAX_FREE_DAYS_PER_WEEK = 2
+// Kürzeste zumutbare Schicht, wenn die Tage dafür verkürzt werden müssen.
+const ABS_MIN_NET = 3.5
 // Feste Wochenend-Vorlage (siehe FIXED_WEEKEND_TEMPLATE weiter unten) -
 // hier als Konstanten, damit die Verteilungsrechnung für Montag-Donnerstag
 // diese fixen Werte korrekt vom Gesamtbudget abziehen kann.
@@ -349,6 +358,11 @@ function generateHoursBasedScheduleAttempt(
   // die Wochenend-Pflicht und die 8h-Zwangsregel rutschen, nur weil seine
   // Stundenzahl zufällig über der Schwelle liegt.
   const isEinzelfahrer = target.isEinzelfahrer === true
+  // Gilt die Obergrenze fuer freie Tage? Einzelfahrer sind ausgenommen: sie
+  // haben feste Fr/Sa/So-Stunden und eine eigene "nie 3 Tage frei"-Regel.
+  // Zwingt man ihnen zusaetzlich 24+ Arbeitstage auf, sprengt die Vorlage das
+  // Stundenziel (100 Std. wurden zu 125,8).
+  const freieTageRegelGilt = target.totalHours >= FREE_DAY_RULE_MIN_HOURS && !isEinzelfahrer
   const mustReachEightHoursGlobal = target.calculateExpenses
   const avgNet = mustReachEightHoursGlobal ? 6.75 : (BASE_MIN_NET + BASE_MAX_NET) / 2
 
@@ -452,10 +466,13 @@ function generateHoursBasedScheduleAttempt(
     // (> 129 Std./Monat) - bei Teilzeit/Minijob soll die Tagesanzahl
     // ausschließlich aus der Stundenzahl folgen (avgNetEstimate), nicht
     // künstlich aufgebläht werden, nur um wenige freie Tage zu erzwingen.
-    const minRestDaysForFreeTarget = target.totalHours > 129
-      ? Math.max(0, allDays.length - targetFreeDaysFloor - chosenSundays.length)
+    // Obergrenze für freie Tage ab FREE_DAY_RULE_MIN_HOURS. Vorher griff sie
+    // erst über 129 Std. – ein 100-Std.-Fahrer bekam deshalb 15 freie Tage.
+    const freeDayCap = Math.min(targetFreeDaysFloor, MAX_FREE_DAYS)
+    const minRestDaysForFreeTarget = freieTageRegelGilt
+      ? Math.max(0, allDays.length - freeDayCap - chosenSundays.length)
       : 0
-    const maxFeasibleRestDays = restPool.length > 0 ? Math.floor(remainingHours / 3.5) : 0
+    const maxFeasibleRestDays = restPool.length > 0 ? Math.floor(remainingHours / ABS_MIN_NET) : 0
     const numRestShifts = Math.min(restPool.length, Math.max(avgNetEstimate, Math.min(minRestDaysForFreeTarget, maxFeasibleRestDays)))
     restDayCountWasExpandedForFreeTarget = numRestShifts > avgNetEstimate
     // Ab 150 Std. Gesamtstunden/Monat: Arbeitstage in Blöcken von 3-5
@@ -569,7 +586,46 @@ function generateHoursBasedScheduleAttempt(
   // ableiten. An Freitagen/Samstagen zusätzlich eine Mindest-BRUTTO-
   // arbeitszeit (Netto + Pause) von 6 Std. sicherstellen, auch wenn die
   // Nettoarbeitszeit dabei durchaus unter 8 Std. bleiben darf. ----
+  // ---- Höchstens MAX_FREE_DAYS_PER_WEEK freie Tage in JEDEM 7-Tage-Fenster.
+  // Ein Monatsdeckel allein genügt nicht: 6 freie Tage könnten sich in einer
+  // einzigen Woche ballen. Geprüft wird gleitend (Tag 1-7, 2-8, …), nicht nach
+  // Kalenderwochen – sonst rutschten drei freie Tage über den Wochenwechsel
+  // durch. Gilt erst ab FREE_DAY_RULE_MIN_HOURS und nur so weit, wie das
+  // Stundenbudget zusätzliche Tage überhaupt trägt. ----
+  if (freieTageRegelGilt && allDays.length >= 7) {
+    const maxDaysByBudget = Math.floor(target.totalHours / ABS_MIN_NET)
+    const working = new Set(chosenWeekdays.map(toDateStr))
+    let added = 0
+    for (let start = 0; start + 7 <= allDays.length; start++) {
+      const fenster = allDays.slice(start, start + 7)
+      let frei = fenster.filter((d) => !working.has(toDateStr(d)))
+      while (frei.length > MAX_FREE_DAYS_PER_WEEK && working.size < maxDaysByBudget) {
+        // Den mittleren freien Tag zum Arbeitstag machen – das bricht lange
+        // Blöcke auf, statt nur am Rand zu knabbern.
+        const kandidat = frei[Math.floor(frei.length / 2)]
+        working.add(toDateStr(kandidat))
+        chosenWeekdays.push(kandidat)
+        added++
+        frei = fenster.filter((d) => !working.has(toDateStr(d)))
+      }
+    }
+    if (added > 0) {
+      chosenWeekdays = chosenWeekdays.sort((a, b) => a.getTime() - b.getTime())
+      reservePool = reservePool.filter((d) => !working.has(toDateStr(d)))
+    }
+  }
+
   const MIN_GROSS_FRI_SAT_MINUTES = 6 * 60
+
+  // Mindest-Nettozeit für DIESEN Plan. Verlangt die Obergrenze für freie Tage
+  // mehr Arbeitstage, als das Stundenbudget bei 5 Std./Tag hergibt, muss die
+  // Mindestschicht mitgehen – sonst würde die Monatssumme das Ziel sprengen
+  // (24 Tage × 5 Std. = 120 Std. bei einem 100-Std.-Ziel). Nach unten begrenzt
+  // durch ABS_MIN_NET, damit keine Zwergschichten entstehen.
+  const effMinNetHours = chosenWeekdays.length > 0
+    ? Math.max(ABS_MIN_NET, Math.min(BASE_MIN_NET, target.totalHours / chosenWeekdays.length))
+    : BASE_MIN_NET
+
   function buildContext(day: Date): DayContext {
     const weekday = day.getDay()
     const legalMinBreak = Math.max(BUSINESS_MIN_BREAK, requiredBreakMinutes(BASE_MIN_NET))
@@ -602,7 +658,7 @@ function generateHoursBasedScheduleAttempt(
     // in seltenen Fällen (sehr geringe Nettozeit an einem Tag) reicht auch
     // die maximale Pause nicht ganz für exakt 8 Std., das wird dann
     // bewusst in Kauf genommen statt die Stundensumme zu sprengen.
-    const minNetForEightHours = BASE_MIN_NET * 60
+    const minNetForEightHours = effMinNetHours * 60
     const minNetMinutes = (isEinzelfahrer && (weekday === 5 || weekday === 6))
       ? Math.max(minNetForEightHours, MIN_GROSS_FRI_SAT_MINUTES - breakMinutes)
       : minNetForEightHours
@@ -960,10 +1016,9 @@ function generateHoursBasedScheduleAttempt(
   // Mindestschichtgröße (5 Std.) nicht aus, um genug neue Tage zu schaffen,
   // wird die Mindestgröße für NEUE Tage schrittweise gesenkt (5 -> 4 ->
   // 3,5 Std.), damit das Ziel möglichst dennoch erreicht wird.
-  if (target.totalHours > 129) {
-    const MAX_FREE_DAYS = 7
-    const TARGET_FREE_DAYS = targetFreeDaysFloor // Priorität: möglichst im gewünschten Zielbereich landen, nicht nur irgendwo unter 7
-    const MIN_SHIFT_FLOOR_CANDIDATES = [BASE_MIN_NET, 4, 3.5] // Std., der Reihe nach versucht
+  if (freieTageRegelGilt) {
+    const TARGET_FREE_DAYS = Math.min(targetFreeDaysFloor, MAX_FREE_DAYS) // Priorität: im Zielbereich landen, nicht nur irgendwo unter der Obergrenze
+    const MIN_SHIFT_FLOOR_CANDIDATES = [BASE_MIN_NET, 4, ABS_MIN_NET] // Std., der Reihe nach versucht
     // NICHT der komplette Kalendermonat, sondern nur die für diesen Fahrer
     // überhaupt zulässigen Tage (ab Eintrittsdatum) - sonst könnten hier
     // Tage vor dem Eintritt mit einer Schicht "aufgefüllt" werden.
@@ -1288,7 +1343,7 @@ export function generateHoursBasedSchedule(
   const allDaysCount = daysInMonth(year, month0).filter(
     (d) => !blockedDates.has(toDateStr(d)) && !excludedDateSetForCount.has(toDateStr(d)) && (!target.hireDate || toDateStr(d) >= target.hireDate)
   ).length
-  const freeDaysOk = (workDays: number) => target.totalHours <= 129 || allDaysCount - workDays <= 7
+  const freeDaysOk = (workDays: number) => target.totalHours < FREE_DAY_RULE_MIN_HOURS || target.isEinzelfahrer === true || allDaysCount - workDays <= MAX_FREE_DAYS
 
   const candidates: { attempt: { shifts: HoursShift[]; warning: string | null }; gap: number; freeDays: number }[] = []
 
