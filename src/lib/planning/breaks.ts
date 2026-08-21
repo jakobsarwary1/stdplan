@@ -1,12 +1,23 @@
-// Betriebliche Pausenregelung (ersetzt die gesetzliche ArbZG-Staffelung
-// 30/45 Min. komplett): ab 6 Std. Nettoarbeitszeit gilt firmenweit ein
-// Minimum von 60 Minuten, unabhängig davon ob 6-9 Std. oder darüber -
-// nach oben ist ein Wert bis 180 Minuten zulässig (siehe BREAK_STEPS in
-// hoursMode.ts). Niemals 0 Minuten bei >= 6 Std., niemals zufällige Werte,
-// niemals Blöcke unter 15 Minuten.
+// Pausenregelung nach § 4 ArbZG, mit betrieblichem Spielraum nach oben:
+//
+//   Nettoarbeitszeit          Mindestpause
+//   unter 6 Std.               0 Min. (keine Pflichtpause)
+//   6 bis 9 Std.              30 Min.
+//   ueber 9 Std.              45 Min.
+//
+// Nach oben ist eine Pause bis 120 Minuten zulaessig (MAX_BREAK_MINUTES in
+// hoursMode.ts) - das ArbZG schreibt nur ein Minimum vor, keine Hoechstdauer.
+// Der Planer waehlt innerhalb dieses Rahmens 30-120 Min., damit nicht jeder
+// Tag dieselbe Pausenlaenge traegt. Niemals Bloecke unter 15 Minuten.
 
+/** Zulaessiger Pausenrahmen je Schicht - Untergrenze wie Obergrenze. */
+export const MIN_BREAK_MINUTES = 30
+export const MAX_BREAK_MINUTES = 120
+
+/** Gesetzliche Mindestpause (§ 4 ArbZG) fuer eine gegebene Nettoarbeitszeit. */
 export function requiredBreakMinutes(netWorkHours: number): number {
-  if (netWorkHours >= 6) return 60
+  if (netWorkHours > 9) return 45
+  if (netWorkHours >= 6) return 30
   return 0
 }
 

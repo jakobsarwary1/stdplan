@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { parseAbsences, type AbsenceKind } from '@/lib/planning/absence'
+import { MIN_BREAK_MINUTES, MAX_BREAK_MINUTES } from '@/lib/planning/breaks'
 import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
 import { generateSlotsForVehicle, type TemplateShiftInput } from '@/lib/planning/slots'
@@ -281,9 +282,14 @@ export async function previewHoursPlanning(
       sundayHours: parseFloat(String(formData.get(`driver${i}SundayHours`) ?? '0')) || 0,
       nightHours: parseFloat(String(formData.get(`driver${i}NightHours`) ?? '0')) || 0,
       commuteMinutes: parseInt(String(formData.get(`driver${i}CommuteMinutes`) ?? '30'), 10) || 30,
-      breakMinutesOverride: breakOverrideRaw ? parseInt(breakOverrideRaw, 10) : null,
-      calculateExpenses: formData.get(`driver${i}CalculateExpenses`) === 'on',
-      spesenDaysTarget: parseFloat(String(formData.get(`driver${i}SpesenDaysTarget`) ?? '0')) || 0,
+      // Eine bewusst gesetzte Pause bleibt im zulässigen Rahmen von 30-120 Min.
+      breakMinutesOverride: breakOverrideRaw
+        ? Math.min(MAX_BREAK_MINUTES, Math.max(MIN_BREAK_MINUTES, parseInt(breakOverrideRaw, 10) || MIN_BREAK_MINUTES))
+        : null,
+      // Spesen sind abgeschaltet: keine Verpflegungsmehraufwand-Berechnung und
+      // damit auch kein Zwang zu 8-10 Std. Gesamtzeit je Schicht.
+      calculateExpenses: false,
+      spesenDaysTarget: 0,
       isEinzelfahrer: formData.get(`driver${i}IsEinzelfahrer`) === 'on',
       prioritizeDemand: formData.get(`driver${i}PrioritizeDemand`) === 'on',
       prioritizeSunday: formData.get(`driver${i}PrioritizeSunday`) === 'on',

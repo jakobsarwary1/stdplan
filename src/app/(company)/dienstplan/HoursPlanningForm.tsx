@@ -73,27 +73,16 @@ function parseHolidayDates(input: string): Set<string> {
 }
 
 /**
- * Zusätzliche Kennzahlen: freie Tage im Monat, Anzahl Spesen-berechtigter
- * Tage (nur wenn "Spesen berechnen" für den Fahrer aktiv war), geschätztes
- * Spesengeld (pauschal 14 € je Tag - aktueller gesetzlicher
- * Verpflegungsmehraufwand bei >8 Std. Abwesenheit nach § 9 Abs. 4a EStG,
- * Stand prüfen, ändert sich gelegentlich) sowie ein grob geschätzter
- * Bruttolohn (Nettostunden × hinterlegter Stundenlohn, OHNE Zuschläge -
- * echte Lohnabrechnung mit Zuschlägen folgt in einer späteren Phase).
+ * Zusätzliche Kennzahlen: freie Tage im Monat und ein grob geschätzter
+ * Bruttolohn (Nettostunden × hinterlegter Stundenlohn zzgl. Sonntags- und
+ * Feiertagszuschlag).
+ *
+ * Spesen/Verpflegungsmehraufwand werden hier bewusst NICHT mehr berechnet
+ * oder ausgewiesen.
  */
 function computeExtendedStats(rows: import('./actions').HoursPreviewRow[], holidayDates: Set<string> = new Set()) {
   const freeDays = rows.filter((r) => r.isFree).length
   const workDays = rows.filter((r) => !r.isFree)
-  // Spesen (Verpflegungsmehraufwand) stehen gesetzlich erst ab einer
-  // ANWESENHEIT von mindestens 8 Std. zu (§ 9 Abs. 4a EStG) - das
-  // "Spesen berechnen"-Häkchen allein reicht nicht, jeder einzelne Tag muss
-  // die 8-Std.-Bruttogrenze tatsächlich erreichen.
-  const spesenDays = workDays.filter((r) => {
-    if (!r.calculateExpenses) return false
-    const gross = (r.netHours ?? 0) + (r.breakMinutes ?? 0) / 60 + (r.commuteMinutes ?? 0) / 60
-    return gross >= 7.99 // kleine Toleranz für Rundung
-  }).length
-  const spesenAmount = spesenDays * 14
   const totalNetHours = workDays.reduce((sum, r) => sum + (r.netHours ?? 0), 0)
   const hourlyRate = workDays.find((r) => r.hourlyRate != null)?.hourlyRate ?? null
   // Bruttolohn = Grundlohn (alle Netto-Std. × Stundenlohn) PLUS
@@ -106,7 +95,7 @@ function computeExtendedStats(rows: import('./actions').HoursPreviewRow[], holid
   const grossWage = hourlyRate != null
     ? totalNetHours * hourlyRate + sunday50 * hourlyRate * 0.5 + holiday125 * hourlyRate * 1.25
     : null
-  return { freeDays, spesenDays, spesenAmount, grossWage, hourlyRate }
+  return { freeDays, grossWage, hourlyRate }
 }
 
 function Submit() {
@@ -474,12 +463,12 @@ function DriverFields({ index, drivers, year, month }: { index: 1 | 2; drivers: 
         </div>
         <div className="field">
           <label className="label">Pausenlänge (Min., optional)</label>
-          <input type="number" step="5" min="0" name={`driver${index}BreakMinutes`} className="input" placeholder="leer = gesetzliches Minimum" />
-        </div>
-        <div className="field">
-          <label className="label">Spesen-Tage (Anzahl, optional)</label>
-          <input type="number" step="1" min="0" name={`driver${index}SpesenDaysTarget`} className="input" placeholder="z. B. 10" />
-          <p className="mt-1 text-xs text-textMuted">Anzahl Tage mit mind. 8 Std. Gesamtzeit (= Spesen-berechtigt). Ohne dieses Feld gilt weiterhin "alle in Frage kommenden Tage" (bei Spesen-Häkchen).</p>
+          <input type="number" step="15" min="30" max="120" name={`driver${index}BreakMinutes`} className="input" placeholder="leer = 30–120 Min. gemischt" />
+          <p className="mt-1 text-xs text-textMuted">
+            Zulässig sind 30 bis 120 Minuten. Leer lassen: der Planer wählt je Tag einen Wert aus diesem
+            Rahmen, damit nicht jeder Tag dieselbe Pause trägt (Minimum nach § 4 ArbZG: 30 Min. ab 6 Std.,
+            45 Min. über 9 Std. Nettoarbeitszeit).
+          </p>
         </div>
         <div className="field">
           <label className="label">Freie Tage (max., optional)</label>
@@ -494,10 +483,6 @@ function DriverFields({ index, drivers, year, month }: { index: 1 | 2; drivers: 
         <label className="mt-6 flex items-center gap-2 text-sm">
           <input type="checkbox" name={`driver${index}IsEinzelfahrer`} />
           Einzelfahrer/Vollzeit-Muster (feste Fr/Sa/So-Vorlage, nie 3 Tage frei)
-        </label>
-        <label className="mt-6 flex items-center gap-2 text-sm">
-          <input type="checkbox" name={`driver${index}CalculateExpenses`} defaultChecked={index === 1} />
-          Spesen berechnen (erzwingt 8–10 Std. Gesamtzeit)
         </label>
         <label className="mt-6 flex items-center gap-2 text-sm">
           <input type="checkbox" name={`driver${index}PrioritizeDemand`} />
@@ -540,11 +525,11 @@ export function HoursPlanningForm({
         Für vergangene Monate oder reine Dokumentationszwecke: Gesamtstunden je Fahrer vorgeben (inkl.
         Sonntagsanteil), der Dienstplan wird automatisch gesetzeskonform verteilt. Bis zu zwei Fahrer pro
         Fahrzeug möglich - Tage werden dann untereinander aufgeteilt. Nettoarbeitszeit liegt immer zwischen
-        5 und 8 Std./Tag; ist „Spesen berechnen" aktiv, wird zusätzlich sichergestellt, dass Netto + Pause +
-        Arbeitsweg zusammen 8–10 Std. ergeben (Voraussetzung für Verpflegungsmehraufwand). Die Startzeit wird
-        bewusst nicht jeden Tag gleich gewählt. Die Pausenlänge ist optional bewusst länger als das
-        gesetzliche Minimum wählbar (z. B. für eine Splitschicht zwischen den Stoßzeiten) - das ArbZG legt
-        nur eine Mindestpause fest, keine Höchstdauer; kürzer als das Minimum ist nie möglich.
+        5 und 8 Std./Tag, die Gesamtzeit (Netto + Pause + Arbeitsweg) nie über 10 Std. Die Startzeit wird
+        bewusst nicht jeden Tag gleich gewählt. Die Pause bewegt sich im Rahmen von 30 bis 120 Minuten und
+        wird ebenfalls nicht jeden Tag gleich gesetzt - das ArbZG legt nur eine Mindestpause fest
+        (30 Min. ab 6 Std., 45 Min. über 9 Std. netto), keine Höchstdauer; kürzer als das Minimum ist nie
+        möglich. Spesen werden hier nicht mehr berechnet.
       </p>
 
       <form action={formAction} className="space-y-4">
@@ -626,7 +611,7 @@ export function HoursPlanningForm({
 
               return (
                 <>
-                  {driverStats.map(({ name, totalNet, night25, night40, sunday50, holiday125, freeDays, spesenDays, spesenAmount, grossWage, hourlyRate }) => {
+                  {driverStats.map(({ name, totalNet, night25, night40, sunday50, holiday125, freeDays, grossWage, hourlyRate }) => {
                     const amt = (hours: number, factor: number) => (hourlyRate != null ? `${(hours * hourlyRate * factor).toFixed(2)} €` : '– kein Stundenlohn hinterlegt –')
                     return (
                       <div key={name} className="mt-4 rounded-lg border border-border p-3 text-sm">
@@ -638,8 +623,6 @@ export function HoursPlanningForm({
                           <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{sunday50.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(sunday50, 0.5)}</span></div>
                           <div><span className="text-textMuted">Feiertagszuschlag 125 %</span><br /><span className="font-mono text-sm">{holiday125.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(holiday125, 1.25)}</span></div>
                           <div><span className="text-textMuted">Freie Tage</span><br /><span className="font-mono text-sm">{freeDays}</span></div>
-                          <div><span className="text-textMuted">Spesen-Tage</span><br /><span className="font-mono text-sm">{spesenDays}</span></div>
-                          <div><span className="text-textMuted">Spesen gesamt (14 €/Tag)</span><br /><span className="font-mono text-sm">{spesenAmount.toFixed(2)} €</span></div>
                           <div>
                             <span className="text-textMuted">Lohn brutto (geschätzt)</span><br />
                             <span className="font-mono text-sm">{grossWage != null ? `${grossWage.toFixed(2)} €` : '– kein Stundenlohn hinterlegt –'}</span>
@@ -647,7 +630,7 @@ export function HoursPlanningForm({
                         </div>
                         {hourlyRate != null && (
                           <p className="mt-2 text-[10px] text-textMuted">
-                            Bruttolohn geschätzt aus {totalNet.toFixed(2)} Std. × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % und Feiertagszuschlag 125 % - Nachtzuschläge (steuerfrei) und Spesen sind hier nicht enthalten. Die Zuschlagsbeträge oben (Nacht/Sonntag/Feiertag) sind reine Zusatzbeträge auf die ohnehin bereits im Grundlohn enthaltenen Stunden.
+                            Bruttolohn geschätzt aus {totalNet.toFixed(2)} Std. × {hourlyRate.toFixed(2)} €/Std., zzgl. Sonntagszuschlag 50 % und Feiertagszuschlag 125 % - Nachtzuschläge (steuerfrei) sind hier nicht enthalten. Die Zuschlagsbeträge oben (Nacht/Sonntag/Feiertag) sind reine Zusatzbeträge auf die ohnehin bereits im Grundlohn enthaltenen Stunden.
                           </p>
                         )}
                       </div>

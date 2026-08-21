@@ -1,4 +1,4 @@
-import { requiredBreakMinutes, positionBreak } from './breaks'
+import { requiredBreakMinutes, positionBreak, MIN_BREAK_MINUTES, MAX_BREAK_MINUTES } from './breaks'
 import { demandScore, type DemandProfileInput } from './demand'
 
 export type HoursTarget = {
@@ -38,7 +38,7 @@ export type HoursShift = {
 const TARGET_TOTAL_MIN = 8
 const TARGET_TOTAL_MAX = 10
 const DEFAULT_COMMUTE_MINUTES = 30
-const BUSINESS_MIN_BREAK = 30
+const BUSINESS_MIN_BREAK = MIN_BREAK_MINUTES
 const BASE_MIN_NET = 5
 const BASE_MAX_NET = 8
 // Ab dieser Monatsstundenzahl gilt die Obergrenze für freie Tage. Darunter
@@ -56,7 +56,9 @@ const ABS_MIN_NET = 3.5
 const FRI_FIXED_NET_HOURS = 7.5
 const SAT_FIXED_NET_HOURS = 6
 const SUN_FIXED_NET_HOURS = 6
-const BREAK_STEPS = [60, 90, 120, 150, 180]
+// Pausen-Rahmen: nie unter 30, nie ueber 120 Minuten (§ 4 ArbZG gibt nur
+// das Minimum vor, die 120 Min. sind die betriebliche Obergrenze).
+const BREAK_STEPS = [45, 60, 90, 120]
 const MAX_BREAK_STEP_MINUTES = BREAK_STEPS[BREAK_STEPS.length - 1]
 const START_WINDOW = { earliest: 4 * 60, latest: 22 * 60 } // 04:00-22:00, in 15-Minuten-Schritten durchsucht
 
@@ -685,7 +687,7 @@ function generateHoursBasedScheduleAttempt(
   function buildContext(day: Date): DayContext {
     const weekday = day.getDay()
     const legalMinBreak = Math.max(BUSINESS_MIN_BREAK, requiredBreakMinutes(BASE_MIN_NET))
-    // Zufällige Pausenlänge zwischen betrieblichem Minimum und 180 Minuten
+    // Zufällige Pausenlänge zwischen 30 und 120 Minuten
     // (in 15-Min.-Schritten), statt immer exakt am Minimum zu bleiben -
     // sorgt für realistischere, nicht jeden Tag identische Pausenzeiten.
     // Eine explizite Vorgabe (breakMinutesOverride) hat weiterhin Vorrang.
@@ -693,7 +695,7 @@ function generateHoursBasedScheduleAttempt(
     // (ab 6 Std. netto) erfordert, steht hier noch nicht fest (netHours
     // wird erst in Schritt 2 verteilt) - die endgültige Korrektur passiert
     // in Schritt 3 anhand der dann feststehenden Nettozeit.
-    const randomBreakSteps = Math.floor((180 - legalMinBreak) / 15)
+    const randomBreakSteps = Math.floor((MAX_BREAK_MINUTES - legalMinBreak) / 15)
     const randomBreak = legalMinBreak + Math.floor(Math.random() * (randomBreakSteps + 1)) * 15
     let breakMinutes = target.breakMinutesOverride != null ? Math.max(target.breakMinutesOverride, legalMinBreak) : randomBreak
 
@@ -701,7 +703,7 @@ function generateHoursBasedScheduleAttempt(
     const lowestWindow = target.prioritizeDemand && !target.maximizeNight && !isNightTarget
       ? pickLowestDemandWindow(weekday, demandProfiles)
       : null
-    if (lowestWindow) breakMinutes = Math.max(breakMinutes, Math.min(180, lowestWindow.durationMinutes))
+    if (lowestWindow) breakMinutes = Math.max(breakMinutes, Math.min(MAX_BREAK_MINUTES, lowestWindow.durationMinutes))
 
     const maxNetMinutes = Math.max(BASE_MIN_NET * 60, TARGET_TOTAL_MAX * 60 - breakMinutes - commuteMinutes)
 
@@ -869,7 +871,7 @@ function generateHoursBasedScheduleAttempt(
 
       // 8-Std.-Mindestgesamtzeit gilt auch hier (Vollzeit) - die feste
       // Nettozeit aus der Vorlage bleibt UNVERÄNDERT, nur die Pause wird
-      // bei Bedarf stufenweise verlängert (60 -> 90 -> 120 -> 150 -> 180 Min.).
+      // bei Bedarf stufenweise verlängert (45 -> 60 -> 90 -> 120 Min.).
       // Zählt gegen das Spesen-Euro-Budget, falls eines gesetzt ist -
       // bereits von Natur aus 8h+ erreichende Tage verbrauchen ebenfalls
       // Budget (sie zählen ja auch als Spesen-Tag), verlängerte Pause nur
@@ -910,7 +912,7 @@ function generateHoursBasedScheduleAttempt(
     // Netto-Std./Monat MUSS die Gesamtzeit (Netto + Pause + Arbeitsweg)
     // mindestens 8 Std. betragen (Voraussetzung für Verpflegungsmehr-
     // aufwand). Reicht die Nettoarbeitszeit dafür allein nicht aus, wird
-    // die Pause stufenweise erhöht (30 -> 45 -> 60 -> 90 -> 120 Minuten) -
+    // die Pause stufenweise erhöht (45 -> 60 -> 90 -> 120 Minuten) -
     // rechtlich zulässig, da das ArbZG nur eine Mindestpause vorschreibt,
     // keine Höchstdauer. Die Pause wird NIE verringert, nur bei Bedarf
     // angehoben. Begrenzt durch das Spesen-Euro-Budget, falls gesetzt.
@@ -1240,10 +1242,10 @@ function generateHoursBasedScheduleAttempt(
         // Zu wenige Spesen-Tage: den Tag, der der 8h-Grenze am nächsten
         // ist (aber noch drunter liegt), per 15-Min.-Pausenverlängerung
         // darüber schieben - nur wenn dabei die 10h-Gesamtzeit-Obergrenze
-        // nicht überschritten wird und die Pause nicht schon bei 180 Min.
+        // nicht überschritten wird und die Pause nicht schon bei 120 Min.
         // (betriebliche Praxisgrenze) angekommen ist.
         const candidates = shifts
-          .filter((s) => grossHours(s) < 7.99 && s.breakMinutes < 180 && grossHours(s) + 0.25 <= TARGET_TOTAL_MAX + 0.001)
+          .filter((s) => grossHours(s) < 7.99 && s.breakMinutes < MAX_BREAK_MINUTES && grossHours(s) + 0.25 <= TARGET_TOTAL_MAX + 0.001)
           .sort((a, b) => grossHours(b) - grossHours(a))
         if (candidates.length === 0) break // keine weitere Verbesserung möglich
         const s = candidates[0]
