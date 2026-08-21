@@ -842,6 +842,9 @@ function generateHoursBasedScheduleAttempt(
   // der Ruhezeit-Kette) Start, Ende und Pausenposition festlegen. ----
   const shifts: HoursShift[] = []
   let prevEnd: Date | null = null
+  // Tage, an denen das Fahrzeug bereits durchgehend von anderen Fahrern
+  // belegt war - fuer den Hinweis am Ende.
+  const uebersprungeneTage: { date: string; netHours: number }[] = []
 
   // Feste Wochenend-Vorlage: Freitag, Samstag und Sonntag bekommen IMMER
   // exakt diese Zeiten (auf Nutzerwunsch fest hinterlegt, statt vom
@@ -982,6 +985,13 @@ function generateHoursBasedScheduleAttempt(
         candidateStart += 15
         breakStartAbs += 15
       }
+      // Auch hier gilt: findet sich kein freies Fenster, entsteht keine
+      // Schicht - lieber ein Tag weniger als zwei Fahrer gleichzeitig im
+      // selben Wagen.
+      if (vehicleConflict(vehicleBusy, ctx.dateStr, candidateStart, candidateStart + spanMinutes)) {
+        uebersprungeneTage.push({ date: ctx.dateStr, netHours })
+        return
+      }
       startMin = candidateStart
       const breakRelStart = breakStartAbs - startMin
       breaks = [{ start: breakRelStart, end: breakRelStart + ctx.breakMinutes }]
@@ -1000,7 +1010,7 @@ function generateHoursBasedScheduleAttempt(
       const searchLatest = mustStayInDay ? Math.max(0, 1440 - spanMinutes) : START_WINDOW.latest
 
       const isNightTarget = nightTargetDates.has(ctx.dateStr)
-      let bestStart = START_WINDOW.earliest
+      let bestStart = -1
       let bestScore = -Infinity
       for (let cand = START_WINDOW.earliest; cand <= searchLatest; cand += 15) {
         const candStart = new Date(ctx.date.getFullYear(), ctx.date.getMonth(), ctx.date.getDate(), 0, cand, 0, 0)
@@ -1045,6 +1055,17 @@ function generateHoursBasedScheduleAttempt(
         const score = baseScore + sundayBonus
         if (score > bestScore) { bestScore = score; bestStart = cand }
       }
+
+      // Kein einziger Startzeitpunkt zulaessig - das Fahrzeug ist an diesem
+      // Tag durchgehend von anderen Fahrern belegt (oder die Ruhezeit laesst
+      // keinen Platz). Frueher blieb bestStart auf 04:00 stehen und die
+      // Schicht wurde ueber die eines Kollegen gelegt; ab drei Fahrern je
+      // Fahrzeug passierte das regelmaessig. Jetzt entsteht an dem Tag
+      // schlicht keine Schicht, die Stunden wandern auf andere Tage.
+      if (bestStart < 0) {
+        uebersprungeneTage.push({ date: ctx.dateStr, netHours })
+        return
+      }
       startMin = bestStart
 
       if (target.maximizeNight || target.prioritizeDemand || isNightTarget) {
@@ -1074,6 +1095,62 @@ function generateHoursBasedScheduleAttempt(
     shifts.push({ driverId: target.driverId, date: ctx.dateStr, startMin, endMin, breakMinutes: ctx.breakMinutes, breaks, netHours, commuteMinutes })
     prevEnd = new Date(ctx.date.getFullYear(), ctx.date.getMonth(), ctx.date.getDate(), 0, endMin, 0, 0)
   })
+
+  // ---- Nachplatzierung: Tage, an denen das Fahrzeug schon belegt war ----
+  //
+  // Die Tagesauswahl weiter oben kennt die Fahrzeugbelegung nicht - sie legt
+  // fuer jeden Fahrer dieselben "schoenen" Tage nahe. Bei drei oder mehr
+  // Fahrern an EINEM Wagen faellt der Spaetere dadurch ganz heraus. Genau
+  // dafuer ist dieser Durchlauf da: die Stunden eines belegten Tages wandern
+  // auf einen anderen Kalendertag, an dem der Wagen noch frei ist. Bevorzugt
+  // werden Tage, an denen das Fahrzeug noch GAR NICHT unterwegs ist - ein
+  // Minijobber faehrt so an eigenen Tagen statt als dritte Schicht.
+  if (uebersprungeneTage.length > 0) {
+    const absolutMin = (dateStr: string, minute: number) =>
+      Math.floor(new Date(`${dateStr}T00:00:00Z`).getTime() / 60000) + minute
+    /** Haelt der Fahrer selbst die Ruhezeit zu allen seinen anderen Schichten ein? */
+    const ruhezeitOk = (dateStr: string, start: number, end: number) =>
+      shifts.every((s) => {
+        const aVon = absolutMin(dateStr, start), aBis = absolutMin(dateStr, end)
+        const bVon = absolutMin(s.date, s.startMin), bBis = absolutMin(s.date, s.endMin)
+        const luecke = aVon >= bBis ? aVon - bBis : bVon - aBis
+        return luecke >= minRestHours * 60
+      })
+
+    const nichtPlatziert: { date: string; netHours: number }[] = []
+    for (const offen of uebersprungeneTage) {
+      const eigene = new Set(shifts.map((s) => s.date))
+      const netMinutes = Math.round(offen.netHours * 60)
+      // Freie Tage des Fahrers, komplett unbenutzte Fahrzeugtage zuerst.
+      const kandidaten = allDays
+        .filter((d) => !eigene.has(toDateStr(d)))
+        .sort((a, b) => (vehicleBusy?.get(toDateStr(a))?.length ?? 0) - (vehicleBusy?.get(toDateStr(b))?.length ?? 0))
+
+      let platziert = false
+      for (const day of kandidaten) {
+        const dateStr = toDateStr(day)
+        const ctx = buildContext(day)
+        const breakMinutes = Math.max(ctx.breakMinutes, requiredBreakMinutes(offen.netHours))
+        const spanMinutes = netMinutes + breakMinutes
+        for (let start = START_WINDOW.earliest; start <= START_WINDOW.latest; start += 15) {
+          if (vehicleConflict(vehicleBusy, dateStr, start, start + spanMinutes)) continue
+          if (!ruhezeitOk(dateStr, start, start + spanMinutes)) continue
+          shifts.push({
+            driverId: target.driverId, date: dateStr, startMin: start, endMin: start + spanMinutes,
+            breakMinutes, breaks: positionBreak(spanMinutes, breakMinutes),
+            netHours: offen.netHours, commuteMinutes
+          })
+          platziert = true
+          break
+        }
+        if (platziert) break
+      }
+      if (!platziert) nichtPlatziert.push(offen)
+    }
+    uebersprungeneTage.length = 0
+    uebersprungeneTage.push(...nichtPlatziert)
+    shifts.sort((a, b) => a.date.localeCompare(b.date))
+  }
 
   const deliveredTotal = shifts.reduce((s, x) => s + x.netHours, 0)
   if (deliveredTotal > target.totalHours + 0.5) {
@@ -1210,7 +1287,27 @@ function generateHoursBasedScheduleAttempt(
         // dieser neu angelegten Schicht durchsetzen (siehe Schritt 3).
         const newBreakMinutes = Math.max(newCtx.breakMinutes, requiredBreakMinutes(netHours))
         const spanMinutes = netMinutes + newBreakMinutes
-        const startMin = 6 * 60 + Math.floor(Math.random() * 4 * 60) // 06:00-10:00, zufällig
+        // Startzeit bevorzugt 06:00-10:00, aber nur wo das Fahrzeug frei ist -
+        // sonst weiter durch den Tag suchen. Ist der Wagen ganztags belegt,
+        // taugt dieser Tag nicht und die Kuerzungen werden zurueckgenommen.
+        const wunschStart = 6 * 60 + Math.floor(Math.random() * 4 * 60)
+        let startMin = -1
+        for (let versatz = 0; versatz <= 18 * 60; versatz += 15) {
+          for (const cand of [wunschStart + versatz, wunschStart - versatz]) {
+            if (cand < 0 || cand > 22 * 60) continue
+            if (vehicleConflict(vehicleBusy, toDateStr(newDay), cand, cand + spanMinutes)) continue
+            startMin = cand
+            break
+          }
+          if (startMin >= 0) break
+        }
+        if (startMin < 0) {
+          reductions.forEach(({ shift, amountMinutes }) => {
+            shift.netHours = Math.round((shift.netHours + amountMinutes / 60) * 100) / 100
+            shift.endMin += amountMinutes
+          })
+          break
+        }
         const endMin = startMin + spanMinutes
         const newBreaks = positionBreak(spanMinutes, newBreakMinutes)
 
@@ -1385,6 +1482,18 @@ function generateHoursBasedScheduleAttempt(
     if (Math.abs(deliveredNightHours - target.nightHours) > 0.5) {
       warnings.push(`Nachtstunden-Ziel (${target.nightHours}) konnte nicht exakt erreicht werden (${deliveredNightHours.toFixed(2)} Std. generiert) - vermutlich reichen die verfügbaren Tage/Zeitfenster dafür nicht aus.`)
     }
+  }
+
+  // Fahrzeug ganztags von Kollegen belegt: die Stunden dieser Tage konnten
+  // nur verteilt werden, soweit andere Tage noch Platz hatten.
+  const fehlend = target.totalHours - shifts.reduce((s, x) => s + x.netHours, 0)
+  if (uebersprungeneTage.length > 0 && fehlend > 0.05) {
+    const tage = uebersprungeneTage.map((d) => d.date.slice(8)).join('., ')
+    warnings.push(
+      `${fehlend.toFixed(2)} Std. konnten nicht verplant werden: an ${uebersprungeneTage.length} Tag(en) ` +
+      `(${tage}.) war das Fahrzeug bereits durchgehend von anderen Fahrern belegt. ` +
+      `Mehr Stunden gehen an diesem Wagen nur, wenn ein Kollege Tage abgibt.`
+    )
   }
 
   // Ist die gewuenschte Zahl freier Tage ueberhaupt erreichbar? Bei 72 Std.

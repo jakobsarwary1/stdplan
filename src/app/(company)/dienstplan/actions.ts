@@ -269,7 +269,12 @@ export async function previewHoursPlanning(
   if (!vehicleId || !year || !month) return { ...HOURS_EMPTY_STATE, error: 'Bitte Fahrzeug und Monat wählen.' }
 
   const targets: { driverId: string; totalHours: number; sundayHours: number; nightHours: number; commuteMinutes: number; breakMinutesOverride: number | null; calculateExpenses: boolean; prioritizeDemand: boolean; prioritizeSunday: boolean; maximizeNight: boolean; spesenDaysTarget: number; isEinzelfahrer: boolean; excludedDates: string[]; maxFreeDays: number | null; absences: Map<string, AbsenceKind>; sickHours: number }[] = []
-  for (const i of [1, 2]) {
+  // Wie viele Fahrer-Bloecke das Formular geschickt hat. Keine feste
+  // Obergrenze mehr (frueher genau zwei); driverCount kommt aus dem Formular,
+  // die Schleife laeuft zusaetzlich so lange weiter, wie noch Felder da sind -
+  // so gehen auch aeltere Formulare ohne driverCount nicht verloren.
+  const driverCount = Math.max(2, parseInt(String(formData.get('driverCount') ?? '2'), 10) || 2)
+  for (let i = 1; i <= driverCount || formData.get(`driver${i}Id`) != null; i++) {
     const driverId = String(formData.get(`driver${i}Id`) ?? '')
     if (!driverId) continue
     const breakOverrideRaw = String(formData.get(`driver${i}BreakMinutes`) ?? '').trim()

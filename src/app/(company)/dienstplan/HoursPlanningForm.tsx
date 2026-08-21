@@ -360,7 +360,7 @@ type AbsenceKind = (typeof ABSENCE_KINDS)[number]['key']
  * Geschrieben wird eine Liste "YYYY-MM-DD:art" in ein verstecktes Feld, das
  * die Server-Action (driver{index}ExcludedDates) ausliest.
  */
-function ExcludedDaysCalendar({ index, year, month }: { index: 1 | 2; year: number; month: number }) {
+function ExcludedDaysCalendar({ index, year, month }: { index: number; year: number; month: number }) {
   const [marked, setMarked] = useState<Map<string, AbsenceKind>>(new Map())
 
   const daysInMonth = new Date(year, month, 0).getDate() // month ist 1-12
@@ -443,10 +443,10 @@ function ExcludedDaysCalendar({ index, year, month }: { index: 1 | 2; year: numb
   )
 }
 
-function DriverFields({ index, drivers, year, month }: { index: 1 | 2; drivers: { id: string; name: string }[]; year: number; month: number }) {
+function DriverFields({ index, drivers, year, month }: { index: number; drivers: { id: string; name: string }[]; year: number; month: number }) {
   return (
     <div className="rounded-lg border border-border p-3">
-      <p className="mb-2 text-xs font-semibold uppercase text-textMuted">Fahrer {index}{index === 2 ? ' (optional)' : ''}</p>
+      <p className="mb-2 text-xs font-semibold uppercase text-textMuted">Fahrer {index}{index > 1 ? ' (optional)' : ''}</p>
       <div className="grid grid-cols-2 gap-3">
         <div className="field">
           <label className="label">Fahrer</label>
@@ -537,14 +537,16 @@ export function HoursPlanningForm({
   const holidayDates = parseHolidayDates(holidayDatesInput)
   const [month, setMonth] = useState(defaultMonth)
   const [year, setYear] = useState(defaultYear)
+  // Zahl der Fahrer-Bloecke im Formular. Start bei 2 wie bisher, nach oben offen.
+  const [driverCount, setDriverCount] = useState(2)
 
   return (
     <Card className="mb-6">
       <h2 className="mb-1 font-semibold">Stundenbasierte Planung (Dokumentation)</h2>
       <p className="mb-4 text-sm text-textMuted">
         Für vergangene Monate oder reine Dokumentationszwecke: Gesamtstunden je Fahrer vorgeben (inkl.
-        Sonntagsanteil), der Dienstplan wird automatisch gesetzeskonform verteilt. Bis zu zwei Fahrer pro
-        Fahrzeug möglich - Tage werden dann untereinander aufgeteilt. Nettoarbeitszeit liegt immer zwischen
+        Sonntagsanteil), der Dienstplan wird automatisch gesetzeskonform verteilt. Beliebig viele Fahrer pro
+        Fahrzeug möglich - Tage und Schichten werden dann untereinander aufgeteilt. Nettoarbeitszeit liegt immer zwischen
         5 und 8 Std./Tag, die Gesamtzeit (Netto + Pause + Arbeitsweg) nie über 10 Std. Die Startzeit wird
         bewusst nicht jeden Tag gleich gewählt. Die Pause bewegt sich im Rahmen von 30 bis 120 Minuten und
         wird ebenfalls nicht jeden Tag gleich gesetzt - das ArbZG legt nur eine Mindestpause fest
@@ -590,14 +592,35 @@ export function HoursPlanningForm({
 
         <DriverFields index={1} drivers={drivers} year={year} month={month} />
 
-        <details className="mt-6 rounded-xl border border-border">
-          <summary className="cursor-pointer bg-surfaceAlt px-4 py-3 text-sm font-semibold">
-            Fahrer 2 (optional)
-          </summary>
-          <div className="p-4">
-            <DriverFields index={2} drivers={drivers} year={year} month={month} />
-          </div>
-        </details>
+        {/* Weitere Fahrer desselben Fahrzeugs: zugeklappt, damit das Formular
+            uebersichtlich bleibt. Die Server-Action liest driver{n}… so lange,
+            wie Felder vorhanden sind - eine feste Obergrenze gibt es nicht. */}
+        {Array.from({ length: driverCount - 1 }, (_, i) => i + 2).map((index) => (
+          <details key={index} className="mt-6 rounded-xl border border-border" open={index === driverCount}>
+            <summary className="cursor-pointer bg-surfaceAlt px-4 py-3 text-sm font-semibold">
+              Fahrer {index} (optional)
+            </summary>
+            <div className="p-4">
+              <DriverFields index={index} drivers={drivers} year={year} month={month} />
+            </div>
+          </details>
+        ))}
+
+        <input type="hidden" name="driverCount" value={driverCount} />
+        <div className="mt-2 flex items-center gap-3">
+          <Button type="button" variant="ghost" onClick={() => setDriverCount((n) => n + 1)}>
+            + Weiteren Fahrer hinzufügen
+          </Button>
+          {driverCount > 1 && (
+            <button
+              type="button"
+              className="text-xs text-textMuted underline"
+              onClick={() => setDriverCount((n) => Math.max(1, n - 1))}
+            >
+              Fahrer {driverCount} entfernen
+            </button>
+          )}
+        </div>
 
         <Submit />
       </form>
@@ -670,7 +693,7 @@ export function HoursPlanningForm({
                         : '– kein Stundenlohn hinterlegt –'
                     return (
                       <div className="mt-4 rounded-lg border border-accent/40 bg-accent/5 p-3 text-sm">
-                        <p className="mb-2 font-semibold">Gesamt (beide Fahrer zusammen)</p>
+                        <p className="mb-2 font-semibold">Gesamt (alle Fahrer zusammen)</p>
                         <div className="grid grid-cols-4 gap-3 text-xs">
                           <div><span className="text-textMuted">Gesamt</span><br /><span className="font-mono text-sm">{combined.totalNet.toFixed(2)} h</span></div>
                           <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{combined.night25.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{sumAmt('night25', 0.25)}</span></div>
