@@ -443,6 +443,15 @@ function DriverFields({ index, drivers, year, month }: { index: 1 | 2; drivers: 
           <input type="number" step="1" min="0" name={`driver${index}SpesenDaysTarget`} className="input" placeholder="z. B. 10" />
           <p className="mt-1 text-xs text-textMuted">Anzahl Tage mit mind. 8 Std. Gesamtzeit (= Spesen-berechtigt). Ohne dieses Feld gilt weiterhin "alle in Frage kommenden Tage" (bei Spesen-Häkchen).</p>
         </div>
+        <div className="field">
+          <label className="label">Freie Tage (max., optional)</label>
+          <input type="number" step="1" min="0" max="31" name={`driver${index}MaxFreeDays`} className="input" placeholder="z. B. 6" />
+          <p className="mt-1 text-xs text-textMuted">
+            Mehr freie Tage als hier angegeben soll der Monat nicht haben – die Schichten werden dafür
+            entsprechend kürzer (mindestens 3,5 Std./Tag). Leer lassen: ab 100 Std. gelten automatisch
+            höchstens 6 freie Tage, darunter ergibt sich die Zahl aus der Stundenvorgabe.
+          </p>
+        </div>
         <ExcludedDaysCalendar index={index} year={year} month={month} />
         <label className="mt-6 flex items-center gap-2 text-sm">
           <input type="checkbox" name={`driver${index}IsEinzelfahrer`} />

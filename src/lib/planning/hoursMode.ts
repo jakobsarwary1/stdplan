@@ -16,6 +16,7 @@ export type HoursTarget = {
   prioritizeSunday: boolean // Sonntagsüberlappung zusätzlich gezielt maximieren (unabhängig von Nachtzuschlag/Nachfrage), bleibt aber innerhalb der harten sundayHours-Obergrenze
   maximizeNight: boolean
   spesenDaysTarget?: number // optionale Ziel-Anzahl an Spesen-Tagen (>=8h Brutto) - direkt als Tageszahl, keine Euro-Umrechnung mehr
+  maxFreeDays?: number | null // ausdrueckliche Obergrenze fuer freie Tage aus dem Formular; null = automatische Regel
   isEinzelfahrer?: boolean // explizit gesetzt: feste Fr/Sa/So-Vorlage, 8h-Mindestgesamtzeit, "nie 3 Tage frei" - NICHT mehr automatisch aus der Stundenzahl abgeleitet
 }
 
@@ -412,7 +413,12 @@ function generateHoursBasedScheduleAttempt(
   // haben feste Fr/Sa/So-Stunden und eine eigene "nie 3 Tage frei"-Regel.
   // Zwingt man ihnen zusaetzlich 24+ Arbeitstage auf, sprengt die Vorlage das
   // Stundenziel (100 Std. wurden zu 125,8).
-  const freieTageRegelGilt = target.totalHours >= FREE_DAY_RULE_MIN_HOURS && !isEinzelfahrer
+  // Ausdrückliche Vorgabe aus dem Formular hat Vorrang – sie gilt bei JEDER
+  // Stundenzahl, auch unter 100 Std. Ohne Vorgabe greift die automatische
+  // Regel erst ab FREE_DAY_RULE_MIN_HOURS.
+  const freieTageVorgabe = target.maxFreeDays != null && target.maxFreeDays >= 0 ? target.maxFreeDays : null
+  const freieTageRegelGilt =
+    !isEinzelfahrer && (freieTageVorgabe != null || target.totalHours >= FREE_DAY_RULE_MIN_HOURS)
   const mustReachEightHoursGlobal = target.calculateExpenses
   const avgNet = mustReachEightHoursGlobal ? 6.75 : (BASE_MIN_NET + BASE_MAX_NET) / 2
 
@@ -518,7 +524,7 @@ function generateHoursBasedScheduleAttempt(
     // künstlich aufgebläht werden, nur um wenige freie Tage zu erzwingen.
     // Obergrenze für freie Tage ab FREE_DAY_RULE_MIN_HOURS. Vorher griff sie
     // erst über 129 Std. – ein 100-Std.-Fahrer bekam deshalb 15 freie Tage.
-    const freeDayCap = Math.min(targetFreeDaysFloor, MAX_FREE_DAYS)
+    const freeDayCap = freieTageVorgabe ?? Math.min(targetFreeDaysFloor, MAX_FREE_DAYS)
     const minRestDaysForFreeTarget = freieTageRegelGilt
       ? Math.max(0, allDays.length - freeDayCap - chosenSundays.length)
       : 0
@@ -1077,7 +1083,7 @@ function generateHoursBasedScheduleAttempt(
   // wird die Mindestgröße für NEUE Tage schrittweise gesenkt (5 -> 4 ->
   // 3,5 Std.), damit das Ziel möglichst dennoch erreicht wird.
   if (freieTageRegelGilt) {
-    const TARGET_FREE_DAYS = Math.min(targetFreeDaysFloor, MAX_FREE_DAYS) // Priorität: im Zielbereich landen, nicht nur irgendwo unter der Obergrenze
+    const TARGET_FREE_DAYS = freieTageVorgabe ?? Math.min(targetFreeDaysFloor, MAX_FREE_DAYS) // Priorität: im Zielbereich landen, nicht nur irgendwo unter der Obergrenze
     const MIN_SHIFT_FLOOR_CANDIDATES = [BASE_MIN_NET, 4, ABS_MIN_NET] // Std., der Reihe nach versucht
     // NICHT der komplette Kalendermonat, sondern nur die für diesen Fahrer
     // überhaupt zulässigen Tage (ab Eintrittsdatum) - sonst könnten hier
@@ -1203,8 +1209,13 @@ function generateHoursBasedScheduleAttempt(
       if (freeDates().length <= TARGET_FREE_DAYS) break // Ziel erreicht, weitere Stufen nicht mehr nötig
     }
 
-    if (freeDates().length > MAX_FREE_DAYS) {
-      warnings.push(`Freie Tage (${freeDates().length}) konnten nicht auf max. 7 gesenkt werden - selbst mit auf 3,5 Std. abgesenkter Mindestschichtgröße reicht die Gesamtstundenzahl dafür nicht aus.`)
+    // Hinweis nur, wenn das Ziel wirklich verfehlt wurde. Die genaue Begründung
+    // steht in der Prüfung weiter unten (Stundenbudget bzw. 6-Tage-Regel).
+    if (freeDates().length > TARGET_FREE_DAYS && freieTageVorgabe == null) {
+      warnings.push(
+        `Freie Tage (${freeDates().length}) konnten nicht auf ${TARGET_FREE_DAYS} gesenkt werden - ` +
+        `selbst mit auf ${ABS_MIN_NET} Std. abgesenkter Mindestschichtgröße reicht die Gesamtstundenzahl dafür nicht aus.`,
+      )
     }
   }
 
@@ -1363,6 +1374,30 @@ function generateHoursBasedScheduleAttempt(
     }
   }
 
+  // Ist die gewuenschte Zahl freier Tage ueberhaupt erreichbar? Bei 72 Std.
+  // und 3,5 Std. Mindestschicht sind hoechstens 20 Arbeitstage moeglich - wer
+  // dann 6 freie Tage verlangt, bekommt sie nicht, und das muss dastehen.
+  if (freieTageVorgabe != null) {
+    const freieTage = allDays.length - shifts.length
+    if (freieTage > freieTageVorgabe) {
+      // Zwei mögliche Ursachen, und sie sind unterschiedlich zu beheben:
+      // zu wenig Stunden für mehr Arbeitstage – oder die gesetzliche Regel,
+      // dass nach spätestens 6 Arbeitstagen ein freier Tag folgen muss.
+      const maxTageNachBudget = Math.floor(target.totalHours / ABS_MIN_NET)
+      const freiNachBudget = Math.max(0, allDays.length - maxTageNachBudget)
+      const freiNachGesetz = Math.floor(allDays.length / 7)
+      const grund = freiNachBudget >= freieTage
+        ? `Mit ${target.totalHours} Std. und mindestens ${ABS_MIN_NET} Std. je Schicht sind höchstens ` +
+          `${maxTageNachBudget} Arbeitstage möglich – weniger als ${freiNachBudget} freie Tage gehen daher nicht.`
+        : freiNachGesetz >= freieTage
+          ? `Nach spätestens 6 Arbeitstagen muss ein freier Tag folgen (§ 11 ArbZG) – ` +
+            `in diesem Monat sind das mindestens ${freiNachGesetz} freie Tage.`
+          : `Die Schichten liessen sich nicht dichter legen, ohne Ruhezeiten oder die ` +
+            `Stundenvorgabe zu verletzen. Ein erneuter Durchlauf kann ein anderes Muster ergeben.`
+      warnings.push(`${freieTage} freie Tage statt der gewünschten ${freieTageVorgabe}. ${grund}`)
+    }
+  }
+
   return { shifts, warning: warnings.length > 0 ? warnings.join(' ') : null }
 }
 
@@ -1404,7 +1439,11 @@ export function generateHoursBasedSchedule(
   const allDaysCount = daysInMonth(year, month0).filter(
     (d) => !blockedDates.has(toDateStr(d)) && !excludedDateSetForCount.has(toDateStr(d)) && (!target.hireDate || toDateStr(d) >= target.hireDate)
   ).length
-  const freeDaysOk = (workDays: number) => target.totalHours < FREE_DAY_RULE_MIN_HOURS || target.isEinzelfahrer === true || allDaysCount - workDays <= MAX_FREE_DAYS
+  const freieTageZiel = target.maxFreeDays != null && target.maxFreeDays >= 0 ? target.maxFreeDays : null
+  const freeDaysOk = (workDays: number) =>
+    target.isEinzelfahrer === true ||
+    (freieTageZiel == null && target.totalHours < FREE_DAY_RULE_MIN_HOURS) ||
+    allDaysCount - workDays <= (freieTageZiel ?? MAX_FREE_DAYS)
 
   const candidates: { attempt: { shifts: HoursShift[]; warning: string | null }; gap: number; freeDays: number }[] = []
 
