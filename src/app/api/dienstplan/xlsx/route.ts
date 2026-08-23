@@ -103,7 +103,7 @@ export async function POST(request: Request) {
       pOffset: 16, pBeginn: 17, pEnde: 18
     }
     const HEADERS: [number, string, number][] = [
-      [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 14],
+      [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 22],
       [COLS.von, 'Von', 7], [COLS.bis, 'Bis', 7],
       [COLS.beginn, 'Beginn', 16], [COLS.ende, 'Ende', 16],
       [COLS.pause, 'Pause (Min.)', 9], [COLS.weg, 'Weg (Min.)', 8],
@@ -179,58 +179,68 @@ export async function POST(request: Request) {
     let firstDataRow = 0, lastDataRow = 0
     let prevWorkEndeRow = 0, prevWorkEndeSerial = 0
 
+    // Jede Zeile - auch ein freier Tag - bekommt denselben Formelsatz. Wer an
+    // einem als frei geplanten Tag doch gefahren ist, traegt einfach Beginn
+    // und Ende ein; Netto, Gesamt, Ruhezeit, alle Zuschlaege und die
+    // Monatssummen rechnen sich sofort mit. Solange Beginn oder Ende leer
+    // sind, liefern die Formeln "" - die Zeile bleibt also optisch leer,
+    // statt ueberall 0,00 zu zeigen.
+    const wennGefuellt = (R: number, formel: string) =>
+      `IF(OR($${L(COLS.beginn)}${R}="",$${L(COLS.ende)}${R}=""),"",${formel})`
+
     rows.forEach((r) => {
-      if (r.isFree) {
-        // Beurlaubt/Krankgeschrieben stehen als Wort daneben; ein schlicht
-        // freier Tag bleibt wie bisher ohne Zusatz (sonst blähen die Zeilen auf).
-        const row = sheet.addRow([lastName(r.driverName), r.date, r.freeLabel ?? ''])
-        row.font = { color: { argb: 'FF999999' }, italic: true }
-        if (firstDataRow === 0) firstDataRow = row.number
-        lastDataRow = row.number
-        return
-      }
+      const frei = !!r.isFree
       const R = sheet.addRow([lastName(r.driverName)]).number
       if (firstDataRow === 0) firstDataRow = R
       lastDataRow = R
       const cell = (c: number) => sheet.getCell(R, c)
+      if (frei) sheet.getRow(R).font = { color: { argb: 'FF999999' }, italic: true }
 
-      // Eingabefelder
+      // Eingabefelder - bei freien Tagen leer, aber gelb und beschreibbar.
       const beginnSerial = excelSerial(r.isoDate, r.startMin)
       const endeSerial = excelSerial(r.isoDate, r.endMin)
       const unlocked = { locked: false } // nur diese Felder bleiben bei aktivem Blattschutz editierbar
-      const cB = cell(COLS.beginn); cB.value = beginnSerial; cB.numFmt = DT; cB.fill = inputFill; cB.protection = unlocked
-      const cE = cell(COLS.ende); cE.value = endeSerial; cE.numFmt = DT; cE.fill = inputFill; cE.protection = unlocked
-      const cP = cell(COLS.pause); cP.value = r.breakMinutes; cP.numFmt = '0'; cP.fill = inputFill; cP.protection = unlocked
-      const cW = cell(COLS.weg); cW.value = r.commuteMinutes; cW.numFmt = '0'; cW.fill = inputFill; cW.protection = unlocked
+      const cB = cell(COLS.beginn); cB.value = frei ? null : beginnSerial; cB.numFmt = DT; cB.fill = inputFill; cB.protection = unlocked
+      const cE = cell(COLS.ende); cE.value = frei ? null : endeSerial; cE.numFmt = DT; cE.fill = inputFill; cE.protection = unlocked
+      const cP = cell(COLS.pause); cP.value = frei ? null : r.breakMinutes; cP.numFmt = '0'; cP.fill = inputFill; cP.protection = unlocked
+      const cW = cell(COLS.weg); cW.value = frei ? null : r.commuteMinutes; cW.numFmt = '0'; cW.fill = inputFill; cW.protection = unlocked
       // Pausenlage bleibt (als versteckte Hilfsspalte) ebenfalls editierbar,
       // falls jemand die Pause bewusst verschieben will.
-      const cO = cell(COLS.pOffset); cO.value = r.breakOffsetMin; cO.numFmt = '0'; cO.fill = inputFill; cO.protection = unlocked
+      const cO = cell(COLS.pOffset); cO.value = frei ? 0 : r.breakOffsetMin; cO.numFmt = '0'; cO.fill = inputFill; cO.protection = unlocked
 
       const bRef = `${L(COLS.beginn)}${R}`, eRef = `${L(COLS.ende)}${R}`
       const pRef = `${L(COLS.pause)}${R}`, wRef = `${L(COLS.weg)}${R}`, oRef = `${L(COLS.pOffset)}${R}`
       const pbRef = `${L(COLS.pBeginn)}${R}`, peRef = `${L(COLS.pEnde)}${R}`
 
-      // Datum = Beginn (nur anders formatiert)
-      const cD = cell(COLS.datum); cD.value = { formula: bRef, result: beginnSerial }; cD.numFmt = 'ddd dd.mm.yy'
+      // Datum: bei Arbeitstagen eine Formel auf Beginn (verschiebt sich also
+      // mit), bei freien Tagen fester Text - sonst waere die Spalte leer und
+      // man wuesste nicht, welcher Tag gemeint ist. Der Grund der Abwesenheit
+      // steht dahinter.
+      const cD = cell(COLS.datum)
+      if (frei) cD.value = r.freeLabel ? `${r.date} · ${r.freeLabel}` : r.date
+      else { cD.value = { formula: bRef, result: beginnSerial }; cD.numFmt = 'ddd dd.mm.yy' }
       // Von/Bis = reine Uhrzeit (klassischer Dienstplan-Look), Formeln auf
       // Beginn/Ende - aktualisieren sich also automatisch mit.
-      const cVon = cell(COLS.von); cVon.value = { formula: bRef, result: beginnSerial }; cVon.numFmt = 'hh:mm'
-      const cBis = cell(COLS.bis); cBis.value = { formula: eRef, result: endeSerial }; cBis.numFmt = 'hh:mm'
+      const cVon = cell(COLS.von); cVon.value = { formula: wennGefuellt(R, bRef), result: frei ? '' : beginnSerial }; cVon.numFmt = 'hh:mm'
+      const cBis = cell(COLS.bis); cBis.value = { formula: wennGefuellt(R, eRef), result: frei ? '' : endeSerial }; cBis.numFmt = 'hh:mm'
 
       // Pause-Beginn / Pause-Ende (Hilfsspalten für die Zuschlagsformeln)
       const pbSerial = excelSerial(r.isoDate, r.startMin + r.breakOffsetMin)
       const peSerial = excelSerial(r.isoDate, r.startMin + r.breakOffsetMin + r.breakMinutes)
-      const cPB = cell(COLS.pBeginn); cPB.value = { formula: `${bRef}+${oRef}/1440`, result: pbSerial }; cPB.numFmt = DT
-      const cPE = cell(COLS.pEnde); cPE.value = { formula: `${pbRef}+${pRef}/1440`, result: peSerial }; cPE.numFmt = DT
+      const cPB = cell(COLS.pBeginn); cPB.value = { formula: wennGefuellt(R, `${bRef}+${oRef}/1440`), result: frei ? '' : pbSerial }; cPB.numFmt = DT
+      const cPE = cell(COLS.pEnde); cPE.value = { formula: wennGefuellt(R, `${pbRef}+${pRef}/1440`), result: frei ? '' : peSerial }; cPE.numFmt = DT
 
       // Netto / Gesamt
-      const cN = cell(COLS.netto); cN.value = { formula: `(${eRef}-${bRef})*24-${pRef}/60`, result: r.netHours }; cN.numFmt = '0.00'
-      const cG = cell(COLS.gesamt); cG.value = { formula: `(${eRef}-${bRef})*24+${wRef}/60`, result: r.totalHours }; cG.numFmt = '0.00'
+      const cN = cell(COLS.netto); cN.value = { formula: wennGefuellt(R, `(${eRef}-${bRef})*24-${pRef}/60`), result: frei ? '' : r.netHours }; cN.numFmt = '0.00'
+      const cG = cell(COLS.gesamt); cG.value = { formula: wennGefuellt(R, `(${eRef}-${bRef})*24+${wRef}/60`), result: frei ? '' : r.totalHours }; cG.numFmt = '0.00'
 
       // Ruhezeit gegenüber der vorherigen Arbeitsschicht
       const cR = cell(COLS.ruhe)
       if (prevWorkEndeRow > 0) {
-        cR.value = { formula: `(${bRef}-${L(COLS.ende)}${prevWorkEndeRow})*24`, result: (beginnSerial - prevWorkEndeSerial) * 24 }
+        cR.value = {
+          formula: wennGefuellt(R, `(${bRef}-${L(COLS.ende)}${prevWorkEndeRow})*24`),
+          result: frei ? '' : (beginnSerial - prevWorkEndeSerial) * 24
+        }
       }
       cR.numFmt = '0.00'
 
@@ -242,20 +252,21 @@ export async function POST(request: Request) {
       const fe125 = (fullDay(beginnSerial, endeSerial, false, holidaySerialSet) - fullDay(pbSerial, peSerial, false, holidaySerialSet)) * 24
 
       const cN25 = cell(COLS.n25)
-      cN25.value = { formula: `((${ov(bRef, eRef, '4/24', '6/24')})+(${ov(bRef, eRef, '20/24', '1')})-((${ov(pbRef, peRef, '4/24', '6/24')})+(${ov(pbRef, peRef, '20/24', '1')})))*24`, result: n25 }
+      cN25.value = { formula: wennGefuellt(R, `((${ov(bRef, eRef, '4/24', '6/24')})+(${ov(bRef, eRef, '20/24', '1')})-((${ov(pbRef, peRef, '4/24', '6/24')})+(${ov(pbRef, peRef, '20/24', '1')})))*24`), result: frei ? '' : n25 }
       cN25.numFmt = '0.00'
       const cN40 = cell(COLS.n40)
-      cN40.value = { formula: `((${ov(bRef, eRef, '0', '4/24')})-(${ov(pbRef, peRef, '0', '4/24')}))*24`, result: n40 }
+      cN40.value = { formula: wennGefuellt(R, `((${ov(bRef, eRef, '0', '4/24')})-(${ov(pbRef, peRef, '0', '4/24')}))*24`), result: frei ? '' : n40 }
       cN40.numFmt = '0.00'
       const cSo = cell(COLS.so50)
-      cSo.value = { formula: `((${fullSun(bRef, eRef)})-(${fullSun(pbRef, peRef)}))*24`, result: so50 }
+      cSo.value = { formula: wennGefuellt(R, `((${fullSun(bRef, eRef)})-(${fullSun(pbRef, peRef)}))*24`), result: frei ? '' : so50 }
       cSo.numFmt = '0.00'
       const cFe = cell(COLS.fe125)
-      cFe.value = { formula: `((${fullHol(bRef, eRef)})-(${fullHol(pbRef, peRef)}))*24`, result: fe125 }
+      cFe.value = { formula: wennGefuellt(R, `((${fullHol(bRef, eRef)})-(${fullHol(pbRef, peRef)}))*24`), result: frei ? '' : fe125 }
       cFe.numFmt = '0.00'
 
-      prevWorkEndeRow = R
-      prevWorkEndeSerial = endeSerial
+      // Freie Tage geben die Ruhezeit-Kette nicht weiter - sie haben ja
+      // (noch) keine Zeiten.
+      if (!frei) { prevWorkEndeRow = R; prevWorkEndeSerial = endeSerial }
     })
 
     // Hilfsspalten (Pausenlage/Pause-Beginn/Pause-Ende) ausblenden - sie
