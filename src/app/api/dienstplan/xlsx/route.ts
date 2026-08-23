@@ -100,18 +100,18 @@ export async function POST(request: Request) {
     const COLS = {
       fahrer: 1, datum: 2, von: 3, bis: 4, beginn: 5, ende: 6, pause: 7, weg: 8,
       netto: 9, gesamt: 10, ruhe: 11, n25: 12, n40: 13, so50: 14, fe125: 15,
-      pOffset: 16, pBeginn: 17, pEnde: 18
+      hinweis: 16, pOffset: 17, pBeginn: 18, pEnde: 19
     }
     const HEADERS: [number, string, number][] = [
-      [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 22],
-      [COLS.von, 'Von', 7], [COLS.bis, 'Bis', 7],
+      [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 14],
+      [COLS.von, 'Von', 8], [COLS.bis, 'Bis', 8],
       [COLS.beginn, 'Beginn', 16], [COLS.ende, 'Ende', 16],
       [COLS.pause, 'Pause (Min.)', 9], [COLS.weg, 'Weg (Min.)', 8],
       [COLS.netto, 'Netto (Std.)', 9], [COLS.gesamt, 'Gesamt (Std.)', 10],
       [COLS.ruhe, 'Ruhezeit (Std.)', 10],
       [COLS.n25, 'Nacht 25%', 8], [COLS.n40, 'Nacht 40%', 8],
       [COLS.so50, 'Sonntag 50%', 8], [COLS.fe125, 'Feiertag 125%', 9],
-      [COLS.pOffset, 'Pausenlage (Hilfsspalte)', 22], [COLS.pBeginn, 'Pause-Beginn (Hilfsspalte)', 16], [COLS.pEnde, 'Pause-Ende (Hilfsspalte)', 16]
+      [COLS.hinweis, 'Hinweis', 18], [COLS.pOffset, 'Pausenlage (Hilfsspalte)', 22], [COLS.pBeginn, 'Pause-Beginn (Hilfsspalte)', 16], [COLS.pEnde, 'Pause-Ende (Hilfsspalte)', 16]
     ]
     const nCols = HEADERS.length
     const L = (c: number) => colLetter(c)
@@ -186,7 +186,7 @@ export async function POST(request: Request) {
     // sind, liefern die Formeln "" - die Zeile bleibt also optisch leer,
     // statt ueberall 0,00 zu zeigen.
     const wennGefuellt = (R: number, formel: string) =>
-      `IF(OR($${L(COLS.beginn)}${R}="",$${L(COLS.ende)}${R}=""),"",${formel})`
+      `IF(OR($${L(COLS.von)}${R}="",$${L(COLS.bis)}${R}=""),"",${formel})`
 
     rows.forEach((r) => {
       const frei = !!r.isFree
@@ -197,11 +197,24 @@ export async function POST(request: Request) {
       if (frei) sheet.getRow(R).font = { color: { argb: 'FF999999' }, italic: true }
 
       // Eingabefelder - bei freien Tagen leer, aber gelb und beschreibbar.
+      //
+      // Getippt wird in VON und BIS (reine Uhrzeit, so wie auf dem
+      // Papier-Dienstplan). Beginn/Ende sind daraus abgeleitete Formeln mit
+      // Datum - frueher war es umgekehrt, und wer die Uhrzeit in "Von"
+      // aenderte, aenderte damit gar nichts: die Spalte war nur eine Anzeige
+      // von "Beginn". Laeuft die Schicht ueber Mitternacht (Bis <= Von),
+      // zaehlt das Ende automatisch einen Tag weiter.
       const beginnSerial = excelSerial(r.isoDate, r.startMin)
       const endeSerial = excelSerial(r.isoDate, r.endMin)
+      const tagSerial = excelSerial(r.isoDate, 0)
       const unlocked = { locked: false } // nur diese Felder bleiben bei aktivem Blattschutz editierbar
-      const cB = cell(COLS.beginn); cB.value = frei ? null : beginnSerial; cB.numFmt = DT; cB.fill = inputFill; cB.protection = unlocked
-      const cE = cell(COLS.ende); cE.value = frei ? null : endeSerial; cE.numFmt = DT; cE.fill = inputFill; cE.protection = unlocked
+      const cVonIn = cell(COLS.von)
+      cVonIn.value = frei ? null : (beginnSerial - tagSerial)
+      cVonIn.numFmt = 'hh:mm'; cVonIn.fill = inputFill; cVonIn.protection = unlocked
+      const cBisIn = cell(COLS.bis)
+      // Bis als Uhrzeit innerhalb des Tages; eine Nachtschicht endet z. B. um 05:00.
+      cBisIn.value = frei ? null : ((endeSerial - tagSerial) % 1)
+      cBisIn.numFmt = 'hh:mm'; cBisIn.fill = inputFill; cBisIn.protection = unlocked
       const cP = cell(COLS.pause); cP.value = frei ? null : r.breakMinutes; cP.numFmt = '0'; cP.fill = inputFill; cP.protection = unlocked
       const cW = cell(COLS.weg); cW.value = frei ? null : r.commuteMinutes; cW.numFmt = '0'; cW.fill = inputFill; cW.protection = unlocked
       // Pausenlage bleibt (als versteckte Hilfsspalte) ebenfalls editierbar,
@@ -212,17 +225,23 @@ export async function POST(request: Request) {
       const pRef = `${L(COLS.pause)}${R}`, wRef = `${L(COLS.weg)}${R}`, oRef = `${L(COLS.pOffset)}${R}`
       const pbRef = `${L(COLS.pBeginn)}${R}`, peRef = `${L(COLS.pEnde)}${R}`
 
-      // Datum: bei Arbeitstagen eine Formel auf Beginn (verschiebt sich also
-      // mit), bei freien Tagen fester Text - sonst waere die Spalte leer und
-      // man wuesste nicht, welcher Tag gemeint ist. Der Grund der Abwesenheit
-      // steht dahinter.
-      const cD = cell(COLS.datum)
-      if (frei) cD.value = r.freeLabel ? `${r.date} · ${r.freeLabel}` : r.date
-      else { cD.value = { formula: bRef, result: beginnSerial }; cD.numFmt = 'ddd dd.mm.yy' }
-      // Von/Bis = reine Uhrzeit (klassischer Dienstplan-Look), Formeln auf
-      // Beginn/Ende - aktualisieren sich also automatisch mit.
-      const cVon = cell(COLS.von); cVon.value = { formula: wennGefuellt(R, bRef), result: frei ? '' : beginnSerial }; cVon.numFmt = 'hh:mm'
-      const cBis = cell(COLS.bis); cBis.value = { formula: wennGefuellt(R, eRef), result: frei ? '' : endeSerial }; cBis.numFmt = 'hh:mm'
+      // Datum: fester Kalendertag der Zeile - er ist die Grundlage fuer
+      // Beginn/Ende und steht auch an freien Tagen da.
+      const dRef = `${L(COLS.datum)}${R}`, vRef = `${L(COLS.von)}${R}`, bisRef = `${L(COLS.bis)}${R}`
+      const cD = cell(COLS.datum); cD.value = tagSerial; cD.numFmt = 'ddd dd.mm.yy'
+
+      // Beginn/Ende = Datum + getippte Uhrzeit. Endet die Schicht rechnerisch
+      // vor ihrem Beginn, laeuft sie ueber Mitternacht und das Ende faellt auf
+      // den Folgetag.
+      const cB = cell(COLS.beginn)
+      cB.value = { formula: wennGefuellt(R, `${dRef}+${vRef}`), result: frei ? '' : beginnSerial }
+      cB.numFmt = DT
+      const cE = cell(COLS.ende)
+      cE.value = { formula: wennGefuellt(R, `${dRef}+${bisRef}+IF(${bisRef}<=${vRef},1,0)`), result: frei ? '' : endeSerial }
+      cE.numFmt = DT
+
+      // Grund der Abwesenheit ganz rechts, damit er keine Rechenspalte belegt.
+      if (r.freeLabel) cell(COLS.hinweis).value = r.freeLabel
 
       // Pause-Beginn / Pause-Ende (Hilfsspalten für die Zuschlagsformeln)
       const pbSerial = excelSerial(r.isoDate, r.startMin + r.breakOffsetMin)
@@ -397,7 +416,7 @@ export async function POST(request: Request) {
     // Erläuterung unter die Zusammenfassung
     sheet.addRow([])
     const note = sheet.addRow([
-      'Gelbe Felder (Beginn, Ende, Pause, Weg) sind editierbar - alle übrigen Spalten (Von/Bis, Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Von/Bis zeigen nur die Uhrzeit von Beginn/Ende (klassischer Dienstplan-Look); Beginn/Ende enthalten zusätzlich das Datum (wichtig bei Schichten über Mitternacht). Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause. Lohn gesamt = (Netto + Krank) x Stundenlohn plus alle vier Zuschlaege; die Nachtzuschlaege sind steuerfrei, werden aber ausgezahlt und zaehlen deshalb mit.'
+      'Gelbe Felder (Von, Bis, Pause, Weg) sind editierbar - alle übrigen Spalten (Beginn/Ende, Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Uhrzeiten werden in Von/Bis eingetragen (z. B. 05:00); Beginn/Ende ergeben sich daraus als Datum + Uhrzeit. Endet die Schicht rechnerisch vor ihrem Beginn (z. B. 21:00 bis 05:00), zählt das Ende automatisch auf den Folgetag. Auch an freien Tagen sind alle Formeln vorhanden: Zeiten eintragen genügt. Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause. Lohn gesamt = (Netto + Krank) x Stundenlohn plus alle vier Zuschlaege; die Nachtzuschlaege sind steuerfrei, werden aber ausgezahlt und zaehlen deshalb mit.'
     ])
     note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
     sheet.mergeCells(note.number, 1, note.number, nCols)
