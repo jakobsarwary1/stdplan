@@ -99,15 +99,15 @@ export async function POST(request: Request) {
     // Eingabefeldern Beginn/Ende/Pause/Weg/Pause-Offset) ----
     const COLS = {
       fahrer: 1, datum: 2, von: 3, bis: 4, beginn: 5, ende: 6, pause: 7, weg: 8,
-      netto: 9, gesamt: 10, ruhe: 11, n25: 12, n40: 13, so50: 14, fe125: 15,
-      hinweis: 16, pOffset: 17, pBeginn: 18, pEnde: 19
+      netto: 9, ruhe: 10, n25: 11, n40: 12, so50: 13, fe125: 14,
+      hinweis: 15, pOffset: 16, pBeginn: 17, pEnde: 18
     }
     const HEADERS: [number, string, number][] = [
       [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 14],
       [COLS.von, 'Von', 8], [COLS.bis, 'Bis', 8],
       [COLS.beginn, 'Beginn', 16], [COLS.ende, 'Ende', 16],
       [COLS.pause, 'Pause (Min.)', 9], [COLS.weg, 'Weg (Min.)', 8],
-      [COLS.netto, 'Netto (Std.)', 9], [COLS.gesamt, 'Gesamt (Std.)', 10],
+      [COLS.netto, 'Netto (Std.)', 9],
       [COLS.ruhe, 'Ruhezeit (Std.)', 10],
       [COLS.n25, 'Nacht 25%', 8], [COLS.n40, 'Nacht 40%', 8],
       [COLS.so50, 'Sonntag 50%', 8], [COLS.fe125, 'Feiertag 125%', 9],
@@ -222,7 +222,7 @@ export async function POST(request: Request) {
       const cO = cell(COLS.pOffset); cO.value = frei ? 0 : r.breakOffsetMin; cO.numFmt = '0'; cO.fill = inputFill; cO.protection = unlocked
 
       const bRef = `${L(COLS.beginn)}${R}`, eRef = `${L(COLS.ende)}${R}`
-      const pRef = `${L(COLS.pause)}${R}`, wRef = `${L(COLS.weg)}${R}`, oRef = `${L(COLS.pOffset)}${R}`
+      const pRef = `${L(COLS.pause)}${R}`, oRef = `${L(COLS.pOffset)}${R}`
       const pbRef = `${L(COLS.pBeginn)}${R}`, peRef = `${L(COLS.pEnde)}${R}`
 
       // Datum: fester Kalendertag der Zeile - er ist die Grundlage fuer
@@ -249,9 +249,11 @@ export async function POST(request: Request) {
       const cPB = cell(COLS.pBeginn); cPB.value = { formula: wennGefuellt(R, `${bRef}+${oRef}/1440`), result: frei ? '' : pbSerial }; cPB.numFmt = DT
       const cPE = cell(COLS.pEnde); cPE.value = { formula: wennGefuellt(R, `${pbRef}+${pRef}/1440`), result: frei ? '' : peSerial }; cPE.numFmt = DT
 
-      // Netto / Gesamt
+      // Netto = tatsaechlich gearbeitete Stunden (Schicht minus Pause). Eine
+      // fruehere zweite Spalte "Gesamt" (Schicht + Weg) gibt es hier bewusst
+      // nicht mehr: sie zog die Pause NICHT ab, wich damit vom bezahlten Netto
+      // ab und stiftete nur Verwirrung. Der Lohn rechnet ohnehin mit Netto.
       const cN = cell(COLS.netto); cN.value = { formula: wennGefuellt(R, `(${eRef}-${bRef})*24-${pRef}/60`), result: frei ? '' : r.netHours }; cN.numFmt = '0.00'
-      const cG = cell(COLS.gesamt); cG.value = { formula: wennGefuellt(R, `(${eRef}-${bRef})*24+${wRef}/60`), result: frei ? '' : r.totalHours }; cG.numFmt = '0.00'
 
       // Ruhezeit gegenüber der vorherigen Arbeitsschicht
       const cR = cell(COLS.ruhe)
@@ -379,6 +381,17 @@ export async function POST(request: Request) {
         gesamtCell.value = { formula: `${nettoRef}+${krankRef}`, result: s.totalNet + (s.sickHours ?? 0) }
         gesamtCell.numFmt = '0.00'
         gesamtCell.font = { bold: true }
+
+        // Zwischenueberschrift vor den Zuschlaegen: macht klar, dass die
+        // folgenden Zuschlagsstunden AUFSCHLAEGE auf dieselben Stunden sind
+        // (eine Sonntagnacht-Stunde zaehlt bei Nacht UND Sonntag), sich also
+        // ueberschneiden. Ihre Summe liegt bewusst ueber der Netto-Arbeitszeit
+        // und darf nicht als "Gesamtstunden" aufaddiert werden - der haeufigste
+        // Irrtum beim Lesen des Blattes.
+        const zHead = sheet.addRow(['Zuschläge – Aufschläge auf dieselben Stunden (Mehrfachzuschlag möglich, Summe daher höher als Netto)'])
+        sheet.mergeCells(zHead.number, 1, zHead.number, AMT_TO)
+        zHead.getCell(1).font = { italic: true, size: 9, color: { argb: 'FF666666' } }
+        zHead.getCell(1).alignment = { wrapText: true }
         const n25Ref = addStat('Nachtzuschlag 25 %', COLS.n25, s.night25, 0.25, s.night25Amount)
         const n40Ref = addStat('Nachtzuschlag 40 % steuerfrei', COLS.n40, s.night40, 0.4, s.night40Amount)
         const soRef = addStat('Sonntagszuschlag 50 %', COLS.so50, s.sunday50, 0.5, s.sunday50Amount)
@@ -416,7 +429,7 @@ export async function POST(request: Request) {
     // Erläuterung unter die Zusammenfassung
     sheet.addRow([])
     const note = sheet.addRow([
-      'Gelbe Felder (Von, Bis, Pause, Weg) sind editierbar - alle übrigen Spalten (Beginn/Ende, Netto, Gesamt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Uhrzeiten werden in Von/Bis eingetragen (z. B. 05:00); Beginn/Ende ergeben sich daraus als Datum + Uhrzeit. Endet die Schicht rechnerisch vor ihrem Beginn (z. B. 21:00 bis 05:00), zählt das Ende automatisch auf den Folgetag. Auch an freien Tagen sind alle Formeln vorhanden: Zeiten eintragen genügt. Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause. Lohn gesamt = (Netto + Krank) x Stundenlohn plus alle vier Zuschlaege; die Nachtzuschlaege sind steuerfrei, werden aber ausgezahlt und zaehlen deshalb mit.'
+      'Gelbe Felder (Von, Bis, Pause, Weg) sind editierbar - alle übrigen Spalten (Beginn/Ende, Netto, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Uhrzeiten werden in Von/Bis eingetragen (z. B. 05:00); Beginn/Ende ergeben sich daraus als Datum + Uhrzeit. Endet die Schicht rechnerisch vor ihrem Beginn (z. B. 21:00 bis 05:00), zählt das Ende automatisch auf den Folgetag. Auch an freien Tagen sind alle Formeln vorhanden: Zeiten eintragen genügt. Netto = (Ende−Beginn)×24 − Pause/60. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils Anwesenheit minus Pause. Die Zuschlagsstunden überschneiden sich (eine Sonntagnacht-Stunde zählt z. B. bei Nacht UND Sonntag) und ergeben in Summe bewusst mehr als die Netto-Arbeitszeit; im Grundlohn wird jede Stunde nur EINMAL (100%) gezählt, die Zuschläge sind reine prozentuale Aufschläge. Lohn gesamt = (Netto + Krank) x Stundenlohn plus alle vier Zuschlaege; die Nachtzuschlaege sind steuerfrei, werden aber ausgezahlt und zaehlen deshalb mit.'
     ])
     note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
     sheet.mergeCells(note.number, 1, note.number, nCols)
