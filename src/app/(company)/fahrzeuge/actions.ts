@@ -4,7 +4,6 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
-import { uploadDocument } from '@/lib/storage'
 
 function str(formData: FormData, key: string): string | null {
   const v = String(formData.get(key) ?? '').trim()
@@ -118,36 +117,6 @@ export async function deleteVehicle(vehicleId: string) {
 
   revalidatePath('/fahrzeuge')
   redirect('/fahrzeuge')
-}
-
-export async function uploadVehicleDocument(vehicleId: string, formData: FormData) {
-  const user = await requireCompanyUser()
-
-  const file = formData.get('file') as File | null
-  const type = str(formData, 'type')
-  const side = str(formData, 'side')
-  if (!file || file.size === 0) throw new Error('Bitte eine Datei auswählen.')
-  if (!type) throw new Error('Bitte einen Dokumenttyp auswählen.')
-
-  const path = await uploadDocument(user.companyId, file)
-
-  await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
-    tx.vehicleDocument.create({
-      data: { vehicleId, type, side, fileUrl: path }
-    })
-  )
-
-  revalidatePath(`/fahrzeuge/${vehicleId}`)
-}
-
-export async function deleteVehicleDocument(vehicleId: string, documentId: string) {
-  const user = await requireCompanyUser()
-
-  await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
-    tx.vehicleDocument.delete({ where: { id: documentId } })
-  )
-
-  revalidatePath(`/fahrzeuge/${vehicleId}`)
 }
 
 const DRIVER_ROLE_STAMM = 'stamm'

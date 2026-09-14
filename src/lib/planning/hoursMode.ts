@@ -23,6 +23,12 @@ export type HoursTarget = {
   // NICHT mit - Urlaub und Krankheit sind keine freien Tage.
   preFreeDays?: number
   isEinzelfahrer?: boolean // explizit gesetzt: feste Fr/Sa/So-Vorlage, 8h-Mindestgesamtzeit, "nie 3 Tage frei" - NICHT mehr automatisch aus der Stundenzahl abgeleitet
+  // Intern vom öffentlichen Einstieg (generateHoursBasedSchedule) gesetzt: die
+  // URSPRÜNGLICH eingegebene BEZAHLTE Monatsstundenzahl (Beginn→Ende = Netto +
+  // Pause). `totalHours`/`sundayHours`/`nightHours` tragen dann das daraus
+  // abgeleitete interne NETTO-Ziel; nur die Warntexte zeigen wieder diese
+  // bezahlte Zahl, damit die Meldung zur Nutzereingabe passt.
+  reportPaidHours?: number
 }
 
 export type HoursShift = {
@@ -1152,9 +1158,10 @@ function generateHoursBasedScheduleAttempt(
     shifts.sort((a, b) => a.date.localeCompare(b.date))
   }
 
-  const deliveredTotal = shifts.reduce((s, x) => s + x.netHours, 0)
-  if (deliveredTotal > target.totalHours + 0.5) {
-    warnings.push(`Monatssumme liegt bei ${deliveredTotal.toFixed(2)} Std. statt der eingegebenen ${target.totalHours} Std. - das kommt durch die feste 8-Std.-Mindestgesamtzeit pro Tag (Vollzeit) in Kombination mit Pflichttagen (Fr/Sa, "nie 3 Tage frei") zustande, die zusammen mehr Tage als ursprünglich geschätzt benötigen.`)
+  const deliveredPaid = shifts.reduce((s, x) => s + (x.endMin - x.startMin) / 60, 0)
+  const reportTotal = target.reportPaidHours ?? target.totalHours
+  if (deliveredPaid > reportTotal + 0.5) {
+    warnings.push(`Bezahlte Monatssumme liegt bei ${deliveredPaid.toFixed(2)} Std. statt der eingegebenen ${reportTotal.toFixed(2)} Std. - das kommt durch die feste 8-Std.-Mindestgesamtzeit pro Tag (Vollzeit) in Kombination mit Pflichttagen (Fr/Sa, "nie 3 Tage frei") zustande, die zusammen mehr Tage als ursprünglich geschätzt benötigen.`)
   }
 
   // ---- Freie Tage auf 4-7 pro Monat begrenzen ----
@@ -1486,7 +1493,7 @@ function generateHoursBasedScheduleAttempt(
 
   // Fahrzeug ganztags von Kollegen belegt: die Stunden dieser Tage konnten
   // nur verteilt werden, soweit andere Tage noch Platz hatten.
-  const fehlend = target.totalHours - shifts.reduce((s, x) => s + x.netHours, 0)
+  const fehlend = (target.reportPaidHours ?? target.totalHours) - shifts.reduce((s, x) => s + (x.endMin - x.startMin) / 60, 0)
   if (uebersprungeneTage.length > 0 && fehlend > 0.05) {
     const tage = uebersprungeneTage.map((d) => d.date.slice(8)).join('., ')
     warnings.push(
@@ -1509,7 +1516,7 @@ function generateHoursBasedScheduleAttempt(
       const freiNachBudget = Math.max(0, allDays.length - maxTageNachBudget)
       const freiNachGesetz = Math.floor(allDays.length / 7)
       const grund = freiNachBudget >= freieTage
-        ? `Mit ${target.totalHours} Std. und mindestens ${ABS_MIN_NET} Std. je Schicht sind höchstens ` +
+        ? `Mit ${Math.round(target.reportPaidHours ?? target.totalHours)} Std. (bezahlt) und mindestens ${ABS_MIN_NET} Std. Nettoarbeitszeit je Schicht sind höchstens ` +
           `${maxTageNachBudget} Arbeitstage möglich – weniger als ${freiNachBudget} freie Tage gehen daher nicht.`
         : freiNachGesetz >= freieTage
           ? `Nach spätestens 6 Arbeitstagen muss ein freier Tag folgen (§ 11 ArbZG) – ` +
@@ -1548,7 +1555,7 @@ function generateHoursBasedScheduleAttempt(
  * Ziel, wird unter allen Versuchen der mit der geringsten Spesen-Abweichung
  * gewählt (bei Gleichstand der mit den wenigsten freien Tagen).
  */
-export function generateHoursBasedSchedule(
+function planWithNetTarget(
   year: number,
   month0: number,
   target: HoursTarget,
@@ -1592,6 +1599,61 @@ export function generateHoursBasedSchedule(
   pool.sort((a, b) => (a.gap !== b.gap ? a.gap - b.gap : a.freeDays - b.freeDays))
 
   return pool[0]?.attempt ?? generateHoursBasedScheduleAttempt(year, month0, target, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, 5, vehicleBusy)
+}
+
+/**
+ * Öffentlicher Einstiegspunkt. Die Eingabefelder `totalHours`/`sundayHours`/
+ * `nightHours` sind BEZAHLTE Stunden (Beginn→Ende = Netto + Pause; der
+ * Arbeitsweg zählt nie mit). Der Planer verteilt intern reine
+ * Netto-Arbeitszeit; deshalb wird das interne Netto-Ziel iterativ so
+ * nachgeführt, dass die Summe der bezahlten Spannen (Ende − Beginn) des
+ * erzeugten Plans der Eingabe entspricht. Die Umrechnung ist KEINE feste
+ * Quote, sondern lernt aus dem tatsächlichen Pausenanteil des jeweiligen
+ * Versuchs – 2-4 Durchläufe genügen, und es wird der beste behalten.
+ */
+export function generateHoursBasedSchedule(
+  year: number,
+  month0: number,
+  target: HoursTarget,
+  blockedDates: Set<string>,
+  nightStart: string,
+  nightEnd: string,
+  minRestHours: number,
+  demandProfiles: DemandProfileInput[] = [],
+  vehicleBusy?: VehicleBusy
+): { shifts: HoursShift[]; warning: string | null } {
+  const paidTotal = Number(target.totalHours) || 0
+  const paidOf = (shifts: HoursShift[]) => shifts.reduce((s, x) => s + (x.endMin - x.startMin) / 60, 0)
+
+  // Ohne Stundenziel (0) gibt es nichts umzurechnen.
+  if (paidTotal <= 0) {
+    return planWithNetTarget(year, month0, { ...target, reportPaidHours: paidTotal }, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, vehicleBusy)
+  }
+
+  // scale = internes Netto-Ziel / bezahltes Ziel. Startwert 0,85 (≈ 15 % Pause);
+  // wird nach jedem Versuch aus dem echten Pausenanteil nachgezogen.
+  let scale = 0.85
+  let best: { shifts: HoursShift[]; warning: string | null } | null = null
+  let bestGap = Infinity
+
+  for (let iter = 0; iter < 4; iter++) {
+    const netTarget: HoursTarget = {
+      ...target,
+      totalHours: paidTotal * scale,
+      sundayHours: (Number(target.sundayHours) || 0) * scale,
+      nightHours: (Number(target.nightHours) || 0) * scale,
+      reportPaidHours: paidTotal
+    }
+    const attempt = planWithNetTarget(year, month0, netTarget, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, vehicleBusy)
+    const paid = paidOf(attempt.shifts)
+    const gap = Math.abs(paid - paidTotal)
+    if (gap < bestGap) { bestGap = gap; best = attempt }
+    if (paid <= 0 || gap <= 0.25) break
+    // netTarget_neu = paidTotal × (aktuelles Netto-Ziel / erreichte bezahlte Std.)
+    scale = (paidTotal * scale) / paid
+  }
+
+  return best ?? planWithNetTarget(year, month0, { ...target, reportPaidHours: paidTotal }, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, vehicleBusy)
 }
 
 const LEVEL_WEIGHT_FOR_BREAK: Record<string, number> = { niedrig: 0.5, mittel: 1, hoch: 1.5, sehr_hoch: 2 }

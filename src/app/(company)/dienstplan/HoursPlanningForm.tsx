@@ -6,63 +6,30 @@ import { Badge, Button, Card } from '@/components/ui'
 import { applyHoursPlanning, previewHoursPlanning, type HoursPreviewState } from './actions'
 import { fmtDateDEWithWeekday, formatBreakRanges, minToClock } from '@/lib/planning/format'
 import { stripEmployeeNumberPadding } from '@/lib/employeeNumber'
+import { sumShiftHours, computeWage, type WageShiftInput } from '@/lib/planning/wage'
 
 const INITIAL_STATE: HoursPreviewState = { vehicleId: '', shifts: [], warnings: [], error: null }
 const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember']
 
+/** Wandelt eine Vorschauzeile in die gemeinsame Lohn-Eingabe (src/lib/planning/wage.ts). */
+function toWageShift(r: import('./actions').HoursPreviewRow): WageShiftInput {
+  return { date: r.date, startMin: r.startMin!, endMin: r.endMin!, breaks: r.breaks ?? [] }
+}
+
+/** Nur echte Arbeitsschichten (keine freien/kranken Tage) als Lohn-Eingabe. */
+function workShifts(rows: import('./actions').HoursPreviewRow[]): WageShiftInput[] {
+  return rows.filter((r) => !r.isFree && r.startMin != null && r.endMin != null && r.breaks).map(toWageShift)
+}
+
 /**
- * Berechnet je Fahrer die tatsächlich gearbeiteten Stunden (Pause
- * ausgenommen) und ordnet sie den steuerlichen Zuschlagskategorien nach
- * § 3b EStG zu: 25 % für 20-24 Uhr und 04-06 Uhr, 40 % (steuerfrei) für
- * 00-04 Uhr, 50 % für Sonntagsarbeit, 125 % für Feiertagsarbeit. Zuschläge
- * sind kumulativ (eine Sonntagsnachtstunde zählt für beide Kategorien),
- * daher separate Summen. Fällt ein Feiertag auf einen Sonntag, zählt die
- * Stunde NUR beim Sonntagszuschlag (höherwertig, kein Doppelzählen).
+ * Summiert bezahlte Stunden (Beginn→Ende, Pause bezahlt, Weg raus) und die
+ * § 3b-EStG-Zuschlagsstunden (auf reine Arbeitszeit ohne Pause): 25 % für
+ * 20-24 & 04-06 Uhr, 40 % steuerfrei für 00-04 Uhr, 50 % Sonntag, 125 %
+ * Feiertag. Rechnet ausschließlich über die gemeinsame Funktion in
+ * src/lib/planning/wage.ts – keine eigene Formel mehr.
  */
 function computeSurcharges(rows: import('./actions').HoursPreviewRow[], holidayDates: Set<string> = new Set()) {
-  let totalNet = 0, night25 = 0, night40 = 0, sunday50 = 0, holiday125 = 0
-
-  rows.filter((r) => !r.isFree && r.startMin != null && r.endMin != null && r.breaks).forEach((r) => {
-    const [y, m, d] = r.date.split('-').map(Number)
-    const shiftStart = new Date(y, m - 1, d, 0, r.startMin!, 0, 0)
-    const shiftEnd = new Date(y, m - 1, d, 0, r.endMin!, 0, 0)
-
-    let workIntervals: { start: Date; end: Date }[] = [{ start: shiftStart, end: shiftEnd }]
-    r.breaks!.forEach((b) => {
-      const bStart = new Date(shiftStart.getTime() + b.start * 60000)
-      const bEnd = new Date(shiftStart.getTime() + b.end * 60000)
-      workIntervals = workIntervals.flatMap((w) => {
-        if (bEnd <= w.start || bStart >= w.end) return [w]
-        const parts: { start: Date; end: Date }[] = []
-        if (bStart > w.start) parts.push({ start: w.start, end: bStart })
-        if (bEnd < w.end) parts.push({ start: bEnd, end: w.end })
-        return parts
-      })
-    })
-
-    workIntervals.forEach((w) => {
-      totalNet += (w.end.getTime() - w.start.getTime()) / 3600000
-      let cursor = new Date(w.start)
-      while (cursor < w.end) {
-        const dayBase = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate())
-        const nextDay = new Date(dayBase.getTime() + 86400000)
-        const segEnd = new Date(Math.min(w.end.getTime(), nextDay.getTime()))
-        const segStartMin = (cursor.getTime() - dayBase.getTime()) / 60000
-        const segEndMin = (segEnd.getTime() - dayBase.getTime()) / 60000
-        const isSunday = dayBase.getDay() === 0
-        const dateStr = `${dayBase.getFullYear()}-${String(dayBase.getMonth() + 1).padStart(2, '0')}-${String(dayBase.getDate()).padStart(2, '0')}`
-        const isHoliday = holidayDates.has(dateStr)
-        const ov = (a1: number, a2: number, b1: number, b2: number) => Math.max(0, Math.min(a2, b2) - Math.max(a1, b1))
-        night40 += ov(segStartMin, segEndMin, 0, 240) / 60
-        night25 += (ov(segStartMin, segEndMin, 240, 360) + ov(segStartMin, segEndMin, 1200, 1440)) / 60
-        if (isSunday) sunday50 += (segEndMin - segStartMin) / 60
-        else if (isHoliday) holiday125 += (segEndMin - segStartMin) / 60
-        cursor = segEnd
-      }
-    })
-  })
-
-  return { totalNet, night25, night40, sunday50, holiday125 }
+  return sumShiftHours(workShifts(rows), holidayDates)
 }
 
 /** Parst eine kommagetrennte Liste von Feiertagsdaten ("YYYY-MM-DD, YYYY-MM-DD") zu einem Set. */
@@ -73,12 +40,11 @@ function parseHolidayDates(input: string): Set<string> {
 }
 
 /**
- * Zusätzliche Kennzahlen: freie Tage im Monat und ein grob geschätzter
- * Bruttolohn (Nettostunden × hinterlegter Stundenlohn zzgl. Sonntags- und
- * Feiertagszuschlag).
- *
- * Spesen/Verpflegungsmehraufwand werden hier bewusst NICHT mehr berechnet
- * oder ausgewiesen.
+ * Zusätzliche Kennzahlen je Fahrer: freie/Urlaubs-/Kranktage und der
+ * geschätzte Bruttolohn. Der Lohn rechnet über die gemeinsame Funktion
+ * (src/lib/planning/wage.ts): Grundlohn = (bezahlte Std. Beginn→Ende + Krank)
+ * × Stundenlohn, plus sämtliche § 3b-Zuschläge auf die reine Arbeitszeit. Der
+ * Arbeitsweg zählt nie mit. Spesen werden hier bewusst nicht berechnet.
  */
 function computeExtendedStats(rows: import('./actions').HoursPreviewRow[], holidayDates: Set<string> = new Set()) {
   // Getrennt zaehlen: Urlaub und Krankheit sind KEINE freien Tage, auch wenn
@@ -87,26 +53,18 @@ function computeExtendedStats(rows: import('./actions').HoursPreviewRow[], holid
   const freeDays = absent.filter((r) => (r.absenceKind ?? 'frei') === 'frei').length
   const urlaubDays = absent.filter((r) => r.absenceKind === 'urlaub').length
   const krankDays = absent.filter((r) => r.absenceKind === 'krank').length
-  const workDays = rows.filter((r) => !r.isFree)
-  const totalNetHours = workDays.reduce((sum, r) => sum + (r.netHours ?? 0), 0)
-  const hourlyRate = workDays.find((r) => r.hourlyRate != null)?.hourlyRate ?? null
-  // Lohn gesamt = Grundlohn (alle Netto-Std. × Stundenlohn) PLUS SAEMTLICHE
-  // Zuschlaege auf die jeweils tatsaechlich geleisteten Stunden: Nacht 25 %,
-  // Nacht 40 %, Sonntag 50 %, Feiertag 125 %. Die Nachtzuschlaege sind nach
-  // § 3b EStG steuerfrei - ausgezahlt werden sie trotzdem, deshalb gehoeren
-  // sie in die Gesamtsumme.
-  // Krankenstunden: Entgeltfortzahlung nach § 3 EntgFG. Sie sind keine
-  // geleistete Arbeitszeit (daher getrennt gefuehrt), zaehlen aber zur
-  // Monatsgesamtzahl und werden zum Grundlohn verguetet - ohne Zuschlaege.
+  const hourlyRate = rows.filter((r) => !r.isFree).find((r) => r.hourlyRate != null)?.hourlyRate ?? null
+  // Krankenstunden: Entgeltfortzahlung nach § 3 EntgFG. Keine geleistete
+  // Arbeitszeit (daher getrennt), zaehlen aber zur bezahlten Monatssumme und
+  // werden zum Grundlohn verguetet - ohne Zuschlaege.
   const sickHours = rows.find((r) => r.sickHours != null)?.sickHours ?? 0
-  const totalWithSick = totalNetHours + sickHours
-  const { night25, night40, sunday50, holiday125 } = computeSurcharges(workDays, holidayDates)
-  const grossWage = hourlyRate != null
-    ? totalNetHours * hourlyRate + sickHours * hourlyRate +
-      night25 * hourlyRate * 0.25 + night40 * hourlyRate * 0.4 +
-      sunday50 * hourlyRate * 0.5 + holiday125 * hourlyRate * 1.25
-    : null
-  return { freeDays, urlaubDays, krankDays, sickHours, totalWithSick, grossWage, hourlyRate }
+  const hours = sumShiftHours(workShifts(rows), holidayDates, sickHours)
+  const wage = computeWage(hours, hourlyRate)
+  return {
+    freeDays, urlaubDays, krankDays, sickHours,
+    paidHours: hours.paidHours, workedHours: hours.workedHours, totalPaidHours: hours.totalPaidHours,
+    grossWage: wage.brutto, hourlyRate
+  }
 }
 
 function Submit() {
@@ -143,7 +101,7 @@ async function downloadExcel(
         date: fmtDateDEWithWeekday(r.date), // nur das Datum, kein "frei" (bläht die Zelle sonst auf)
         isoDate: r.date, startMin: 0, endMin: 0,
         start: '', end: '', breakLabel: '', breakMinutes: 0, commuteMinutes: 0,
-        netHours: 0, totalHours: 0,
+        netHours: 0, paidHours: 0, totalHours: 0,
         vehiclePlate: '',
         night25: 0, night40: 0, sunday50: 0, holiday125: 0,
         isFree: true,
@@ -165,7 +123,9 @@ async function downloadExcel(
       breakMinutes: r.breakMinutes ?? 0,
       commuteMinutes: r.commuteMinutes ?? 0,
       netHours: r.netHours ?? 0,
-      totalHours: (r.netHours ?? 0) + (r.breakMinutes ?? 0) / 60 + (r.commuteMinutes ?? 0) / 60,
+      // Bezahlte Stunden = Schichtspanne Beginn→Ende (Pause bezahlt, Weg raus).
+      paidHours: day.paidHours,
+      totalHours: day.paidHours,
       vehiclePlate: r.vehiclePlate,
       night25: day.night25,
       night40: day.night40,
@@ -185,7 +145,10 @@ async function downloadExcel(
         const s = computeSurcharges(rows.filter((r) => r.driverName === name && !r.isFree), holidayDates)
         const { grossWage, hourlyRate, sickHours } = computeExtendedStats(rows.filter((r) => r.driverName === name), holidayDates)
         return {
-          driverName: name, ...s, grossWage, hourlyRate, sickHours,
+          driverName: name,
+          paidHours: s.paidHours,
+          night25: s.night25, night40: s.night40, sunday50: s.sunday50, holiday125: s.holiday125,
+          grossWage, hourlyRate, sickHours,
           night25Amount: hourlyRate != null ? s.night25 * hourlyRate * 0.25 : null,
           night40Amount: hourlyRate != null ? s.night40 * hourlyRate * 0.4 : null,
           sunday50Amount: hourlyRate != null ? s.sunday50 * hourlyRate * 0.5 : null,
@@ -200,7 +163,10 @@ async function downloadExcel(
     const sumField = (key: 'night25Amount' | 'night40Amount' | 'sunday50Amount' | 'holiday125Amount') =>
       anyHasWage ? summaries.reduce((sum, s) => sum + (s[key] ?? 0), 0) : null
     summaries.push({
-      driverName: 'Gesamt (alle Fahrer)', ...combined, grossWage: anyHasWage ? combinedGrossWage : null, hourlyRate: null,
+      driverName: 'Gesamt (alle Fahrer)',
+      paidHours: combined.paidHours,
+      night25: combined.night25, night40: combined.night40, sunday50: combined.sunday50, holiday125: combined.holiday125,
+      grossWage: anyHasWage ? combinedGrossWage : null, hourlyRate: null,
       sickHours: summaries.reduce((sum, x) => sum + (x.sickHours ?? 0), 0),
       night25Amount: sumField('night25Amount'), night40Amount: sumField('night40Amount'),
       sunday50Amount: sumField('sunday50Amount'), holiday125Amount: sumField('holiday125Amount')
@@ -299,8 +265,8 @@ function ExcelExportPanel({ rows, holidayDates }: { rows: import('./actions').Ho
       </div>
 
       <p className="mb-3 text-xs text-textMuted">
-        Die Excel-Datei enthält Beginn/Ende/Pause/Weg als editierbare Felder; Netto, Gesamt, Ruhezeit und alle
-        Zuschläge sind Formeln und rechnen sich beim Ändern automatisch neu.
+        Die Excel-Datei enthält Beginn/Ende/Pause/Weg als editierbare Felder; Bezahlt, Ruhezeit und alle
+        Zuschläge sind Formeln und rechnen sich beim Ändern automatisch neu. Bezahlt = Beginn→Ende (Pause bezahlt, Weg zählt nicht).
       </p>
 
       <div className="mb-3 flex flex-wrap gap-4">
@@ -457,15 +423,16 @@ function DriverFields({ index, drivers, year, month }: { index: number; drivers:
           </select>
         </div>
         <div className="field">
-          <label className="label">Gesamtstunden Monat</label>
+          <label className="label">Gesamtstunden Monat (bezahlt)</label>
           <input type="number" step="0.5" min="0" name={`driver${index}TotalHours`} className="input" placeholder="130" />
+          <p className="mt-1 text-xs text-textMuted">Bezahlte Stunden = Beginn→Ende (Pause ist bezahlt, mit drin). Der Arbeitsweg zählt NICHT mit. Der Plan wird so erzeugt, dass die Summe „Bezahlt" dieser Zahl entspricht.</p>
         </div>
         <div className="field">
-          <label className="label">davon Sonntagsstunden</label>
+          <label className="label">davon Sonntagsstunden (bezahlt)</label>
           <input type="number" step="0.5" min="0" name={`driver${index}SundayHours`} className="input" placeholder="32" />
         </div>
         <div className="field">
-          <label className="label">davon Nachtstunden (20-06 Uhr)</label>
+          <label className="label">davon Nachtstunden (20-06 Uhr, bezahlt)</label>
           <input type="number" step="0.5" min="0" name={`driver${index}NightHours`} className="input" placeholder="optional" />
           <p className="mt-1 text-xs text-textMuted">Bestmögliches Ziel, keine Garantie auf exaktes Treffen (siehe Warnung nach dem Generieren).</p>
         </div>
@@ -545,8 +512,8 @@ export function HoursPlanningForm({
     <Card className="mb-6">
       <h2 className="mb-1 font-semibold">Stundenbasierte Planung (Dokumentation)</h2>
       <p className="mb-4 text-sm text-textMuted">
-        Für vergangene Monate oder reine Dokumentationszwecke: Gesamtstunden je Fahrer vorgeben (inkl.
-        Sonntagsanteil), der Dienstplan wird automatisch gesetzeskonform verteilt. Beliebig viele Fahrer pro
+        Für vergangene Monate oder reine Dokumentationszwecke: bezahlte Gesamtstunden je Fahrer vorgeben (inkl.
+        Sonntagsanteil; bezahlt = Beginn→Ende mit Pause, ohne Arbeitsweg), der Dienstplan wird automatisch gesetzeskonform verteilt. Beliebig viele Fahrer pro
         Fahrzeug möglich - Tage und Schichten werden dann untereinander aufgeteilt. Nettoarbeitszeit liegt immer zwischen
         5 und 8 Std./Tag, die Gesamtzeit (Netto + Pause + Arbeitsweg) nie über 10 Std. Die Startzeit wird
         bewusst nicht jeden Tag gleich gewählt. Die Pause bewegt sich im Rahmen von 30 bis 120 Minuten und
@@ -655,15 +622,16 @@ export function HoursPlanningForm({
 
               return (
                 <>
-                  {driverStats.map(({ name, totalNet, night25, night40, sunday50, holiday125, freeDays, urlaubDays, krankDays, sickHours, totalWithSick, grossWage, hourlyRate }) => {
+                  {driverStats.map(({ name, paidHours, workedHours, night25, night40, sunday50, holiday125, freeDays, urlaubDays, krankDays, sickHours, totalPaidHours, grossWage, hourlyRate }) => {
                     const amt = (hours: number, factor: number) => (hourlyRate != null ? `${(hours * hourlyRate * factor).toFixed(2)} €` : '– kein Stundenlohn hinterlegt –')
                     return (
                       <div key={name} className="mt-4 rounded-lg border border-border p-3 text-sm">
                         <p className="mb-2 font-semibold">{name} – Monatszusammenfassung</p>
                         <div className="grid grid-cols-4 gap-3 text-xs">
-                          <div><span className="text-textMuted">Gearbeitet</span><br /><span className="font-mono text-sm">{totalNet.toFixed(2)} h</span></div>
+                          <div><span className="text-textMuted">Bezahlt (Beginn→Ende)</span><br /><span className="font-mono text-sm">{paidHours.toFixed(2)} h</span></div>
+                          <div><span className="text-textMuted">Arbeitszeit o. Pause</span><br /><span className="font-mono text-sm">{workedHours.toFixed(2)} h</span></div>
                           <div><span className="text-textMuted">Krank (Std.)</span><br /><span className="font-mono text-sm">{sickHours.toFixed(2)} h</span></div>
-                          <div><span className="text-textMuted">Gesamt inkl. Krank</span><br /><span className="font-mono text-sm font-semibold">{totalWithSick.toFixed(2)} h</span></div>
+                          <div><span className="text-textMuted">Gesamt inkl. Krank</span><br /><span className="font-mono text-sm font-semibold">{totalPaidHours.toFixed(2)} h</span></div>
                           <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{night25.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(night25, 0.25)}</span></div>
                           <div><span className="text-textMuted">Nachtzuschlag 40 % steuerfrei</span><br /><span className="font-mono text-sm">{night40.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(night40, 0.4)}</span></div>
                           <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{sunday50.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{amt(sunday50, 0.5)}</span></div>
@@ -678,7 +646,7 @@ export function HoursPlanningForm({
                         </div>
                         {hourlyRate != null && (
                           <p className="mt-2 text-[10px] text-textMuted">
-                            Grundlohn {totalWithSick.toFixed(2)} Std. (davon {sickHours.toFixed(2)} Std. Entgeltfortzahlung im Krankheitsfall) × {hourlyRate.toFixed(2)} €/Std. = {(totalWithSick * hourlyRate).toFixed(2)} €, zzgl. ALLER Zuschläge oben (Nacht 25 %, Nacht 40 %, Sonntag 50 %, Feiertag 125 %) = {(grossWage! - totalWithSick * hourlyRate).toFixed(2)} €. Die Nachtzuschläge sind nach § 3b EStG steuerfrei, werden aber ausgezahlt und zählen deshalb mit. Die Zuschlagsbeträge sind reine Zusatzbeträge auf die ohnehin im Grundlohn enthaltenen Stunden.
+                            Grundlohn {totalPaidHours.toFixed(2)} Std. (bezahlte Stunden Beginn→Ende inkl. Pause, davon {sickHours.toFixed(2)} Std. Entgeltfortzahlung; der Arbeitsweg zählt nicht) × {hourlyRate.toFixed(2)} €/Std. = {(totalPaidHours * hourlyRate).toFixed(2)} €, zzgl. ALLER Zuschläge oben (Nacht 25 %, Nacht 40 %, Sonntag 50 %, Feiertag 125 % – auf die reine Arbeitszeit ohne Pause) = {(grossWage! - totalPaidHours * hourlyRate).toFixed(2)} €. Die Nachtzuschläge sind nach § 3b EStG steuerfrei, werden aber ausgezahlt und zählen deshalb mit.
                           </p>
                         )}
                       </div>
@@ -696,7 +664,7 @@ export function HoursPlanningForm({
                       <div className="mt-4 rounded-lg border border-accent/40 bg-accent/5 p-3 text-sm">
                         <p className="mb-2 font-semibold">Gesamt (alle Fahrer zusammen)</p>
                         <div className="grid grid-cols-4 gap-3 text-xs">
-                          <div><span className="text-textMuted">Gesamt</span><br /><span className="font-mono text-sm">{combined.totalNet.toFixed(2)} h</span></div>
+                          <div><span className="text-textMuted">Bezahlt</span><br /><span className="font-mono text-sm">{combined.paidHours.toFixed(2)} h</span></div>
                           <div><span className="text-textMuted">Nachtzuschlag 25 %</span><br /><span className="font-mono text-sm">{combined.night25.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{sumAmt('night25', 0.25)}</span></div>
                           <div><span className="text-textMuted">Nachtzuschlag 40 % steuerfrei</span><br /><span className="font-mono text-sm">{combined.night40.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{sumAmt('night40', 0.4)}</span></div>
                           <div><span className="text-textMuted">Sonntagszuschlag 50 %</span><br /><span className="font-mono text-sm">{combined.sunday50.toFixed(2)} h</span><br /><span className="font-mono text-[11px] text-textMuted">{sumAmt('sunday50', 0.5)}</span></div>
@@ -714,7 +682,7 @@ export function HoursPlanningForm({
               <tr>
                 <th className="pb-2">Fahrer</th><th className="pb-2">Datum</th><th className="pb-2">Von</th>
                 <th className="pb-2">Bis</th><th className="pb-2">Pause</th><th className="pb-2">Weg</th>
-                <th className="pb-2">Netto</th><th className="pb-2">Gesamt</th>
+                <th className="pb-2">Netto</th><th className="pb-2">Bezahlt</th>
                 <th className="pb-2">Nacht 25%</th><th className="pb-2">Nacht 40%</th><th className="pb-2">Sonntag 50%</th>
                 <th className="pb-2">Feiertag 125%</th>
               </tr>
@@ -735,7 +703,6 @@ export function HoursPlanningForm({
                     </tr>
                   )
                 }
-                const totalHours = (s.netHours ?? 0) + (s.breakMinutes ?? 0) / 60 + (s.commuteMinutes ?? 0) / 60
                 const day = computeSurcharges([s], holidayDates)
                 const fmtHrs = (h: number) => (h > 0.005 ? h.toFixed(2) + ' h' : '–')
                 return (
@@ -749,7 +716,7 @@ export function HoursPlanningForm({
                     <td className="py-2 font-mono">{formatBreakRanges(s.startMin!, s.breaks!)}</td>
                     <td className="py-2 font-mono">{s.commuteMinutes} min</td>
                     <td className="py-2 font-mono">{(s.netHours ?? 0).toFixed(2)} h</td>
-                    <td className="py-2 font-mono">{totalHours.toFixed(2)} h</td>
+                    <td className="py-2 font-mono">{day.paidHours.toFixed(2)} h</td>
                     <td className="py-2 font-mono">{fmtHrs(day.night25)}</td>
                     <td className="py-2 font-mono">{fmtHrs(day.night40)}</td>
                     <td className="py-2 font-mono">{fmtHrs(day.sunday50)}</td>

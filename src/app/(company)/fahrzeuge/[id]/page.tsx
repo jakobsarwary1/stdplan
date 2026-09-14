@@ -2,34 +2,20 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
-import { getDocumentUrl } from '@/lib/storage'
 import { Badge, Button, Card, Field, Input } from '@/components/ui'
 import {
   addVehicleDriverAssignment,
   deleteVehicle,
-  deleteVehicleDocument,
   removeVehicleDriverAssignment,
   updateVehicleBesitz,
-  updateVehicleStammdaten,
-  uploadVehicleDocument
+  updateVehicleStammdaten
 } from '../actions'
 
 const TABS = [
   { key: 'stammdaten', label: 'Stammdaten' },
   { key: 'besitz', label: 'Besitz & Verträge' },
-  { key: 'dokumente', label: 'Dokumente' },
   { key: 'fahrer', label: 'Fahrerzuordnung' }
 ] as const
-
-const DOCUMENT_TYPES = [
-  'Fahrzeugschein',
-  'Mietwagengenehmigung / Konzessionsurkunde',
-  'Versicherungsnachweis',
-  'Leasingvertrag',
-  'TÜV-Bericht / HU-Bescheinigung',
-  'UVV-Prüfprotokoll',
-  'Sonstiges'
-]
 
 const DRIVER_ROLES = [
   { value: 'stamm', label: 'Stammfahrer' },
@@ -68,7 +54,7 @@ export default async function VehicleDetailPage({
   const [vehicle, drivers, shiftTemplates] = await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, async (tx) => [
     await tx.vehicle.findUnique({
       where: { id: params.id },
-      include: { documents: true, assignments: { include: { driver: true } } }
+      include: { assignments: { include: { driver: true } } }
     }),
     await tx.driver.findMany({ where: { status: 'active' }, orderBy: { firstName: 'asc' } }),
     await tx.shiftTemplate.findMany({ where: { active: true }, orderBy: { name: 'asc' } })
@@ -79,7 +65,6 @@ export default async function VehicleDetailPage({
   const updateStammdaten = updateVehicleStammdaten.bind(null, vehicle.id)
   const updateBesitz = updateVehicleBesitz.bind(null, vehicle.id)
   const removeVehicle = deleteVehicle.bind(null, vehicle.id)
-  const uploadDoc = uploadVehicleDocument.bind(null, vehicle.id)
   const addAssignment = addVehicleDriverAssignment.bind(null, vehicle.id)
 
   const assignedDriverIds = new Set(vehicle.assignments.map((a) => a.driverId))
@@ -213,49 +198,6 @@ export default async function VehicleDetailPage({
         </Card>
       )}
 
-      {activeTab === 'dokumente' && (
-        <div className="max-w-2xl space-y-6">
-          <Card>
-            <h2 className="mb-4 font-semibold">Dokument hochladen</h2>
-            <form action={uploadDoc} className="space-y-4">
-              <div className="field">
-                <label className="label">Dokumenttyp</label>
-                <select name="type" className="input" required>
-                  {DOCUMENT_TYPES.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label className="label">Seite (optional, z. B. bei Fahrzeugschein)</label>
-                <select name="side" className="input">
-                  <option value="">—</option>
-                  <option value="Vorderseite">Vorderseite</option>
-                  <option value="Rückseite">Rückseite</option>
-                </select>
-              </div>
-              <Field label="Datei">
-                <input type="file" name="file" className="input" required />
-              </Field>
-              <Button type="submit">Hochladen</Button>
-            </form>
-          </Card>
-
-          <Card>
-            <h2 className="mb-4 font-semibold">Hochgeladene Dokumente</h2>
-            {vehicle.documents.length === 0 ? (
-              <p className="text-sm text-textMuted">Noch keine Dokumente hochgeladen.</p>
-            ) : (
-              <ul className="space-y-2 text-sm">
-                {vehicle.documents.map((d) => (
-                  <VehicleDocumentRow key={d.id} vehicleId={vehicle.id} documentId={d.id} type={d.type} side={d.side} path={d.fileUrl} />
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
-      )}
-
       {activeTab === 'fahrer' && (
         <div className="max-w-2xl space-y-6">
           <Card>
@@ -325,41 +267,5 @@ export default async function VehicleDetailPage({
         </div>
       )}
     </div>
-  )
-}
-
-async function VehicleDocumentRow({
-  vehicleId,
-  documentId,
-  type,
-  side,
-  path
-}: {
-  vehicleId: string
-  documentId: string
-  type: string
-  side: string | null
-  path: string
-}) {
-  const url = await getDocumentUrl(path)
-  const remove = deleteVehicleDocument.bind(null, vehicleId, documentId)
-
-  return (
-    <li className="flex items-center justify-between border-b border-border pb-2 last:border-0">
-      <div>
-        <span className="font-medium">{type}</span>
-        {side && <span className="ml-2 text-textMuted">({side})</span>}
-      </div>
-      <div className="flex items-center gap-3">
-        {url && (
-          <a href={url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-            Öffnen
-          </a>
-        )}
-        <form action={remove}>
-          <button type="submit" className="text-danger hover:underline">Löschen</button>
-        </form>
-      </div>
-    </li>
   )
 }

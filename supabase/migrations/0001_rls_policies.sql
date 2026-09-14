@@ -30,22 +30,15 @@ ALTER TABLE companies                    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE company_members               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE company_settings              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicles                      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE vehicle_documents             ENABLE ROW LEVEL SECURITY;
-ALTER TABLE vehicle_costs                 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_driver_assignments    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE drivers                       ENABLE ROW LEVEL SECURITY;
-ALTER TABLE driver_documents              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE driver_unavailability         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE driver_high_demand_windows    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE minijob_settings              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shift_templates               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shift_template_shifts         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE demand_profiles               ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shifts                        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shift_breaks                  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE compensation_formulas         ENABLE ROW LEVEL SECURITY;
-ALTER TABLE revenue_entries                ENABLE ROW LEVEL SECURITY;
-ALTER TABLE maintenance_records             ENABLE ROW LEVEL SECURITY;
 
 -- 3) Session-Variablen, die die App pro Request/Transaktion setzt:
 --    app.current_company_id  -> UUID des Unternehmens des eingeloggten Nutzers
@@ -87,34 +80,15 @@ CREATE POLICY tenant_isolation ON demand_profiles
   USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 CREATE POLICY tenant_isolation ON shifts
   USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
-CREATE POLICY tenant_isolation ON compensation_formulas
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
-CREATE POLICY tenant_isolation ON revenue_entries
-  USING ("companyId" = NULLIF(current_setting('app.current_company_id', true), ''));
 
 -- Tabellen ohne eigene companyId-Spalte: Isolation über die Elterntabelle (Join)
-CREATE POLICY tenant_isolation ON vehicle_documents
-  USING (EXISTS (SELECT 1 FROM vehicles v WHERE v.id = "vehicleId"
-    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
-CREATE POLICY tenant_isolation ON vehicle_costs
-  USING (EXISTS (SELECT 1 FROM vehicles v WHERE v.id = "vehicleId"
-    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON vehicle_driver_assignments
   USING (EXISTS (SELECT 1 FROM vehicles v WHERE v.id = "vehicleId"
     AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
-CREATE POLICY tenant_isolation ON maintenance_records
-  USING (EXISTS (SELECT 1 FROM vehicles v WHERE v.id = "vehicleId"
-    AND v."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
-CREATE POLICY tenant_isolation ON driver_documents
-  USING (EXISTS (SELECT 1 FROM drivers d WHERE d.id = "driverId"
-    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON driver_unavailability
   USING (EXISTS (SELECT 1 FROM drivers d WHERE d.id = "driverId"
     AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON driver_high_demand_windows
-  USING (EXISTS (SELECT 1 FROM drivers d WHERE d.id = "driverId"
-    AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
-CREATE POLICY tenant_isolation ON minijob_settings
   USING (EXISTS (SELECT 1 FROM drivers d WHERE d.id = "driverId"
     AND d."companyId" = NULLIF(current_setting('app.current_company_id', true), '')));
 CREATE POLICY tenant_isolation ON shift_template_shifts
