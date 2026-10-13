@@ -4,16 +4,29 @@
 //
 // Idee: Jede Zuschlagsart bekommt EIGENE Schichten, die ausschließlich in ihr
 // Zeitfenster/ihren Tag fallen – ohne Überschneidung:
-//   • Sonntagsstunden  -> Tagschichten AN SONNTAGEN (08:00, nie in Nachtfenster)
-//   • Nacht 40 % (00–04) -> Schichten 00:00–00:00+net (net ≤ 4) an Werktagen
-//   • Nacht 25 % (20–24) -> Schichten 20:00–20:00+net (net ≤ 4) an Werktagen
-//   • Rest (normale Std)  -> Tagschichten (08:00) an Werktagen, kein Zuschlag
+//   • Sonntagsstunden  -> Tagschichten AN SONNTAGEN (06–20 Uhr, nie im Nachtfenster)
+//   • Nacht 40 % (00–04) -> Schichten im Fenster 00:00–04:00 an Werktagen
+//   • Nacht 25 % (20–24) -> Schichten im Fenster 20:00–24:00 an Werktagen
+//   • Rest (normale Std)  -> Tagschichten (06–20 Uhr) an Werktagen, kein Zuschlag
 // Dadurch zählt jede gearbeitete Stunde genau einmal in die gewünschte Spalte;
 // die Summen treffen die Eingabe exakt. Die bezahlte Gesamtsumme (Netto + Pause)
-// wird über die letzte normale Schicht minutengenau auf den Zielwert gebracht.
+// wird über die Summe der Schicht-Spannen minutengenau auf den Zielwert gebracht.
 //
-// Kompromiss: Der Plan ist bewusst schematisch (feste Startzeiten, eine Schicht
-// pro Tag) – dafür stimmen die Zahlen. Lassen sich nicht alle Stunden unterbringen
+// REALISTISCHE VARIATION (deterministisch, seed-basiert – Vorschau und Excel
+// sind daher identisch): Startzeiten, Pausenlängen und die Netto-Länge normaler
+// Schichten variieren innerhalb erlaubter Grenzen, damit der Plan nicht
+// schematisch (immer 08:00–16:30 / 30 Min) wirkt. Die Variation ist so gebaut,
+// dass die HARTEN REGELN unangetastet bleiben:
+//   • Pro Schicht wird die bezahlte SPANNE (Beginn→Ende) festgelegt; variiert
+//     wird nur, WIE sie sich auf Netto und Pause aufteilt. Dadurch bleibt die
+//     bezahlte Gesamtsumme exakt.
+//   • Die Netto-Stunden der Zuschlags-Schichten (Sonntag/Nacht) bleiben fix –
+//     also bleiben Sonntag- und Nachtstunden exakt.
+//   • Startzeiten verschieben die Schicht nur INNERHALB ihres zuschlagssicheren
+//     Fensters – die Zuschlags-Einstufung jeder Stunde ändert sich nicht.
+//   • Max. 8 Netto-Std/Tag und die Pausen-/Ruhezeitregeln gelten weiter.
+//
+// Kompromiss: eine Schicht pro Tag. Lassen sich nicht alle Stunden unterbringen
 // (zu wenige passende Tage) oder würde die Ruhezeit < 11 h unterschritten, wird
 // die betroffene Schicht WEGGELASSEN und als Warnung mit Rest-Abweichung
 // ausgewiesen (die Vorschau zeigt Ziel vs. Ist für alle vier Werte).
@@ -30,39 +43,80 @@ export type ExactResult = { shifts: ExactShift[]; warnings: string[] }
 
 const MIN_REST_MIN = 11 * 60 // § 5 ArbZG
 const MAX_NET = 8 // harte Obergrenze: nie mehr als 8 Netto-Std/Tag (auch sonntags)
-const NORMAL_NET = 8
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
-/** Gesetzliche Mindestpause (§ 4 ArbZG) nach Arbeitszeit. */
-function breakFor(workMin: number): number {
+// Zuschlagssichere Tagfenster (keine Überschneidung mit den Nachtfenstern
+// 00–04 / 04–06 / 20–24): eine Tagschicht muss komplett zwischen 06:00 und
+// 20:00 liegen. Zusätzlich halten wir das Ende ≤ 19:00 und den Start ≥ 06:00,
+// damit die Ruhezeit zum nächsten frühen Tag (ab 06:00) ≥ 11 h bleibt.
+const DAY_WINDOW_START = 6 * 60 // 06:00 – früher wäre 25-%-Nachtfenster (04–06)
+const DAY_START_LATEST = 10 * 60 // 10:00 – spätester Start für einen „frühen" Dienst
+const DAY_END_LATEST = 19 * 60 // 19:00 – schützt die 11-h-Ruhezeit
+
+/** Gesetzliche Mindestpause (§ 4 ArbZG) nach Arbeitszeit (Minuten). */
+function legalBreak(workMin: number): number {
   if (workMin > 9 * 60) return 45
   if (workMin > 6 * 60) return 30
   return 0
 }
 
-/** Schicht ab `startMin` mit `net` Netto-Stunden; Pause (falls nötig) in der Mitte. */
-function makeShift(date: string, startMin: number, net: number): ExactShift {
+/** Kleiner, deterministischer Pseudo-Zufall (mulberry32 auf FNV-Hash des Seeds). */
+function seededRand(seed: string): number {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < seed.length; i++) { h ^= seed.charCodeAt(i); h = Math.imul(h, 16777619) }
+  let t = (h += 0x6d2b79f5)
+  t = Math.imul(t ^ (t >>> 15), t | 1)
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
+/** Wählt deterministisch einen Wert aus `arr` anhand des Seeds. */
+function pick<T>(arr: T[], seed: string): T {
+  return arr[Math.min(arr.length - 1, Math.floor(seededRand(seed) * arr.length))]
+}
+
+/** Schicht ab `startMin`, `net` Netto-Std, feste Pause `brk` (Min.) in der Mitte. */
+function makeShift(date: string, startMin: number, net: number, brk: number): ExactShift {
   const workMin = Math.max(0, Math.round(net * 60))
-  const br = breakFor(workMin)
   const half = Math.round(workMin / 2)
-  const breaks = br > 0 ? [{ start: half, end: half + br }] : []
-  return { date, startMin, endMin: startMin + workMin + br, breakMinutes: br, breaks, netHours: workMin / 60 }
+  const breaks = brk > 0 ? [{ start: half, end: half + brk }] : []
+  return { date, startMin, endMin: startMin + workMin + brk, breakMinutes: brk, breaks, netHours: workMin / 60 }
 }
 
-/** Spanne (bezahlt, inkl. Pause) einer Schicht mit `net` Netto-Stunden, in Minuten. */
-function spanMin(net: number): number {
-  const w = Math.round(net * 60)
-  return w + breakFor(w)
+/**
+ * Teilt eine bezahlte SPANNE `span` (Minuten) realistisch in Netto + Pause auf,
+ * OHNE die Spanne zu verändern (damit die bezahlte Summe exakt bleibt).
+ * Variiert die Pause in 15-Min-Schritten; Netto bleibt dabei zwischen 6 und 8 h
+ * (bzw. = Spanne, wenn die Spanne ≤ 6 h ist – dann ohne Pause).
+ */
+function splitSpan(span: number, seed: string): { net: number; brk: number } {
+  if (span <= 6 * 60) return { net: span / 60, brk: 0 } // ≤ 6 h: keine Pflichtpause
+  // Pause so wählen, dass Netto in [6 h, 8 h] bleibt: brk ∈ [span−8h, span−6h] ∩ [30, 120]
+  const minBrk = Math.max(30, span - MAX_NET * 60)
+  const maxBrk = Math.min(120, span - 6 * 60)
+  const steps: number[] = []
+  for (let b = Math.ceil(minBrk / 15) * 15; b <= maxBrk; b += 15) steps.push(b)
+  const brk = steps.length ? pick(steps, seed) : Math.max(30, Math.round(minBrk))
+  return { net: (span - brk) / 60, brk }
 }
 
-/** Netto-Stunden, deren bezahlte Spanne exakt `span` Minuten ergibt (für den Feinschliff). */
-function netForSpan(span: number): number {
-  if (span <= 6 * 60) return span / 60
-  if (span <= 9 * 60 + 30) return (span - 30) / 60 // 30 min Pause
-  return (span - 45) / 60 // 45 min Pause
+/** Startzeit einer Tagschicht (Spanne `span`) deterministisch im Fenster 06–10 Uhr. */
+function dayStart(span: number, seed: string): number {
+  const latest = Math.min(DAY_START_LATEST, DAY_END_LATEST - span, 20 * 60 - span)
+  if (latest <= DAY_WINDOW_START) return DAY_WINDOW_START
+  const steps: number[] = []
+  for (let s = DAY_WINDOW_START; s <= latest; s += 15) steps.push(s)
+  return pick(steps, seed)
+}
+/** Startzeit einer Nachtschicht im Fenster [`winStart`, `winEnd`] (Spanne `span`). */
+function nightStart(winStart: number, winEnd: number, span: number, seed: string): number {
+  const latest = winEnd - span
+  if (latest <= winStart) return winStart
+  const steps: number[] = []
+  for (let s = winStart; s <= latest; s += 15) steps.push(s)
+  return pick(steps, seed)
 }
 
-type Tmpl = { startMin: number; net: number }
+type Spec = { cat: 'sun' | 'n40' | 'n25' | 'norm'; net: number; brk: number }
 
 function monthDays(year: number, month1: number): { iso: string; dow: number }[] {
   const out: { iso: string; dow: number }[] = []
@@ -92,67 +146,97 @@ export function verteileExakt(
   const tage = monthDays(year, month1)
   const nSun = tage.filter((t) => t.dow === 0).length
 
-  // 1) Zuschlag-Schichten als Vorlagen bauen (Netto = Ziel, keine Überschneidung).
-  //    Höchstens 8 Netto-Std/Tag – auch an Sonntagen; Nachtfenster sind ohnehin
-  //    ≤ 4 h (00–04 bzw. 20–24).
-  // Sonntags-Kapazität: nur so viele Sonntagsstunden, wie Sonntage × 8 Std
-  // hergeben. Überzählige werden zu NORMALEN Stunden (damit die Gesamtsumme
-  // stimmt), mit klarer Warnung – Sonntag hat Vorrang, aber nicht über die
-  // 8-Std-Grenze und die Zahl der Sonntage hinaus.
+  // 1) Zuschlag-Schichten als Spezifikationen bauen (Netto = Ziel, keine
+  //    Überschneidung). Höchstens 8 Netto-Std/Tag – auch an Sonntagen;
+  //    Nachtfenster sind ohnehin ≤ 4 h (00–04 bzw. 20–24).
+  //    Sonntags-Kapazität: nur so viele Sonntagsstunden wie Sonntage × 8 Std.
+  //    Überzählige werden zu NORMALEN Stunden (Gesamtsumme bleibt exakt), mit
+  //    klarer Warnung – Sonntag hat Vorrang, aber nicht über die 8-Std-Grenze
+  //    und die Zahl der Sonntage hinaus.
   const sundayCap = Math.min(sunday, nSun * MAX_NET)
   if (round2(sunday - sundayCap) > 0.0001) {
     warnings.push(`Sonntag: nur ${n2(sundayCap)} von ${n2(sunday)} Std möglich (nur ${nSun} Sonntage × max. 8 Std) – die übrigen ${n2(sunday - sundayCap)} Std werden als normale Stunden verplant.`)
   }
-  const sundayTmpl: Tmpl[] = []
-  for (let rem = sundayCap; rem > 0.0001;) { const net = Math.min(rem, MAX_NET); sundayTmpl.push({ startMin: 8 * 60, net }); rem = round2(rem - net) }
-  const n40Tmpl: Tmpl[] = []
-  for (let rem = n40; rem > 0.0001;) { const net = Math.min(rem, 4); n40Tmpl.push({ startMin: 0, net }); rem = round2(rem - net) }
-  const n25Tmpl: Tmpl[] = []
-  for (let rem = n25; rem > 0.0001;) { const net = Math.min(rem, 4); n25Tmpl.push({ startMin: 20 * 60, net }); rem = round2(rem - net) }
+  // Zuschlag-Schichten: Netto FIX (= exakte Ziele), Pause = gesetzliche Pflicht.
+  // (Die Pause dieser Schichten zu variieren würde nur die bezahlte Spanne
+  // ändern; sie wird über die normalen Schichten ohnehin exakt ausgeglichen –
+  // wir halten sie hier schlicht, die Variation steckt in den normalen Diensten.)
+  const sunSpecs: Spec[] = []
+  for (let rem = sundayCap; rem > 0.0001;) { const net = Math.min(rem, MAX_NET); sunSpecs.push({ cat: 'sun', net, brk: legalBreak(net * 60) }); rem = round2(rem - net) }
+  const n40Specs: Spec[] = []
+  for (let rem = n40; rem > 0.0001;) { const net = Math.min(rem, 4); n40Specs.push({ cat: 'n40', net, brk: 0 }); rem = round2(rem - net) }
+  const n25Specs: Spec[] = []
+  for (let rem = n25; rem > 0.0001;) { const net = Math.min(rem, 4); n25Specs.push({ cat: 'n25', net, brk: 0 }); rem = round2(rem - net) }
 
-  // 2) Normale Tagschichten, bis die bezahlte Summe (grob) erreicht ist; die
-  //    letzte Schicht bringt den Rest minutengenau auf den Zielwert.
-  const fixSpan = [...sundayTmpl, ...n40Tmpl, ...n25Tmpl].reduce((s, t) => s + spanMin(t.net), 0)
-  let restSpan = Math.round(bezahlt * 60) - fixSpan // noch zu verteilende bezahlte Minuten
-  const normalTmpl: Tmpl[] = []
+  // 2) Normale Schichten füllen die restliche bezahlte Zeit auf. Wir legen
+  //    zuerst die SPANNEN fest (volle 8,5-h-Blöcke + ein Rest), damit die
+  //    bezahlte Summe exakt stimmt; erst danach wird jede Spanne realistisch in
+  //    Netto + Pause aufgeteilt (splitSpan) – das ändert die Spanne nicht.
+  const spanOf = (s: Spec) => Math.round(s.net * 60) + s.brk
+  const fixSpan = [...sunSpecs, ...n40Specs, ...n25Specs].reduce((a, s) => a + spanOf(s), 0)
+  let restSpan = Math.round(bezahlt * 60) - fixSpan
+  const FULL_SPAN = MAX_NET * 60 + 30 // 8 h Netto + 30 Min Pause = 510 Min, max. darstellbare Einzel-Spanne
+  const normSpecs: Spec[] = []
   if (restSpan < 0) {
     warnings.push('Die Zuschlagsstunden ergeben allein schon mehr bezahlte Zeit als die eingegebene Gesamtsumme – bitte Gesamt-Std erhöhen oder Zuschläge senken.')
   } else {
-    // Volle 8-Std-Schichten, bis der Rest in EINE Schicht ≤ 8 Netto passt; die
-    // letzte Schicht bringt die bezahlte Summe minutengenau aufs Ziel. KEINE
-    // Schicht überschreitet die 8-Netto-Grenze.
-    const vollSpan = spanMin(NORMAL_NET)
-    while (restSpan > vollSpan) { normalTmpl.push({ startMin: 8 * 60, net: NORMAL_NET }); restSpan -= vollSpan }
-    if (restSpan > 0) {
-      const net = Math.min(MAX_NET, round2(netForSpan(restSpan)))
-      if (net > 0.01) normalTmpl.push({ startMin: 8 * 60, net })
-    }
+    const spans: number[] = []
+    while (restSpan > FULL_SPAN) { spans.push(FULL_SPAN); restSpan -= FULL_SPAN }
+    if (restSpan > 0.5) spans.push(Math.round(restSpan))
+    spans.forEach((span, i) => {
+      const { net, brk } = splitSpan(span, `norm-${year}-${month1}-${i}-${span}`)
+      if (net > 0.01) normSpecs.push({ cat: 'norm', net, brk })
+    })
   }
 
-  // 3) Vorlagen auf Tage verteilen: Sonntage nur Sonntagsschichten, Werktage die
-  //    übrigen; eine Schicht pro Tag; Ruhezeit ≥ 11 h, sonst Tag freilassen.
+  // 3) Spezifikationen auf Tage verteilen – eine Schicht pro Tag, Ruhezeit
+  //    ≥ 11 h (§ 5 ArbZG) BEIDSEITIG (zur vorigen UND zur nächsten Schicht).
+  //
+  //    SONNTAG HAT VORRANG: Sonntagsschichten werden ZUERST auf alle Sonntage
+  //    gelegt (Sonntage liegen ≥ 7 Tage auseinander, kollidieren also nie). Erst
+  //    danach werden die Werktagsschichten (Nacht + Rest) um die Sonntage herum
+  //    verteilt. Dadurch kann eine späte Samstag-Nachtschicht (20–24 Uhr, endet
+  //    So 00:00) den Sonntagsdienst nicht mehr „verdrängen" – die Nachtschicht
+  //    weicht stattdessen auf einen anderen Werktag aus.
   const dayMs = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d) }
-  const weekdayQ: Tmpl[] = [...n40Tmpl, ...n25Tmpl, ...normalTmpl]
-  const sunQ: Tmpl[] = [...sundayTmpl]
-  const shifts: ExactShift[] = []
-  let prevEnd: number | null = null
+  const REST = MIN_REST_MIN * 60000
+  const placed: { s: number; e: number }[] = []
+  const restOK = (s: number, e: number) => !placed.some((p) => s < p.e + REST && p.s < e + REST)
 
-  for (const t of tage) {
-    const istSon = t.dow === 0
-    const q = istSon ? sunQ : weekdayQ
-    if (q.length === 0) continue
-    const tmpl = q[0]
-    const startAbs = dayMs(t.iso) + tmpl.startMin * 60000
-    const endAbs = dayMs(t.iso) + (tmpl.startMin + spanMin(tmpl.net)) * 60000
-    if (prevEnd != null && startAbs - prevEnd < MIN_REST_MIN * 60000) continue // Ruhezeit zu kurz -> Tag frei
-    shifts.push(makeShift(t.iso, tmpl.startMin, tmpl.net))
-    prevEnd = endAbs
-    q.shift()
+  const shifts: ExactShift[] = []
+  const place = (iso: string, startMin: number, spec: Spec, span: number): boolean => {
+    const s = dayMs(iso) + startMin * 60000
+    const e = dayMs(iso) + (startMin + span) * 60000
+    if (!restOK(s, e)) return false
+    shifts.push(makeShift(iso, startMin, spec.net, spec.brk))
+    placed.push({ s, e })
+    return true
   }
+
+  // 3a) Sonntage zuerst.
+  const sunQ: Spec[] = [...sunSpecs]
+  for (const t of tage) {
+    if (t.dow !== 0 || sunQ.length === 0) continue
+    const spec = sunQ[0]; const span = spanOf(spec)
+    if (place(t.iso, dayStart(span, `s-${t.iso}`), spec, span)) sunQ.shift()
+  }
+
+  // 3b) Werktage: Nacht 40 %, Nacht 25 %, dann Rest (Reihenfolge = Priorität).
+  const weekdayQ: Spec[] = [...n40Specs, ...n25Specs, ...normSpecs]
+  for (const t of tage) {
+    if (t.dow === 0 || weekdayQ.length === 0) continue
+    const spec = weekdayQ[0]; const span = spanOf(spec)
+    const startMin = spec.cat === 'n40' ? nightStart(0, 4 * 60, span, `s-${t.iso}`)
+      : spec.cat === 'n25' ? nightStart(20 * 60, 24 * 60, span, `s-${t.iso}`)
+      : dayStart(span, `s-${t.iso}`)
+    if (place(t.iso, startMin, spec, span)) weekdayQ.shift()
+  }
+
+  shifts.sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin)
 
   // 4) Nicht untergebrachte Stunden als Warnung (Ziel wird dann knapp verfehlt).
-  const fehltSun = round2(sunQ.reduce((s, t) => s + t.net, 0))
-  const fehltWerk = round2(weekdayQ.reduce((s, t) => s + t.net, 0))
+  const fehltSun = round2(sunQ.reduce((s, x) => s + x.net, 0))
+  const fehltWerk = round2(weekdayQ.reduce((s, x) => s + x.net, 0))
   if (fehltSun > 0) warnings.push(`Sonntag: nur ${n2(sunday - fehltSun)} von ${n2(sunday)} Std möglich (max. 8 Std/Tag – zu wenige Sonntage oder Ruhezeit im Monat).`)
   if (fehltWerk > 0) warnings.push(`${n2(fehltWerk)} Stunden konnten nicht platziert werden (max. 8 Std/Tag, zu wenige Werktage/Ruhezeit).`)
 
