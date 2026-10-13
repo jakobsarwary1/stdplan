@@ -32,6 +32,16 @@ const num = (s: string): number => {
 }
 const eur = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+type PlanShift = { date: string; von: string; bis: string; pause: number; netto: number; bezahlt: number }
+type PlanDriver = { name: string; employeeNumber: string | null; tage: number; paidSum: number; warning: string | null; shifts: PlanShift[] }
+
+const WT = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
+const dLabel = (iso: string) => {
+  const [y, m, d] = iso.split('-').map(Number)
+  const dow = new Date(y, m - 1, d).getDay()
+  return `${WT[dow]} ${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.`
+}
+
 export default function StdplanForm({ drivers, companyName }: { drivers: Driver[]; companyName: string }) {
   const now = new Date()
   const [year, setYear] = useState(now.getFullYear())
@@ -42,6 +52,9 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
   const [nurOffen, setNurOffen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [fehler, setFehler] = useState<string | null>(null)
+  const [planBusy, setPlanBusy] = useState(false)
+  const [plan, setPlan] = useState<PlanDriver[] | null>(null)
+  const [planOffen, setPlanOffen] = useState<Record<string, boolean>>({})
 
   const storageKey = `stdplan:v1:${year}-${String(month).padStart(2, '0')}`
 
@@ -117,6 +130,29 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
     }
   }
 
+  async function planen() {
+    setPlanBusy(true); setFehler(null)
+    try {
+      const rows = berechnet.filter((r) => r.gefuellt).map((r) => ({
+        name: r.d.name, employeeNumber: r.d.employeeNumber, rate: r.rate,
+        total: num(r.e.total), sunday: num(r.e.sunday), night25: num(r.e.night25), night40: num(r.e.night40),
+      }))
+      const res = await fetch('/api/dienstplan/plan', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ year, month, rows }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j?.error || 'Planung fehlgeschlagen')
+      setPlan(j.drivers as PlanDriver[])
+      // erste Karte aufklappen
+      if (j.drivers?.[0]) setPlanOffen({ [j.drivers[0].name]: true })
+    } catch (err) {
+      setFehler((err as Error).message)
+    } finally {
+      setPlanBusy(false)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-5xl space-y-6 pb-16">
       {/* Titelzeile + Primäraktion */}
@@ -128,12 +164,21 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
             tageweiser Stundenzettel als Excel mit Formeln. Eingaben werden automatisch im Browser gespeichert.
           </p>
         </div>
-        <button onClick={erzeugen} disabled={busy || ausgefuellt === 0}
-          className="group inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-3 text-sm font-semibold text-bg shadow-lg shadow-accent/20 transition-all hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none">
-          {busy
-            ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-bg/40 border-t-bg" /> Erzeuge…</>
-            : <><span aria-hidden>↧</span> Stundenzettel erzeugen</>}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={planen} disabled={planBusy || ausgefuellt === 0}
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-3 text-sm font-medium text-text transition-colors hover:border-accent disabled:cursor-not-allowed disabled:opacity-40"
+            title="Zeigt eine Vorschau der automatisch verteilten Schichten (ohne Fahrzeuge)">
+            {planBusy
+              ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-textMuted/40 border-t-text" /> Plane…</>
+              : <><span aria-hidden>🗓</span> Schichten automatisch planen</>}
+          </button>
+          <button onClick={erzeugen} disabled={busy || ausgefuellt === 0}
+            className="group inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-3 text-sm font-semibold text-bg shadow-lg shadow-accent/20 transition-all hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none">
+            {busy
+              ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-bg/40 border-t-bg" /> Erzeuge…</>
+              : <><span aria-hidden>↧</span> Stundenzettel erzeugen</>}
+          </button>
+        </div>
       </div>
 
       {/* Klebende Toolbar-Karte */}
@@ -191,6 +236,75 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
 
       {fehler && (
         <div className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">{fehler}</div>
+      )}
+
+      {/* Planungs-Vorschau (automatische Schichten, ohne Fahrzeuge) */}
+      {plan && (
+        <div className="overflow-hidden rounded-2xl border border-accent/30 bg-surface">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <div>
+              <h3 className="font-semibold text-text">Planungs-Vorschau</h3>
+              <p className="text-xs text-textMuted">
+                Automatisch verteilte Schichten für {monthLabel} – nur Vorschau, nichts wird gespeichert (ohne Fahrzeuge).
+              </p>
+            </div>
+            <button onClick={() => setPlan(null)}
+              className="shrink-0 rounded-lg border border-border px-2.5 py-1.5 text-xs text-textMuted transition-colors hover:text-text">
+              ✕ Schließen
+            </button>
+          </div>
+          <div className="divide-y divide-border">
+            {plan.length === 0 && <div className="px-4 py-6 text-center text-sm text-textMuted">Keine Fahrer mit Stunden.</div>}
+            {plan.map((pd) => {
+              const auf = !!planOffen[pd.name]
+              return (
+                <div key={pd.name}>
+                  <button onClick={() => setPlanOffen((o) => ({ ...o, [pd.name]: !o[pd.name] }))}
+                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-bg/40">
+                    <span className="font-medium text-text">{pd.name}</span>
+                    <span className="flex items-center gap-3 text-xs text-textMuted">
+                      {pd.warning && <span className="text-amber-400" title={pd.warning}>⚠</span>}
+                      <span className="tabular-nums">{pd.tage} Tage · {pd.paidSum.toLocaleString('de-DE', { minimumFractionDigits: 2 })} Std</span>
+                      <span className={`transition-transform duration-300 ${auf ? 'rotate-180' : ''}`}>⌄</span>
+                    </span>
+                  </button>
+                  <div className={`grid transition-all duration-300 ease-out ${auf ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                    <div className="overflow-hidden">
+                      <div className="px-4 pb-4">
+                        {pd.warning && <p className="mb-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-300">{pd.warning}</p>}
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left text-[0.65rem] uppercase tracking-wide text-textMuted">
+                                <th className="py-1 pr-4 font-medium">Datum</th>
+                                <th className="py-1 pr-4 font-medium">Von–Bis</th>
+                                <th className="py-1 pr-4 font-medium">Pause</th>
+                                <th className="py-1 text-right font-medium">Netto Std</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pd.shifts.map((s, i) => (
+                                <tr key={i} className="border-t border-border/50">
+                                  <td className="whitespace-nowrap py-1.5 pr-4">{dLabel(s.date)}</td>
+                                  <td className="whitespace-nowrap py-1.5 pr-4 tabular-nums">{s.von}–{s.bis}</td>
+                                  <td className="py-1.5 pr-4 tabular-nums">{s.pause} min</td>
+                                  <td className="py-1.5 text-right tabular-nums">{s.netto.toLocaleString('de-DE', { minimumFractionDigits: 2 })}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="border-t border-border px-4 py-2 text-xs text-textMuted">
+            Passt die Verteilung? Dann „Stundenzettel erzeugen" – das Excel baut denselben Plan mit editierbaren Formeln.
+          </div>
+        </div>
       )}
 
       {/* Fahrerliste */}
