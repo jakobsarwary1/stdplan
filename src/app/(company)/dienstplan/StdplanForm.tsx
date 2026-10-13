@@ -135,7 +135,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
     }
   }
 
-  async function planen() {
+  async function planen(focus?: string) {
     setPlanBusy(true); setFehler(null)
     try {
       const rows = berechnet.filter((r) => r.gefuellt).map((r) => ({
@@ -150,13 +150,21 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       if (!res.ok) throw new Error(j?.error || 'Planung fehlgeschlagen')
       const ds = (j.drivers as PlanDriver[]) ?? []
       setPlan(ds)
-      setPlanAktiv(ds[0]?.name ?? '')
+      setPlanAktiv((focus && ds.some((d) => d.name === focus) ? focus : ds[0]?.name) ?? '')
     } catch (err) {
       setFehler((err as Error).message)
     } finally {
       setPlanBusy(false)
     }
   }
+
+  // Modal mit Esc schließen.
+  useEffect(() => {
+    if (!plan) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPlan(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [plan])
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 pb-16">
@@ -169,7 +177,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
             tageweiser Stundenzettel als Excel mit Formeln. Eingaben werden automatisch im Browser gespeichert.
           </p>
         </div>
-        <button onClick={planen} disabled={planBusy || ausgefuellt === 0}
+        <button onClick={() => planen()} disabled={planBusy || ausgefuellt === 0}
           className="group inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-3 text-sm font-semibold text-bg shadow-lg shadow-accent/20 transition-all hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
           title="Erstellt die Schicht-Vorschau. Die Excel-Datei lädst du erst danach in der Vorschau herunter.">
           {planBusy
@@ -239,7 +247,10 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       {plan && (() => {
         const aktiv = plan.find((p) => p.name === planAktiv) ?? plan[0]
         return (
-          <div className="overflow-hidden rounded-2xl border border-accent/30 bg-surface">
+          <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm"
+            role="dialog" aria-modal="true" onClick={() => setPlan(null)}>
+          <div className="my-6 w-full max-w-4xl overflow-hidden rounded-2xl border border-accent/30 bg-surface shadow-2xl"
+            onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
               <div>
                 <h3 className="font-semibold text-text">Planungs-Vorschau</h3>
@@ -368,6 +379,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
               Oben „Excel herunterladen" lädt denselben Plan mit editierbaren Formeln.
             </div>
           </div>
+          </div>
         )
       })()}
 
@@ -427,14 +439,21 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                       </div>
                     </div>
 
-                    {/* Aufklapp-Button */}
-                    <button onClick={() => setOpen((o) => ({ ...o, [r.d.id]: !o[r.d.id] }))}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-medium text-textMuted transition-colors hover:border-accent hover:text-text sm:self-center"
-                      aria-expanded={auf}>
-                      Details
-                      {(r.zuschlag || r.vermerk) && !auf && <span className="h-1.5 w-1.5 rounded-full bg-accent" title="Enthält Angaben" />}
-                      <span className={`transition-transform duration-300 ${auf ? 'rotate-180' : ''}`}>⌄</span>
-                    </button>
+                    {/* Aktionen: Vorschau + Details */}
+                    <div className="flex items-center gap-2 sm:self-center">
+                      <button onClick={() => planen(r.d.name)} disabled={!r.gefuellt || planBusy}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-medium text-textMuted transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+                        title={r.gefuellt ? 'Planungs-Vorschau für diesen Fahrer öffnen' : 'Erst Gesamtstunden eintragen'}>
+                        <span aria-hidden>👁</span> Vorschau
+                      </button>
+                      <button onClick={() => setOpen((o) => ({ ...o, [r.d.id]: !o[r.d.id] }))}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-medium text-textMuted transition-colors hover:border-accent hover:text-text"
+                        aria-expanded={auf}>
+                        Details
+                        {(r.zuschlag || r.vermerk) && !auf && <span className="h-1.5 w-1.5 rounded-full bg-accent" title="Enthält Angaben" />}
+                        <span className={`transition-transform duration-300 ${auf ? 'rotate-180' : ''}`}>⌄</span>
+                      </button>
+                    </div>
                   </div>
 
                   {/* Aufklappbereich */}
