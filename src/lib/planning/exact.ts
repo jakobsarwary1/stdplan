@@ -221,22 +221,41 @@ export function verteileExakt(
     if (place(t.iso, dayStart(span, `s-${t.iso}`), spec, span)) sunQ.shift()
   }
 
-  // 3b) Werktage: Nacht 40 %, Nacht 25 %, dann Rest (Reihenfolge = Priorität).
-  const weekdayQ: Spec[] = [...n40Specs, ...n25Specs, ...normSpecs]
-  for (const t of tage) {
-    if (t.dow === 0 || weekdayQ.length === 0) continue
-    const spec = weekdayQ[0]; const span = spanOf(spec)
-    const startMin = spec.cat === 'n40' ? nightStart(0, 4 * 60, span, `s-${t.iso}`)
-      : spec.cat === 'n25' ? nightStart(20 * 60, 24 * 60, span, `s-${t.iso}`)
-      : dayStart(span, `s-${t.iso}`)
-    if (place(t.iso, startMin, spec, span)) weekdayQ.shift()
+  // 3b) Nacht-Schichten – BEVORZUGT auf Freitag & Samstag (Wochenend-Abend-/
+  //     Nachtabdeckung). Die Nachtstunden sind durch das Ziel fix; wir steuern
+  //     nur, WANN sie liegen: zuerst Fr/Sa (20–24 bzw. 00–04 Uhr = „Spätschicht
+  //     18–05"), dann die übrigen Werktage. Mehr Abend-/Nachtabdeckung als die
+  //     eingegebenen Nachtstunden ist im Exakt-Modell nicht möglich, ohne die
+  //     Nachtziele zu verändern (18–05 Uhr IST Zuschlagszeit).
+  const nachtQ: Spec[] = [...n40Specs, ...n25Specs] // n40 vor n25 = Priorität
+  const normQ: Spec[] = [...normSpecs]
+  const used = new Set<string>()
+  const werktage = tage.filter((t) => t.dow !== 0)
+  const istWE = (dow: number) => dow === 5 || dow === 6 // Freitag / Samstag
+  // Fr/Sa zuerst, dann restliche Werktage – beide Gruppen in Datumsreihenfolge.
+  const nachtReihenfolge = [...werktage.filter((t) => istWE(t.dow)), ...werktage.filter((t) => !istWE(t.dow))]
+  for (const t of nachtReihenfolge) {
+    if (nachtQ.length === 0) break
+    if (used.has(t.iso)) continue
+    const spec = nachtQ[0]; const span = spanOf(spec)
+    const startMin = spec.cat === 'n40' ? nightStart(0, 4 * 60, span, `s-${t.iso}`) : nightStart(20 * 60, 24 * 60, span, `s-${t.iso}`)
+    if (place(t.iso, startMin, spec, span)) { nachtQ.shift(); used.add(t.iso) }
+  }
+
+  // 3c) Normale Tagschichten („Frühschicht" 06–10 Uhr Start) auf die übrigen
+  //     freien Werktage – in Datumsreihenfolge.
+  for (const t of werktage) {
+    if (normQ.length === 0) break
+    if (used.has(t.iso)) continue
+    const spec = normQ[0]; const span = spanOf(spec)
+    if (place(t.iso, dayStart(span, `s-${t.iso}`), spec, span)) { normQ.shift(); used.add(t.iso) }
   }
 
   shifts.sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin)
 
   // 4) Nicht untergebrachte Stunden als Warnung (Ziel wird dann knapp verfehlt).
   const fehltSun = round2(sunQ.reduce((s, x) => s + x.net, 0))
-  const fehltWerk = round2(weekdayQ.reduce((s, x) => s + x.net, 0))
+  const fehltWerk = round2([...nachtQ, ...normQ].reduce((s, x) => s + x.net, 0))
   if (fehltSun > 0) warnings.push(`Sonntag: nur ${n2(sunday - fehltSun)} von ${n2(sunday)} Std möglich (max. 8 Std/Tag – zu wenige Sonntage oder Ruhezeit im Monat).`)
   if (fehltWerk > 0) warnings.push(`${n2(fehltWerk)} Stunden konnten nicht platziert werden (max. 8 Std/Tag, zu wenige Werktage/Ruhezeit).`)
 
