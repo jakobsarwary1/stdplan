@@ -37,6 +37,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
   const [year, setYear] = useState(now.getFullYear())
   const [month, setMonth] = useState(now.getMonth() + 1) // 1-12
   const [data, setData] = useState<Record<string, Entry>>({})
+  const [open, setOpen] = useState<Record<string, boolean>>({})
+  const [suche, setSuche] = useState('')
   const [busy, setBusy] = useState(false)
   const [fehler, setFehler] = useState<string | null>(null)
 
@@ -72,35 +74,30 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
     const sunday = num(e.sunday)
     const n25 = num(e.night25)
     const n40 = num(e.night40)
-    const grund = total * rate
-    const zSo = sunday * rate * 0.5
-    const zN25 = n25 * rate * 0.25
-    const zN40 = n40 * rate * 0.4
-    const gesamt = grund + zSo + zN25 + zN40
-    return { sn: i + 1, d, e, rate, total, sunday, n25, n40, grund, zSo, zN25, zN40, gesamt }
+    const gesamt = total * rate + sunday * rate * 0.5 + n25 * rate * 0.25 + n40 * rate * 0.4
+    const extras = (e.krank || e.brutto || e.abmelden || sunday || n25 || n40) ? true : false
+    return { sn: i + 1, d, e, rate, total, gesamt, gefuellt: total > 0, extras }
   }), [drivers, data])
 
+  const sichtbar = useMemo(() => {
+    const q = suche.trim().toLowerCase()
+    return q ? berechnet.filter((r) => r.d.name.toLowerCase().includes(q)) : berechnet
+  }, [berechnet, suche])
+
+  const ausgefuellt = berechnet.filter((r) => r.gefuellt).length
   const summe = berechnet.reduce((s, r) => s + r.gesamt, 0)
+  const fortschritt = drivers.length ? Math.round((ausgefuellt / drivers.length) * 100) : 0
 
   async function erzeugen() {
     setBusy(true); setFehler(null)
     try {
       const rows = berechnet.map((r) => ({
-        sn: r.sn,
-        name: r.d.name,
-        employeeNumber: r.d.employeeNumber,
-        rate: r.rate,
-        total: r.total,
-        sunday: r.sunday,
-        night25: r.n25,
-        night40: r.n40,
-        krank: r.e.krank,
-        brutto: r.e.brutto,
-        abmelden: r.e.abmelden,
+        sn: r.sn, name: r.d.name, employeeNumber: r.d.employeeNumber, rate: r.rate,
+        total: num(r.e.total), sunday: num(r.e.sunday), night25: num(r.e.night25), night40: num(r.e.night40),
+        krank: r.e.krank, brutto: r.e.brutto, abmelden: r.e.abmelden,
       }))
       const res = await fetch('/api/dienstplan/xlsx', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ year, month, monthLabel, companyName, rows }),
       })
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || 'Fehler beim Erzeugen')
@@ -118,110 +115,175 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
     }
   }
 
-  const feld = 'w-full rounded border border-border bg-transparent px-2 py-1 text-sm'
-  const zahl = feld + ' text-right'
+  const feld = 'w-full rounded-lg border border-border bg-bg px-2.5 py-1.5 text-sm text-text outline-none transition-colors focus:border-accent'
+  const zahl = feld + ' text-right tabular-nums'
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">Dienstplan erstellen</h1>
-          <p className="text-sm text-textMuted">
-            Monat wählen, je Fahrer bezahlte Stunden &amp; Zuschläge eintragen → vollständiger
-            Stundenzettel (tageweise, mit allen Regeln). Eingaben werden im Browser automatisch gespeichert.
-          </p>
-        </div>
-        <div className="flex items-end gap-2">
-          <label className="text-sm">
-            <span className="block text-xs text-textMuted">Monat</span>
-            <select value={month} onChange={(e) => setMonth(Number(e.target.value))} className={feld}>
-              {MONATE.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
-            </select>
-          </label>
-          <label className="text-sm">
-            <span className="block text-xs text-textMuted">Jahr</span>
-            <select value={year} onChange={(e) => setYear(Number(e.target.value))} className={feld}>
-              {[now.getFullYear() + 1, now.getFullYear(), now.getFullYear() - 1, now.getFullYear() - 2].map((y) => (
-                <option key={y} value={y}>{y}</option>
-              ))}
-            </select>
-          </label>
-          <button
-            onClick={erzeugen}
-            disabled={busy}
-            className="rounded bg-text px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50"
-          >
-            {busy ? 'Erzeuge…' : 'Stundenzettel erzeugen'}
-          </button>
+      {/* Kopfzeile */}
+      <div className="sticky top-0 z-10 -mx-6 border-b border-border bg-bg/85 px-6 py-4 backdrop-blur">
+        <div className="mx-auto max-w-5xl space-y-3">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">Dienstplan erstellen</h1>
+            <p className="text-sm text-textMuted">
+              Monat wählen, je Fahrer Stunden eintragen → vollständiger Stundenzettel (Excel mit Formeln).
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Monat/Jahr */}
+            <div className="flex items-center gap-2 rounded-xl border border-border bg-surface p-1">
+              <select value={month} onChange={(e) => setMonth(Number(e.target.value))}
+                className="rounded-lg bg-transparent px-2 py-1.5 text-sm outline-none">
+                {MONATE.map((m, i) => <option key={i} value={i + 1} className="bg-surface">{m}</option>)}
+              </select>
+              <select value={year} onChange={(e) => setYear(Number(e.target.value))}
+                className="rounded-lg bg-transparent px-2 py-1.5 text-sm outline-none">
+                {[now.getFullYear() + 1, now.getFullYear(), now.getFullYear() - 1, now.getFullYear() - 2].map((y) => (
+                  <option key={y} value={y} className="bg-surface">{y}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Suche */}
+            <div className="relative min-w-[12rem] flex-1">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-textMuted">⌕</span>
+              <input value={suche} onChange={(e) => setSuche(e.target.value)} placeholder="Fahrer suchen…"
+                className="w-full rounded-xl border border-border bg-surface py-2 pl-8 pr-3 text-sm outline-none transition-colors focus:border-accent" />
+            </div>
+
+            {/* Fortschritt */}
+            <div className="hidden items-center gap-2 sm:flex">
+              <div className="h-2 w-28 overflow-hidden rounded-full bg-border">
+                <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${fortschritt}%` }} />
+              </div>
+              <span className="whitespace-nowrap text-xs text-textMuted">{ausgefuellt} von {drivers.length}</span>
+            </div>
+
+            {/* Gesamtlohn */}
+            <div className="rounded-xl border border-border bg-surface px-3 py-1.5 text-right">
+              <div className="text-[0.65rem] uppercase tracking-wide text-textMuted">Gesamtlohn (ca.)</div>
+              <div className="font-semibold tabular-nums text-text">{eur(summe)} €</div>
+            </div>
+
+            <button onClick={erzeugen} disabled={busy || ausgefuellt === 0}
+              className="rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-bg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40">
+              {busy ? 'Erzeuge…' : 'Stundenzettel erzeugen'}
+            </button>
+          </div>
+
+          {fehler && <div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{fehler}</div>}
         </div>
       </div>
 
-      {fehler && <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">{fehler}</div>}
+      {/* Fahrerkarten */}
+      <div className="mx-auto max-w-5xl space-y-2.5">
+        {drivers.length === 0 && (
+          <div className="rounded-2xl border border-border bg-surface p-10 text-center text-sm text-textMuted">
+            Keine aktiven Fahrer. Lege zuerst unter „Fahrer" welche an.
+          </div>
+        )}
 
-      {drivers.length === 0 ? (
-        <div className="rounded border border-border p-8 text-center text-sm text-textMuted">
-          Keine aktiven Fahrer. Lege zuerst unter „Fahrer" welche an.
-        </div>
-      ) : (
-        <div className="overflow-x-auto rounded border border-border">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-border bg-black/5 text-left text-xs uppercase text-textMuted">
-                <th className="px-2 py-2">S/N</th>
-                <th className="px-2 py-2">Name</th>
-                <th className="px-2 py-2 text-right">€/Std</th>
-                <th className="px-2 py-2 text-right">Gesamt Std</th>
-                <th className="px-2 py-2 text-right">Sonntag 50%</th>
-                <th className="px-2 py-2 text-right">Nacht 25%</th>
-                <th className="px-2 py-2 text-right">Nacht 40%</th>
-                <th className="px-2 py-2 text-right">Lohn (ca.)</th>
-                <th className="px-2 py-2">Krank</th>
-                <th className="px-2 py-2">1 % Brutto</th>
-                <th className="px-2 py-2">abmelden</th>
-              </tr>
-            </thead>
-            <tbody>
-              {berechnet.map((r) => (
-                <tr key={r.d.id} className="border-b border-border last:border-0">
-                  <td className="px-2 py-1 text-textMuted">{r.sn}</td>
-                  <td className="whitespace-nowrap px-2 py-1 font-medium">
-                    {r.d.name}
-                    {r.d.employeeNumber && <span className="ml-1 text-xs text-textMuted">#{r.d.employeeNumber}</span>}
-                  </td>
-                  <td className="px-2 py-1 w-20"><input className={zahl} inputMode="decimal" value={r.e.rate} onChange={(e) => set(r.d.id, 'rate', e.target.value)} /></td>
-                  <td className="px-2 py-1 w-20"><input className={zahl} inputMode="decimal" value={r.e.total} onChange={(e) => set(r.d.id, 'total', e.target.value)} /></td>
-                  <td className="px-2 py-1 w-20"><input className={zahl} inputMode="decimal" value={r.e.sunday} onChange={(e) => set(r.d.id, 'sunday', e.target.value)} /></td>
-                  <td className="px-2 py-1 w-20"><input className={zahl} inputMode="decimal" value={r.e.night25} onChange={(e) => set(r.d.id, 'night25', e.target.value)} /></td>
-                  <td className="px-2 py-1 w-20"><input className={zahl} inputMode="decimal" value={r.e.night40} onChange={(e) => set(r.d.id, 'night40', e.target.value)} /></td>
-                  <td className="px-2 py-1 text-right font-mono whitespace-nowrap">{eur(r.gesamt)} €</td>
-                  <td className="px-2 py-1 w-36"><input className={feld} value={r.e.krank} onChange={(e) => set(r.d.id, 'krank', e.target.value)} placeholder="z. B. 16.9.–20.9." /></td>
-                  <td className="px-2 py-1 w-24"><input className={feld} value={r.e.brutto} onChange={(e) => set(r.d.id, 'brutto', e.target.value)} placeholder="Nein" /></td>
-                  <td className="px-2 py-1 w-40"><input className={feld} value={r.e.abmelden} onChange={(e) => set(r.d.id, 'abmelden', e.target.value)} placeholder="z. B. ab Sept. Minijob" /></td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="border-t border-border bg-black/5 font-semibold">
-                <td className="px-2 py-2" colSpan={7}>Lohn ca. (alle Fahrer)</td>
-                <td className="px-2 py-2 text-right font-mono whitespace-nowrap">{eur(summe)} €</td>
-                <td colSpan={3} />
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-      )}
+        {sichtbar.map((r) => {
+          const auf = !!open[r.d.id]
+          return (
+            <div key={r.d.id}
+              className={`overflow-hidden rounded-2xl border bg-surface transition-colors ${
+                r.gefuellt ? 'border-border' : 'border-border/60'
+              }`}>
+              {/* Kernzeile */}
+              <div className={`flex flex-wrap items-center gap-3 border-l-4 px-4 py-3 ${
+                r.gefuellt ? 'border-l-accent' : 'border-l-transparent'
+              }`}>
+                <div className="flex min-w-[11rem] flex-1 items-center gap-3">
+                  <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-medium ${
+                    r.gefuellt ? 'bg-accent/15 text-accent' : 'bg-border/60 text-textMuted'
+                  }`}>{r.sn}</span>
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-text">{r.d.name}</div>
+                    {r.d.employeeNumber && <div className="text-xs text-textMuted">Pers.-Nr. {r.d.employeeNumber}</div>}
+                  </div>
+                </div>
 
-      <p className="text-xs text-textMuted">
-        <strong>Gesamt&nbsp;Std = bezahlte Stunden</strong> (Nettoarbeit + Pause; die Pause wird bezahlt, der Arbeitsweg zählt nie mit).
-        Aus diesen Eingaben wird im Excel pro Fahrer ein <strong>tageweiser Stundenzettel für den ganzen Monat</strong> erzeugt:
-        Schichten werden über die Tage verteilt (gesetzliche Pausen, Ruhezeiten), und die Zuschläge nach § 3b EStG
-        (Nacht 25 %/40 %, Sonntag 50 %) werden aus den tatsächlichen Schichtzeiten berechnet.
-        „Nacht 25/40" und „Sonntag" sind dabei <em>Zielvorgaben</em> für den Startplan. Im Excel sind die gelben Felder
-        <strong>Von/Bis/Pause editierbar</strong> – alle übrigen Spalten (Netto, Nacht 25/40, Sonntag, Lohn) sind <strong>Formeln</strong>
-        und rechnen sich beim Ändern automatisch neu. So passt du den Stundenzettel direkt in Excel an.
-        Die Spalte „Lohn (ca.)" hier ist nur eine Schnellschätzung; maßgeblich sind die Formel-Zahlen im Stundenzettel.
-        „Krank", „1 % Brutto" und „abmelden" sind Textvermerke. Stundenlohn je Zeile editierbar (dauerhaft im Fahrer-Datensatz).
-      </p>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[0.65rem] uppercase tracking-wide text-textMuted">€/Std</span>
+                  <input className={`${zahl} w-20`} inputMode="decimal" value={r.e.rate}
+                    onChange={(e) => set(r.d.id, 'rate', e.target.value)} />
+                </label>
+
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[0.65rem] uppercase tracking-wide text-textMuted">Gesamt Std</span>
+                  <input className={`${zahl} w-24`} inputMode="decimal" value={r.e.total} placeholder="0"
+                    onChange={(e) => set(r.d.id, 'total', e.target.value)} />
+                </label>
+
+                <div className="flex flex-col gap-0.5 text-right">
+                  <span className="text-[0.65rem] uppercase tracking-wide text-textMuted">Lohn (ca.)</span>
+                  <span className={`min-w-[6rem] font-semibold tabular-nums ${r.gefuellt ? 'text-text' : 'text-textMuted'}`}>
+                    {eur(r.gesamt)} €
+                  </span>
+                </div>
+
+                <button onClick={() => setOpen((o) => ({ ...o, [r.d.id]: !o[r.d.id] }))}
+                  className="flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs text-textMuted transition-colors hover:border-accent hover:text-text"
+                  aria-expanded={auf}>
+                  Zuschläge
+                  {r.extras && !auf && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
+                  <span className={`transition-transform ${auf ? 'rotate-180' : ''}`}>⌄</span>
+                </button>
+              </div>
+
+              {/* Aufklappbare Details (sanfte Höhen-Animation) */}
+              <div className={`grid transition-all duration-300 ease-out ${auf ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+                <div className="overflow-hidden">
+                  <div className="border-t border-border bg-bg/40 px-4 py-4">
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      <Num label="Sonntag 50 % (Std)" v={r.e.sunday} on={(x) => set(r.d.id, 'sunday', x)} feld={zahl} />
+                      <Num label="Nacht 25 % (Std)" v={r.e.night25} on={(x) => set(r.d.id, 'night25', x)} feld={zahl} />
+                      <Num label="Nacht 40 % (Std)" v={r.e.night40} on={(x) => set(r.d.id, 'night40', x)} feld={zahl} />
+                      <Txt label="Krank (Zeitraum)" v={r.e.krank} on={(x) => set(r.d.id, 'krank', x)} feld={feld} ph="z. B. 16.–20.10." />
+                      <Txt label="1 % Brutto" v={r.e.brutto} on={(x) => set(r.d.id, 'brutto', x)} feld={feld} ph="Nein" />
+                      <Txt label="Abmelden / Status" v={r.e.abmelden} on={(x) => set(r.d.id, 'abmelden', x)} feld={feld} ph="z. B. ab Sept. Minijob" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+
+        {drivers.length > 0 && sichtbar.length === 0 && (
+          <div className="rounded-2xl border border-border bg-surface p-8 text-center text-sm text-textMuted">
+            Kein Fahrer passt zu „{suche}".
+          </div>
+        )}
+      </div>
+
+      {/* Info */}
+      <div className="mx-auto max-w-5xl rounded-2xl border border-border bg-surface/60 p-4 text-xs leading-relaxed text-textMuted">
+        <strong className="text-text">Gesamt&nbsp;Std = bezahlte Stunden</strong> (Nettoarbeit + Pause; Pause ist bezahlt,
+        Arbeitsweg zählt nie). Beim Erzeugen entsteht pro Fahrer ein tageweiser Stundenzettel für den Monat als
+        <strong className="text-text"> Excel mit Formeln</strong>: Die gelben Felder (Von/Bis/Pause) sind editierbar, Netto,
+        Zuschläge (§ 3b: Nacht 25/40 %, Sonntag 50 %) und Lohn rechnen sich automatisch neu. „Krank", „1 % Brutto" und
+        „Abmelden" sind Textvermerke. Der Stundenlohn ist je Zeile editierbar. Eingaben werden im Browser gespeichert.
+      </div>
     </div>
+  )
+}
+
+function Num({ label, v, on, feld }: { label: string; v: string; on: (x: string) => void; feld: string }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-xs text-textMuted">{label}</span>
+      <input className={feld} inputMode="decimal" value={v} placeholder="0" onChange={(e) => on(e.target.value)} />
+    </label>
+  )
+}
+function Txt({ label, v, on, feld, ph }: { label: string; v: string; on: (x: string) => void; feld: string; ph?: string }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-xs text-textMuted">{label}</span>
+      <input className={feld} value={v} placeholder={ph} onChange={(e) => on(e.target.value)} />
+    </label>
   )
 }
