@@ -189,67 +189,104 @@ export function verteileExakt(
     })
   }
 
-  // 3) Spezifikationen auf Tage verteilen – eine Schicht pro Tag, Ruhezeit
-  //    ≥ 11 h (§ 5 ArbZG) BEIDSEITIG (zur vorigen UND zur nächsten Schicht).
-  //
-  //    SONNTAG HAT VORRANG: Sonntagsschichten werden ZUERST auf alle Sonntage
-  //    gelegt (Sonntage liegen ≥ 7 Tage auseinander, kollidieren also nie). Erst
-  //    danach werden die Werktagsschichten (Nacht + Rest) um die Sonntage herum
-  //    verteilt. Dadurch kann eine späte Samstag-Nachtschicht (20–24 Uhr, endet
-  //    So 00:00) den Sonntagsdienst nicht mehr „verdrängen" – die Nachtschicht
-  //    weicht stattdessen auf einen anderen Werktag aus.
+  // 3) Spezifikationen auf Tage verteilen – WOCHENWEISE AUSGEGLICHEN (nicht mehr
+  //    die ersten Tage des Monats vollstopfen). Regeln dabei:
+  //      • Wochentags-Priorität (zuerst belegen): So, Fr, Sa, Di, Do, Mi, Mo.
+  //        → freie Tage fallen dadurch bevorzugt auf Mo/Mi/Do.
+  //      • Max. 30 bezahlte Std pro Woche (Mo–So).
+  //      • Mind. 1 freier Tag pro Woche; nie 7 Tage am Stück.
+  //      • Ruhezeit ≥ 11 h BEIDSEITIG; eine Schicht pro Tag.
+  //    Sonntag hat Vorrang (zuerst + exakt), danach Nacht (bevorzugt Fr/Sa),
+  //    dann die normalen Tagschichten – jeweils in die Woche mit den bisher
+  //    wenigsten Stunden (gleichmäßige Verteilung über den ganzen Monat).
   const dayMs = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d) }
+  const shiftIso = (iso: string, delta: number) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + delta)).toISOString().slice(0, 10) }
+  const mondayKey = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); const off = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7; return shiftIso(iso, -off) }
   const REST = MIN_REST_MIN * 60000
-  const placed: { s: number; e: number }[] = []
-  const restOK = (s: number, e: number) => !placed.some((p) => s < p.e + REST && p.s < e + REST)
+  const WEEK_CAP_MIN = 30 * 60 // max. 30 bezahlte Std/Woche
+  // Wochentags-Priorität: kleiner = zuerst belegen (So, Fr, Sa, Di, Do, Mi, Mo).
+  const rank = (dow: number) => (dow === 0 ? 0 : dow === 5 ? 1 : dow === 6 ? 2 : dow === 2 ? 3 : dow === 4 ? 4 : dow === 3 ? 5 : 6)
 
+  const placed: { s: number; e: number }[] = []
+  const workedDays = new Set<string>()
+  const weekPaid = new Map<string, number>()   // bezahlte Minuten je Woche
+  const weekWorked = new Map<string, number>()  // Arbeitstage je Woche
+  const daysInWeek = new Map<string, number>()  // Monatstage je Woche (für „1 frei")
+  for (const t of tage) { const k = mondayKey(t.iso); daysInWeek.set(k, (daysInWeek.get(k) ?? 0) + 1) }
+
+  const restOK = (s: number, e: number) => !placed.some((p) => s < p.e + REST && p.s < e + REST)
+  const consecutive = (iso: string) => {
+    let n = 1
+    for (let d = shiftIso(iso, -1); workedDays.has(d); d = shiftIso(d, -1)) n++
+    for (let d = shiftIso(iso, 1); workedDays.has(d); d = shiftIso(d, 1)) n++
+    return n
+  }
   const shifts: ExactShift[] = []
-  const place = (iso: string, startMin: number, spec: Spec, span: number): boolean => {
-    const s = dayMs(iso) + startMin * 60000
-    const e = dayMs(iso) + (startMin + span) * 60000
-    if (!restOK(s, e)) return false
+  const commit = (iso: string, startMin: number, spec: Spec, span: number) => {
+    const s = dayMs(iso) + startMin * 60000, e = dayMs(iso) + (startMin + span) * 60000
     shifts.push(makeShift(iso, startMin, spec.net, spec.brk))
-    placed.push({ s, e })
+    placed.push({ s, e }); workedDays.add(iso)
+    const k = mondayKey(iso)
+    weekPaid.set(k, (weekPaid.get(k) ?? 0) + span)
+    weekWorked.set(k, (weekWorked.get(k) ?? 0) + 1)
+  }
+  // Prüft alle strukturellen/rechtlichen Regeln. `cap`/`minFree` werden nur für
+  // zwingende Schichten (Sonntag) gelockert; Ruhezeit und 7-Tage-Block bleiben
+  // IMMER hart.
+  const canPlace = (iso: string, startMin: number, span: number, cap: boolean, minFree: boolean) => {
+    if (workedDays.has(iso)) return false
+    const s = dayMs(iso) + startMin * 60000, e = dayMs(iso) + (startMin + span) * 60000
+    if (!restOK(s, e)) return false
+    if (consecutive(iso) >= 7) return false // nie 7 Tage am Stück
+    const k = mondayKey(iso)
+    if (cap && (weekPaid.get(k) ?? 0) + span > WEEK_CAP_MIN) return false // max. 30 Std/Woche
+    if (minFree && (weekWorked.get(k) ?? 0) >= (daysInWeek.get(k) ?? 7) - 1) return false // mind. 1 frei
     return true
   }
+  const startFor = (spec: Spec, span: number, iso: string) =>
+    spec.cat === 'n40' ? nightStart(0, 4 * 60, span, `s-${iso}`)
+      : spec.cat === 'n25' ? nightStart(20 * 60, 24 * 60, span, `s-${iso}`)
+        : dayStart(span, `s-${iso}`)
 
-  // 3a) Sonntage zuerst.
+  // 3a) Sonntage zuerst (Vorrang + exakt). Woche-Cap und „1 frei" hier gelockert
+  //     – der Sonntag MUSS gesetzt werden; Ruhezeit und 7-Tage-Block bleiben hart.
   const sunQ: Spec[] = [...sunSpecs]
   for (const t of tage) {
     if (t.dow !== 0 || sunQ.length === 0) continue
-    const spec = sunQ[0]; const span = spanOf(spec)
-    if (place(t.iso, dayStart(span, `s-${t.iso}`), spec, span)) sunQ.shift()
+    const spec = sunQ[0], span = spanOf(spec), start = startFor(spec, span, t.iso)
+    if (canPlace(t.iso, start, span, false, false)) { commit(t.iso, start, spec, span); sunQ.shift() }
   }
 
-  // 3b) Nacht-Schichten – BEVORZUGT auf Freitag & Samstag (Wochenend-Abend-/
-  //     Nachtabdeckung). Die Nachtstunden sind durch das Ziel fix; wir steuern
-  //     nur, WANN sie liegen: zuerst Fr/Sa (20–24 bzw. 00–04 Uhr = „Spätschicht
-  //     18–05"), dann die übrigen Werktage. Mehr Abend-/Nachtabdeckung als die
-  //     eingegebenen Nachtstunden ist im Exakt-Modell nicht möglich, ohne die
-  //     Nachtziele zu verändern (18–05 Uhr IST Zuschlagszeit).
-  const nachtQ: Spec[] = [...n40Specs, ...n25Specs] // n40 vor n25 = Priorität
+  // Generischer, wochenausgeglichener Platzierer. `nightPref`: Nacht bevorzugt
+  // Fr/Sa (erst Wochentag, dann Wochenausgleich); normal umgekehrt (erst
+  // gleichmäßig über die Wochen, dann Wochentag → freie Tage = Mo/Mi/Do).
+  const nonSun = tage.filter((t) => t.dow !== 0)
+  let capWarned = false
+  const verteile = (q: Spec[], nightPref: boolean) => {
+    while (q.length) {
+      const spec = q[0], span = spanOf(spec)
+      let cands = nonSun.filter((t) => canPlace(t.iso, startFor(spec, span, t.iso), span, true, true))
+      let relaxedCap = false
+      if (!cands.length) { cands = nonSun.filter((t) => canPlace(t.iso, startFor(spec, span, t.iso), span, false, true)); relaxedCap = true }
+      if (!cands.length) break // passt unter den Regeln nirgends mehr → Rest als Warnung
+      cands.sort((a, b) => {
+        const wa = weekPaid.get(mondayKey(a.iso)) ?? 0, wb = weekPaid.get(mondayKey(b.iso)) ?? 0
+        return nightPref
+          ? rank(a.dow) - rank(b.dow) || wa - wb || a.iso.localeCompare(b.iso)
+          : wa - wb || rank(a.dow) - rank(b.dow) || a.iso.localeCompare(b.iso)
+      })
+      const t = cands[0]
+      commit(t.iso, startFor(spec, span, t.iso), spec, span)
+      if (relaxedCap && !capWarned) { warnings.push('Hinweis: Mit diesen Stunden lassen sich nicht alle Wochen unter 30 bezahlten Std halten – einzelne Wochen liegen darüber.'); capWarned = true }
+      q.shift()
+    }
+  }
+
+  // 3b) Nacht (Fr/Sa bevorzugt), 3c) normale Tagschichten.
+  const nachtQ: Spec[] = [...n40Specs, ...n25Specs]
   const normQ: Spec[] = [...normSpecs]
-  const used = new Set<string>()
-  const werktage = tage.filter((t) => t.dow !== 0)
-  const istWE = (dow: number) => dow === 5 || dow === 6 // Freitag / Samstag
-  // Fr/Sa zuerst, dann restliche Werktage – beide Gruppen in Datumsreihenfolge.
-  const nachtReihenfolge = [...werktage.filter((t) => istWE(t.dow)), ...werktage.filter((t) => !istWE(t.dow))]
-  for (const t of nachtReihenfolge) {
-    if (nachtQ.length === 0) break
-    if (used.has(t.iso)) continue
-    const spec = nachtQ[0]; const span = spanOf(spec)
-    const startMin = spec.cat === 'n40' ? nightStart(0, 4 * 60, span, `s-${t.iso}`) : nightStart(20 * 60, 24 * 60, span, `s-${t.iso}`)
-    if (place(t.iso, startMin, spec, span)) { nachtQ.shift(); used.add(t.iso) }
-  }
-
-  // 3c) Normale Tagschichten („Frühschicht" 06–10 Uhr Start) auf die übrigen
-  //     freien Werktage – in Datumsreihenfolge.
-  for (const t of werktage) {
-    if (normQ.length === 0) break
-    if (used.has(t.iso)) continue
-    const spec = normQ[0]; const span = spanOf(spec)
-    if (place(t.iso, dayStart(span, `s-${t.iso}`), spec, span)) { normQ.shift(); used.add(t.iso) }
-  }
+  verteile(nachtQ, true)
+  verteile(normQ, false)
 
   shifts.sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin)
 
@@ -257,7 +294,7 @@ export function verteileExakt(
   const fehltSun = round2(sunQ.reduce((s, x) => s + x.net, 0))
   const fehltWerk = round2([...nachtQ, ...normQ].reduce((s, x) => s + x.net, 0))
   if (fehltSun > 0) warnings.push(`Sonntag: nur ${n2(sunday - fehltSun)} von ${n2(sunday)} Std möglich (max. 8 Std/Tag – zu wenige Sonntage oder Ruhezeit im Monat).`)
-  if (fehltWerk > 0) warnings.push(`${n2(fehltWerk)} Stunden konnten nicht platziert werden (max. 8 Std/Tag, zu wenige Werktage/Ruhezeit).`)
+  if (fehltWerk > 0) warnings.push(`${n2(fehltWerk)} Std konnten nicht platziert werden (Grenzen: max. 8 Std/Tag & 30 Std/Woche, mind. 1 freier Tag/Woche, keine 7-Tage-Blöcke, Ruhezeit ≥ 11 h). Ggf. Gesamtstunden senken oder auf mehr Fahrer verteilen.`)
 
   return { shifts, warnings }
 }
