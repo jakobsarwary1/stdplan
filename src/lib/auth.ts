@@ -74,9 +74,9 @@ export async function requireSuperAdmin(): Promise<CurrentUser> {
   return user
 }
 
-/** Wie requireUser(), verlangt eine bestehende Unternehmenszuordnung (kein Super-Admin). */
+/** Wie requireUser(), verlangt eine bestehende Unternehmenszuordnung. */
 export async function requireCompanyUser(): Promise<CurrentUser & { companyId: string }> {
   const user = await requireUser()
-  if (!user.companyId) redirect('/admin')
+  if (!user.companyId) redirect('/login')
   return user as CurrentUser & { companyId: string }
 }
