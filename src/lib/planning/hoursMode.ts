@@ -1611,6 +1611,37 @@ function planWithNetTarget(
  * Quote, sondern lernt aus dem tatsächlichen Pausenanteil des jeweiligen
  * Versuchs – 2-4 Durchläufe genügen, und es wird der beste behalten.
  */
+/**
+ * Feinschliff der bezahlten Monatssumme. Warum nötig: Der Verteiler trifft das
+ * Ziel wegen fester Mindest-Schichtlängen, Wochenend-Pflichtvorlagen und
+ * Viertelstunden-Rundung oft nur auf ~0,25 Std genau. Dieser Schritt zieht die
+ * RESTliche Abweichung (positiv wie negativ) minutengenau am LETZTEN Arbeitstag
+ * nach, indem dessen Ende verschoben wird. Der letzte Tag hat keine
+ * Folgeschicht → es wird KEINE Ruhezeit verletzt; die Pause bleibt unangetastet.
+ * Beim Kürzen wird die Mindest-Schichtspanne (Netto-Minimum + Pause) nicht
+ * unterschritten – eine exakte Punktlandung ist daher nicht immer möglich (ist
+ * der Rest größer als der am letzten Tag verfügbare Spielraum, bleibt eine
+ * kleine Restabweichung).
+ */
+function feinschliffPaid(shifts: HoursShift[], targetPaid: number): HoursShift[] {
+  if (shifts.length === 0 || targetPaid <= 0) return shifts
+  const paid = shifts.reduce((s, x) => s + (x.endMin - x.startMin) / 60, 0)
+  let deltaMin = Math.round((targetPaid - paid) * 60) // + = verlängern, − = kürzen
+  if (deltaMin === 0) return shifts
+  // Letzte Schicht im Monat (spätester Kalendertag, dann spätester Beginn).
+  let idx = 0
+  for (let i = 1; i < shifts.length; i++) {
+    if (shifts[i].date > shifts[idx].date || (shifts[i].date === shifts[idx].date && shifts[i].startMin > shifts[idx].startMin)) idx = i
+  }
+  const s = shifts[idx]
+  const minSpan = ABS_MIN_NET * 60 + s.breakMinutes
+  if (deltaMin < 0) deltaMin = Math.max(deltaMin, minSpan - (s.endMin - s.startMin)) // nicht unter Mindestspanne kürzen
+  if (deltaMin === 0) return shifts
+  const copy = shifts.slice()
+  copy[idx] = { ...s, endMin: s.endMin + deltaMin, netHours: s.netHours + deltaMin / 60 }
+  return copy
+}
+
 export function generateHoursBasedSchedule(
   year: number,
   month0: number,
@@ -1648,12 +1679,22 @@ export function generateHoursBasedSchedule(
     const paid = paidOf(attempt.shifts)
     const gap = Math.abs(paid - paidTotal)
     if (gap < bestGap) { bestGap = gap; best = attempt }
-    if (paid <= 0 || gap <= 0.25) break
+    if (paid <= 0 || gap <= 0.1) break
     // netTarget_neu = paidTotal × (aktuelles Netto-Ziel / erreichte bezahlte Std.)
     scale = (paidTotal * scale) / paid
   }
 
-  return best ?? planWithNetTarget(year, month0, { ...target, reportPaidHours: paidTotal }, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, vehicleBusy)
+  const chosen = best ?? planWithNetTarget(year, month0, { ...target, reportPaidHours: paidTotal }, blockedDates, nightStart, nightEnd, minRestHours, demandProfiles, vehicleBusy)
+
+  // Feinschliff: Restabweichung am letzten Tag glattziehen.
+  const shifts = feinschliffPaid(chosen.shifts, paidTotal)
+  let warning = chosen.warning
+  // Stimmt die bezahlte Summe jetzt (≈ exakt), ist der alte "…liegt bei X statt
+  // Y…"-Satz veraltet → entfernen; die Nachtstunden-Meldung bleibt erhalten.
+  if (warning && Math.abs(paidOf(shifts) - paidTotal) <= 0.05) {
+    warning = warning.replace(/Bezahlte Monatssumme[\s\S]*?benötigen\.\s*/i, '').trim() || null
+  }
+  return { shifts, warning }
 }
 
 const LEVEL_WEIGHT_FOR_BREAK: Record<string, number> = { niedrig: 0.5, mittel: 1, hoch: 1.5, sehr_hoch: 2 }

@@ -34,7 +34,8 @@ const eur = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2,
 
 type PlanShift = { date: string; von: string; bis: string; pause: number; netto: number; bezahlt: number; ruhe: number | null; n25: number; n40: number; so: number }
 type PlanSum = { netto: number; bezahlt: number; n25: number; n40: number; so: number; minRuhe: number | null; ruheVerletzt: boolean }
-type PlanDriver = { name: string; employeeNumber: string | null; tage: number; paidSum: number; warning: string | null; summe: PlanSum; shifts: PlanShift[] }
+type PlanDriver = { name: string; employeeNumber: string | null; ziel: number; tage: number; paidSum: number; warning: string | null; summe: PlanSum; shifts: PlanShift[] }
+const istSonntag = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d).getDay() === 0 }
 
 const n2 = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
@@ -57,7 +58,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
   const [fehler, setFehler] = useState<string | null>(null)
   const [planBusy, setPlanBusy] = useState(false)
   const [plan, setPlan] = useState<PlanDriver[] | null>(null)
-  const [planOffen, setPlanOffen] = useState<Record<string, boolean>>({})
+  const [planAktiv, setPlanAktiv] = useState<string>('')
 
   const storageKey = `stdplan:v1:${year}-${String(month).padStart(2, '0')}`
 
@@ -146,9 +147,9 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Planung fehlgeschlagen')
-      setPlan(j.drivers as PlanDriver[])
-      // erste Karte aufklappen
-      if (j.drivers?.[0]) setPlanOffen({ [j.drivers[0].name]: true })
+      const ds = (j.drivers as PlanDriver[]) ?? []
+      setPlan(ds)
+      setPlanAktiv(ds[0]?.name ?? '')
     } catch (err) {
       setFehler((err as Error).message)
     } finally {
@@ -234,112 +235,149 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       )}
 
       {/* Planungs-Vorschau (automatische Schichten, ohne Fahrzeuge) */}
-      {plan && (
-        <div className="overflow-hidden rounded-2xl border border-accent/30 bg-surface">
-          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
-            <div>
-              <h3 className="font-semibold text-text">Planungs-Vorschau</h3>
-              <p className="text-xs text-textMuted">
-                Automatisch verteilte Schichten für {monthLabel} – nur Vorschau, nichts wird gespeichert (ohne Fahrzeuge).
-              </p>
+      {plan && (() => {
+        const aktiv = plan.find((p) => p.name === planAktiv) ?? plan[0]
+        return (
+          <div className="overflow-hidden rounded-2xl border border-accent/30 bg-surface">
+            <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+              <div>
+                <h3 className="font-semibold text-text">Planungs-Vorschau</h3>
+                <p className="text-xs text-textMuted">
+                  Automatisch verteilte Schichten für {monthLabel} – nur Vorschau, nichts wird gespeichert (ohne Fahrzeuge).
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button onClick={erzeugen} disabled={busy}
+                  className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-bg transition-all hover:brightness-105 disabled:opacity-50">
+                  {busy
+                    ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-bg/40 border-t-bg" /> Lädt…</>
+                    : <><span aria-hidden>↧</span> Excel herunterladen</>}
+                </button>
+                <button onClick={() => setPlan(null)}
+                  className="rounded-lg border border-border px-2.5 py-1.5 text-xs text-textMuted transition-colors hover:text-text">✕</button>
+              </div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <button onClick={erzeugen} disabled={busy}
-                className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-bg transition-all hover:brightness-105 disabled:opacity-50">
-                {busy
-                  ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-bg/40 border-t-bg" /> Lädt…</>
-                  : <><span aria-hidden>↧</span> Excel herunterladen</>}
-              </button>
-              <button onClick={() => setPlan(null)}
-                className="rounded-lg border border-border px-2.5 py-1.5 text-xs text-textMuted transition-colors hover:text-text">
-                ✕
-              </button>
-            </div>
-          </div>
-          <div className="divide-y divide-border">
-            {plan.length === 0 && <div className="px-4 py-6 text-center text-sm text-textMuted">Keine Fahrer mit Stunden.</div>}
-            {plan.map((pd) => {
-              const auf = !!planOffen[pd.name]
-              return (
-                <div key={pd.name}>
-                  <button onClick={() => setPlanOffen((o) => ({ ...o, [pd.name]: !o[pd.name] }))}
-                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-bg/40">
-                    <span className="font-medium text-text">{pd.name}</span>
-                    <span className="flex items-center gap-3 text-xs text-textMuted">
-                      {pd.summe.ruheVerletzt && <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[0.65rem] font-medium text-danger" title={`Kürzeste Ruhezeit ${n2(pd.summe.minRuhe ?? 0)} h (unter 11 h)`}>Ruhe &lt; 11 h</span>}
-                      {pd.warning && <span className="text-amber-400" title={pd.warning}>⚠</span>}
-                      <span className="tabular-nums">{pd.tage} Tage · <span className="font-medium text-text">{n2(pd.paidSum)} Std bezahlt</span></span>
-                      <span className={`transition-transform duration-300 ${auf ? 'rotate-180' : ''}`}>⌄</span>
-                    </span>
-                  </button>
-                  <div className={`grid transition-all duration-300 ease-out ${auf ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-                    <div className="overflow-hidden">
-                      <div className="px-4 pb-4">
-                        {pd.warning && <p className="mb-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-300">{pd.warning}</p>}
-                        <div className="overflow-x-auto">
-                          <table className="w-full min-w-[46rem] text-sm">
-                            <thead>
-                              <tr className="text-left text-[0.65rem] uppercase tracking-wide text-textMuted">
-                                <th className="py-1 pr-4 font-medium">Datum</th>
-                                <th className="py-1 pr-4 font-medium">Von–Bis</th>
-                                <th className="py-1 pr-3 text-right font-medium">Pause</th>
-                                <th className="py-1 pr-3 text-right font-semibold text-text">Bezahlt</th>
-                                <th className="py-1 pr-3 text-right font-medium">Netto</th>
-                                <th className="py-1 pr-3 text-right font-medium">Ruhe</th>
-                                <th className="py-1 pr-3 text-right font-medium">N 25%</th>
-                                <th className="py-1 pr-3 text-right font-medium">N 40%</th>
-                                <th className="py-1 text-right font-medium">So 50%</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {pd.shifts.map((s, i) => (
-                                <tr key={i} className="border-t border-border/50">
-                                  <td className="whitespace-nowrap py-1.5 pr-4">{dLabel(s.date)}</td>
-                                  <td className="whitespace-nowrap py-1.5 pr-4 tabular-nums">{s.von}–{s.bis}</td>
-                                  <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{s.pause}′</td>
-                                  <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-text">{n2(s.bezahlt)}</td>
-                                  <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{n2(s.netto)}</td>
-                                  <td className={`py-1.5 pr-3 text-right tabular-nums ${s.ruhe != null && s.ruhe < 11 ? 'font-semibold text-danger' : 'text-textMuted'}`}
-                                    title={s.ruhe != null && s.ruhe < 11 ? 'Ruhezeit unter 11 h (§ 5 ArbZG)' : undefined}>
-                                    {s.ruhe == null ? '–' : n2(s.ruhe)}
-                                  </td>
-                                  <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{s.n25 ? n2(s.n25) : '–'}</td>
-                                  <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{s.n40 ? n2(s.n40) : '–'}</td>
-                                  <td className="py-1.5 text-right tabular-nums text-textMuted">{s.so ? n2(s.so) : '–'}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                            <tfoot>
-                              <tr className="border-t border-border font-semibold">
-                                <td className="py-1.5 pr-4" colSpan={3}>Summe</td>
-                                <td className="py-1.5 pr-3 text-right tabular-nums text-text">{n2(pd.summe.bezahlt)}</td>
-                                <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{n2(pd.summe.netto)}</td>
-                                <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">
-                                  {pd.summe.minRuhe == null ? '–' : <span className={pd.summe.ruheVerletzt ? 'text-danger' : ''}>min {n2(pd.summe.minRuhe)}</span>}
-                                </td>
-                                <td className="py-1.5 pr-3 text-right tabular-nums">{n2(pd.summe.n25)}</td>
-                                <td className="py-1.5 pr-3 text-right tabular-nums">{n2(pd.summe.n40)}</td>
-                                <td className="py-1.5 text-right tabular-nums">{n2(pd.summe.so)}</td>
-                              </tr>
-                            </tfoot>
-                          </table>
-                        </div>
+
+            {!aktiv ? (
+              <div className="px-4 py-6 text-center text-sm text-textMuted">Keine Fahrer mit Stunden.</div>
+            ) : (
+              <>
+                {/* Fahrer-Auswahl (Tabs) */}
+                {plan.length > 1 && (
+                  <div className="flex gap-2 overflow-x-auto border-b border-border px-4 py-2.5">
+                    {plan.map((p) => (
+                      <button key={p.name} onClick={() => setPlanAktiv(p.name)}
+                        className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                          p.name === aktiv.name ? 'bg-accent text-bg' : 'bg-bg text-textMuted hover:text-text'
+                        }`}>
+                        {p.name}
+                        {(p.warning || p.summe.ruheVerletzt) && <span className={`h-1.5 w-1.5 rounded-full ${p.name === aktiv.name ? 'bg-bg/60' : 'bg-amber-400'}`} />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Ziel vs. Ist */}
+                {(() => {
+                  const abw = Math.round((aktiv.summe.bezahlt - aktiv.ziel) * 100) / 100
+                  const a = Math.abs(abw)
+                  const pill = a <= 0.1 ? 'bg-success/15 text-success' : a <= 0.25 ? 'bg-amber-400/15 text-amber-300' : 'bg-danger/15 text-danger'
+                  return (
+                    <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2 px-4 py-3">
+                      <div className="text-sm">
+                        <span className="font-semibold text-text">{aktiv.name}</span>
+                        {aktiv.employeeNumber && <span className="ml-2 text-xs text-textMuted">Pers.-Nr. {aktiv.employeeNumber}</span>}
+                        <span className="ml-2 text-xs text-textMuted">· {aktiv.tage} Arbeitstage</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="text-xs text-textMuted">Ziel <span className="font-medium tabular-nums text-text">{n2(aktiv.ziel)}</span> Std</span>
+                        <span className="text-textMuted">→</span>
+                        <span className="text-xs text-textMuted">Ist <span className="font-semibold tabular-nums text-text">{n2(aktiv.summe.bezahlt)}</span> Std</span>
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium tabular-nums ${pill}`}>
+                          {abw === 0 ? '±0,00' : (abw > 0 ? '+' : '') + n2(abw)} Std
+                        </span>
+                        {aktiv.summe.ruheVerletzt && (
+                          <span className="rounded-full bg-danger/15 px-2 py-0.5 text-xs font-medium text-danger"
+                            title={`Kürzeste Ruhezeit ${n2(aktiv.summe.minRuhe ?? 0)} h`}>Ruhe &lt; 11 h</span>
+                        )}
                       </div>
                     </div>
-                  </div>
+                  )
+                })()}
+
+                {aktiv.warning && (
+                  <p className="mx-4 mb-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-300">⚠ {aktiv.warning}</p>
+                )}
+
+                <div className="overflow-x-auto px-4 pb-3">
+                  <table className="w-full min-w-[46rem] text-sm">
+                    <thead>
+                      <tr className="text-left text-[0.65rem] uppercase tracking-wide text-textMuted">
+                        <th className="py-1 pr-4 font-medium">Datum</th>
+                        <th className="py-1 pr-4 font-medium">Von–Bis</th>
+                        <th className="py-1 pr-3 text-right font-medium">Pause</th>
+                        <th className="py-1 pr-3 text-right font-semibold text-text">Bezahlt</th>
+                        <th className="py-1 pr-3 text-right font-medium">Netto</th>
+                        <th className="py-1 pr-3 text-right font-medium">Ruhe</th>
+                        <th className="py-1 pr-3 text-right font-medium">N 25%</th>
+                        <th className="py-1 pr-3 text-right font-medium">N 40%</th>
+                        <th className="py-1 text-right font-medium">So 50%</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {aktiv.shifts.map((s, i) => {
+                        const so = istSonntag(s.date)
+                        const nacht = s.n40 > 0 || s.n25 > 0
+                        const kurz = s.bezahlt > 0 && s.bezahlt < 4
+                        return (
+                          <tr key={i} className={`border-t border-border/40 ${so ? 'bg-accent/[0.06]' : i % 2 ? 'bg-bg/20' : ''}`}>
+                            <td className={`whitespace-nowrap py-1.5 pr-4 ${so ? 'font-medium text-accent' : ''}`}>{dLabel(s.date)}</td>
+                            <td className="whitespace-nowrap py-1.5 pr-4 tabular-nums">
+                              {nacht && <span className="mr-1" title="Schicht mit Nachtzuschlag">🌙</span>}{s.von}–{s.bis}
+                            </td>
+                            <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{s.pause}′</td>
+                            <td className={`py-1.5 pr-3 text-right font-medium tabular-nums ${kurz ? 'text-amber-300' : 'text-text'}`}
+                              title={kurz ? 'Kurze Schicht (< 4 h)' : undefined}>{n2(s.bezahlt)}</td>
+                            <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{n2(s.netto)}</td>
+                            <td className={`py-1.5 pr-3 text-right tabular-nums ${s.ruhe != null && s.ruhe < 11 ? 'font-semibold text-danger' : 'text-textMuted'}`}
+                              title={s.ruhe != null && s.ruhe < 11 ? 'Ruhezeit unter 11 h (§ 5 ArbZG)' : undefined}>
+                              {s.ruhe == null ? '–' : n2(s.ruhe)}
+                            </td>
+                            <td className={`py-1.5 pr-3 text-right tabular-nums ${s.n25 ? 'text-text' : 'text-textMuted'}`}>{s.n25 ? n2(s.n25) : '–'}</td>
+                            <td className={`py-1.5 pr-3 text-right tabular-nums ${s.n40 ? 'text-text' : 'text-textMuted'}`}>{s.n40 ? n2(s.n40) : '–'}</td>
+                            <td className={`py-1.5 text-right tabular-nums ${s.so ? 'font-medium text-accent' : 'text-textMuted'}`}>{s.so ? n2(s.so) : '–'}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr className="border-t border-border font-semibold">
+                        <td className="py-2 pr-4" colSpan={3}>Summe</td>
+                        <td className="py-2 pr-3 text-right tabular-nums text-text">{n2(aktiv.summe.bezahlt)}</td>
+                        <td className="py-2 pr-3 text-right tabular-nums text-textMuted">{n2(aktiv.summe.netto)}</td>
+                        <td className="py-2 pr-3 text-right tabular-nums text-textMuted">
+                          {aktiv.summe.minRuhe == null ? '–' : <span className={aktiv.summe.ruheVerletzt ? 'text-danger' : ''}>min {n2(aktiv.summe.minRuhe)}</span>}
+                        </td>
+                        <td className="py-2 pr-3 text-right tabular-nums">{n2(aktiv.summe.n25)}</td>
+                        <td className="py-2 pr-3 text-right tabular-nums">{n2(aktiv.summe.n40)}</td>
+                        <td className="py-2 text-right tabular-nums">{n2(aktiv.summe.so)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
                 </div>
-              )
-            })}
+              </>
+            )}
+
+            <div className="border-t border-border px-4 py-2 text-xs leading-relaxed text-textMuted">
+              <strong className="text-text">Bezahlt</strong> = „Gesamt Std" (Beginn→Ende inkl. bezahlter Pause, Lohnbasis) ·
+              <strong className="text-text"> Netto</strong> = ohne Pause · Ruhe = zur Vorschicht (≥ 11 h, § 5 ArbZG, sonst rot) ·
+              N 25 % (04–06 &amp; 20–24) · N 40 % (00–04, steuerfrei) · So 50 % (§ 3b EStG).
+              <span className="text-accent"> Sonntage farbig</span>, 🌙 = Nachtzuschlag, kurze Schichten (&lt; 4 h) orange.
+              Oben „Excel herunterladen" lädt denselben Plan mit editierbaren Formeln.
+            </div>
           </div>
-          <div className="border-t border-border px-4 py-2 text-xs text-textMuted">
-            <strong className="text-text">Bezahlt</strong> = deine „Gesamt Std" (Beginn→Ende inkl. bezahlter Pause) – darauf läuft der Lohn.
-            <strong className="text-text"> Netto</strong> = reine Arbeitszeit ohne Pause (deshalb kleiner). ·
-            Ruhe = Ruhezeit zur Vorschicht (§ 5 ArbZG ≥ 11 h, sonst rot) · N 25 % (04–06 &amp; 20–24 Uhr) ·
-            N 40 % (00–04 Uhr, steuerfrei) · So 50 % – reine Arbeitszeit (§ 3b EStG). Oben „Excel herunterladen"
-            lädt denselben Plan als Stundenzettel mit editierbaren Formeln.
-          </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Fahrerliste */}
       <div className="space-y-3">

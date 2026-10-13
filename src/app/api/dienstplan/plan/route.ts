@@ -83,7 +83,7 @@ export async function POST(request: Request) {
           n25: sum((x) => x.n25), n40: sum((x) => x.n40), so: sum((x) => x.so),
           minRuhe, ruheVerletzt: minRuhe != null && minRuhe < MIN_REST_HOURS,
         }
-        return { name: r.name, employeeNumber: r.employeeNumber ?? null, tage: rowsOut.length, paidSum: summe.bezahlt, warning, summe, shifts: rowsOut }
+        return { name: r.name, employeeNumber: r.employeeNumber ?? null, ziel: round2(total), tage: rowsOut.length, paidSum: summe.bezahlt, warning, summe, shifts: rowsOut }
       })
 
     return NextResponse.json({ drivers })
