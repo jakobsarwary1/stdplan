@@ -34,7 +34,8 @@ const eur = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2,
 
 type PlanShift = { date: string; von: string; bis: string; pause: number; netto: number; bezahlt: number; ruhe: number | null; n25: number; n40: number; so: number }
 type PlanSum = { netto: number; bezahlt: number; n25: number; n40: number; so: number; minRuhe: number | null; ruheVerletzt: boolean }
-type PlanDriver = { name: string; employeeNumber: string | null; ziel: number; tage: number; paidSum: number; warning: string | null; summe: PlanSum; shifts: PlanShift[] }
+type PlanZiel = { bezahlt: number; sunday: number; n25: number; n40: number }
+type PlanDriver = { name: string; employeeNumber: string | null; ziel: PlanZiel; tage: number; paidSum: number; warning: string | null; summe: PlanSum; shifts: PlanShift[] }
 const istSonntag = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d).getDay() === 0 }
 
 const n2 = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -277,33 +278,24 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                   </div>
                 )}
 
-                {/* Ziel vs. Ist */}
-                {(() => {
-                  const abw = Math.round((aktiv.summe.bezahlt - aktiv.ziel) * 100) / 100
-                  const a = Math.abs(abw)
-                  const pill = a <= 0.1 ? 'bg-success/15 text-success' : a <= 0.25 ? 'bg-amber-400/15 text-amber-300' : 'bg-danger/15 text-danger'
-                  return (
-                    <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2 px-4 py-3">
-                      <div className="text-sm">
-                        <span className="font-semibold text-text">{aktiv.name}</span>
-                        {aktiv.employeeNumber && <span className="ml-2 text-xs text-textMuted">Pers.-Nr. {aktiv.employeeNumber}</span>}
-                        <span className="ml-2 text-xs text-textMuted">· {aktiv.tage} Arbeitstage</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm">
-                        <span className="text-xs text-textMuted">Ziel <span className="font-medium tabular-nums text-text">{n2(aktiv.ziel)}</span> Std</span>
-                        <span className="text-textMuted">→</span>
-                        <span className="text-xs text-textMuted">Ist <span className="font-semibold tabular-nums text-text">{n2(aktiv.summe.bezahlt)}</span> Std</span>
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium tabular-nums ${pill}`}>
-                          {abw === 0 ? '±0,00' : (abw > 0 ? '+' : '') + n2(abw)} Std
-                        </span>
-                        {aktiv.summe.ruheVerletzt && (
-                          <span className="rounded-full bg-danger/15 px-2 py-0.5 text-xs font-medium text-danger"
-                            title={`Kürzeste Ruhezeit ${n2(aktiv.summe.minRuhe ?? 0)} h`}>Ruhe &lt; 11 h</span>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })()}
+                {/* Ziel vs. Ist für alle vier Werte */}
+                <div className="space-y-3 px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-semibold text-text">{aktiv.name}</span>
+                    {aktiv.employeeNumber && <span className="text-xs text-textMuted">Pers.-Nr. {aktiv.employeeNumber}</span>}
+                    <span className="text-xs text-textMuted">· {aktiv.tage} Arbeitstage</span>
+                    {aktiv.summe.ruheVerletzt && (
+                      <span className="rounded-full bg-danger/15 px-2 py-0.5 text-xs font-medium text-danger"
+                        title={`Kürzeste Ruhezeit ${n2(aktiv.summe.minRuhe ?? 0)} h`}>Ruhe &lt; 11 h</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <ZielIst label="Gesamt (bezahlt)" ziel={aktiv.ziel.bezahlt} ist={aktiv.summe.bezahlt} />
+                    <ZielIst label="Sonntag 50 %" ziel={aktiv.ziel.sunday} ist={aktiv.summe.so} />
+                    <ZielIst label="Nacht 25 %" ziel={aktiv.ziel.n25} ist={aktiv.summe.n25} />
+                    <ZielIst label="Nacht 40 %" ziel={aktiv.ziel.n40} ist={aktiv.summe.n40} />
+                  </div>
+                </div>
 
                 {aktiv.warning && (
                   <p className="mx-4 mb-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-300">⚠ {aktiv.warning}</p>
@@ -507,6 +499,27 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
         die gelben Felder (Von/Bis/Pause) sind editierbar, Netto, Zuschläge (§ 3b: Nacht 25/40 %, Sonntag 50 %) und Lohn rechnen
         sich automatisch neu. „Lohn (ca.)" hier ist eine Schnellschätzung. Stundenlohn je Zeile editierbar (dauerhaft im Fahrer-Datensatz).
       </p>
+    </div>
+  )
+}
+
+/** Ziel-vs-Ist-Kachel mit Ampel (grün ≤ 0,1 · gelb ≤ 0,25 · rot darüber). */
+function ZielIst({ label, ziel, ist }: { label: string; ziel: number; ist: number }) {
+  const abw = Math.round((ist - ziel) * 100) / 100
+  const a = Math.abs(abw)
+  const n = (x: number) => x.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const tone = a <= 0.1 ? 'border-success/40 bg-success/5' : a <= 0.25 ? 'border-amber-400/40 bg-amber-400/5' : 'border-danger/40 bg-danger/5'
+  const txt = a <= 0.1 ? 'text-success' : a <= 0.25 ? 'text-amber-300' : 'text-danger'
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${tone}`}>
+      <div className="text-[0.6rem] font-medium uppercase tracking-wide text-textMuted">{label}</div>
+      <div className="mt-0.5 flex items-baseline gap-1.5">
+        <span className="text-sm font-semibold tabular-nums text-text">{n(ist)}</span>
+        <span className="text-[0.62rem] text-textMuted">/ {n(ziel)} Ziel</span>
+        <span className={`ml-auto text-[0.62rem] font-medium tabular-nums ${txt}`} title={`Abweichung ${abw > 0 ? '+' : ''}${n(abw)} Std`}>
+          {abw === 0 ? '✓ exakt' : (abw > 0 ? '+' : '') + n(abw)}
+        </span>
+      </div>
     </div>
   )
 }

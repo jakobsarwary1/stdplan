@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import ExcelJS from 'exceljs'
 import { getCurrentUser } from '@/lib/auth'
-import { generateHoursBasedSchedule, type HoursTarget, type HoursShift } from '@/lib/planning/hoursMode'
+import { verteileExakt, type ExactShift } from '@/lib/planning/exact'
 import { computeShiftHours, sumShiftHours, computeWage } from '@/lib/planning/wage'
 
 /** Eingabezeile aus der Monatstabelle (ein Fahrer). */
@@ -139,16 +139,12 @@ function buildPlan(drivers: DriverInput[], year: number, month: number): { rows:
     const name = dr.name
     const emp = dr.employeeNumber ?? null
 
-    const target: HoursTarget = {
-      driverId: name, driverName: name, hireDate: null, excludedDates: [],
-      totalHours: total, sundayHours: Number(dr.sunday) || 0, nightHours: (Number(dr.night25) || 0) + (Number(dr.night40) || 0),
-      commuteMinutes: 0, breakMinutesOverride: null, calculateExpenses: false,
-      prioritizeDemand: false, prioritizeSunday: (Number(dr.sunday) || 0) > 0, maximizeNight: (Number(dr.night40) || 0) > 0,
-      maxFreeDays: null, isEinzelfahrer: total >= 100,
-    }
-    let shifts: HoursShift[] = []
+    let shifts: ExactShift[] = []
     try {
-      shifts = generateHoursBasedSchedule(year, month - 1, target, new Set(), '22:00', '06:00', 11, [], undefined).shifts
+      shifts = verteileExakt(year, month, {
+        bezahlt: total, sunday: Number(dr.sunday) || 0,
+        n25: Number(dr.night25) || 0, n40: Number(dr.night40) || 0,
+      }).shifts
     } catch { shifts = [] }
 
     const byDate = new Map(shifts.map((s) => [s.date, s]))
