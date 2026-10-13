@@ -300,11 +300,11 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                         title={`Kürzeste Ruhezeit ${n2(aktiv.summe.minRuhe ?? 0)} h`}>Ruhe &lt; 11 h</span>
                     )}
                   </div>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <ZielIst label="Gesamt (bezahlt)" ziel={aktiv.ziel.bezahlt} ist={aktiv.summe.bezahlt} />
                     <ZielIst label="Sonntag 50 %" ziel={aktiv.ziel.sunday} ist={aktiv.summe.so} />
-                    <ZielIst label="Nacht 25 %" ziel={aktiv.ziel.n25} ist={aktiv.summe.n25} />
-                    <ZielIst label="Nacht 40 %" ziel={aktiv.ziel.n40} ist={aktiv.summe.n40} />
+                    <ZielIst label="Nacht gesamt" ziel={aktiv.ziel.n25 + aktiv.ziel.n40} ist={aktiv.summe.n25 + aktiv.summe.n40}
+                      sub={`tatsächlich 25 % ${n2(aktiv.summe.n25)} · 40 % ${n2(aktiv.summe.n40)}`} />
                   </div>
                 </div>
 
@@ -523,7 +523,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
 }
 
 /** Ziel-vs-Ist-Kachel mit Ampel (grün ≤ 0,1 · gelb ≤ 0,25 · rot darüber). */
-function ZielIst({ label, ziel, ist }: { label: string; ziel: number; ist: number }) {
+function ZielIst({ label, ziel, ist, sub }: { label: string; ziel: number; ist: number; sub?: string }) {
   const abw = Math.round((ist - ziel) * 100) / 100
   const a = Math.abs(abw)
   const n = (x: number) => x.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -539,6 +539,7 @@ function ZielIst({ label, ziel, ist }: { label: string; ziel: number; ist: numbe
           {abw === 0 ? '✓ exakt' : (abw > 0 ? '+' : '') + n(abw)}
         </span>
       </div>
+      {sub && <div className="mt-0.5 text-[0.58rem] text-textMuted">{sub}</div>}
     </div>
   )
 }

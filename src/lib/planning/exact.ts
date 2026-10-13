@@ -2,15 +2,16 @@
 // EXAKT (per Konstruktion), statt sie wie der heuristische Verteiler
 // (hoursMode.ts) nur bestmöglich anzunähern.
 //
-// Idee: Jede Zuschlagsart bekommt EIGENE Schichten, die ausschließlich in ihr
-// Zeitfenster/ihren Tag fallen – ohne Überschneidung:
+// Idee: Jede Kategorie bekommt EIGENE Schichten in ihrem Zeitbereich:
 //   • Sonntagsstunden  -> Tagschichten AN SONNTAGEN (06–20 Uhr, nie im Nachtfenster)
-//   • Nacht 40 % (00–04) -> Schichten im Fenster 00:00–04:00 an Werktagen
-//   • Nacht 25 % (20–24) -> Schichten im Fenster 20:00–24:00 an Werktagen
+//   • Nacht (REALISMUS) -> echte Spät-/Nachtschicht Mo–Fr, Start abends 20–22 Uhr,
+//       über Mitternacht bis max. 06:00 – NIE 00:00-Start. Die ganze Arbeitszeit
+//       liegt im Zuschlag (20–24 = 25 %, 00–04 = 40 %, 04–06 = 25 %); die
+//       NACHT-SUMME (n25+n40) wird exakt getroffen, die 25/40-Aufteilung ergibt
+//       sich aus der echten Uhrzeit (Modus „Realismus", von Jakob gewählt).
 //   • Rest (normale Std)  -> Tagschichten (06–20 Uhr) an Werktagen, kein Zuschlag
-// Dadurch zählt jede gearbeitete Stunde genau einmal in die gewünschte Spalte;
-// die Summen treffen die Eingabe exakt. Die bezahlte Gesamtsumme (Netto + Pause)
-// wird über die Summe der Schicht-Spannen minutengenau auf den Zielwert gebracht.
+// Gesamtsumme (bezahlt) und Sonntag treffen die Eingabe exakt; die bezahlte
+// Summe wird über die Schicht-Spannen minutengenau auf den Zielwert gebracht.
 //
 // REALISTISCHE VARIATION (deterministisch, seed-basiert – Vorschau und Excel
 // sind daher identisch): Startzeiten, Pausenlängen und die Netto-Länge normaler
@@ -107,16 +108,30 @@ function dayStart(span: number, seed: string): number {
   for (let s = DAY_WINDOW_START; s <= latest; s += 15) steps.push(s)
   return pick(steps, seed)
 }
-/** Startzeit einer Nachtschicht im Fenster [`winStart`, `winEnd`] (Spanne `span`). */
-function nightStart(winStart: number, winEnd: number, span: number, seed: string): number {
-  const latest = winEnd - span
-  if (latest <= winStart) return winStart
+// REALISTISCHE Nacht-/Spätschicht: beginnt am ABEND (20:00–22:00), läuft über
+// Mitternacht bis max. 06:00 Folgetag – NIE um 00:00. Die ganze gearbeitete
+// Zeit liegt in den Zuschlagsfenstern (20–24 = 25 %, 00–04 = 40 %, 04–06 = 25 %),
+// die 25/40-Aufteilung ergibt sich also aus der echten Uhrzeit (Realismus-Modus,
+// von Jakob gewählt). Die NACHT-SUMME bleibt exakt (= Σ Nacht-Netto).
+const NIGHT_WIN_START = 20 * 60 // 20:00 – Beginn 25-%-Fenster
+const NIGHT_WIN_END = 30 * 60   // 06:00 Folgetag – Ende der Nachtarbeit (Minuten ab Tagesbeginn)
+const NIGHT_START_LATEST = 22 * 60 // spätestens 22:00 beginnen – nie Mitternacht
+
+/** Startzeit einer realistischen Nacht-/Spätschicht (Abend), Spanne `span`. */
+function nachtStart(span: number, seed: string): number {
+  const latest = Math.min(NIGHT_START_LATEST, NIGHT_WIN_END - span)
+  if (latest <= NIGHT_WIN_START) return NIGHT_WIN_START
   const steps: number[] = []
-  for (let s = winStart; s <= latest; s += 15) steps.push(s)
+  for (let s = NIGHT_WIN_START; s <= latest; s += 15) steps.push(s)
   return pick(steps, seed)
 }
+/** Realistische Pause einer Nachtschicht (30–90 Min bei > 6 h, sonst keine). */
+function nachtBreak(net: number, seed: string): number {
+  if (net * 60 <= 6 * 60) return 0
+  return pick([30, 45, 60, 75, 90], seed)
+}
 
-type Spec = { cat: 'sun' | 'n40' | 'n25' | 'norm'; net: number; brk: number }
+type Spec = { cat: 'sun' | 'nacht' | 'norm'; net: number; brk: number }
 
 function monthDays(year: number, month1: number): { iso: string; dow: number }[] {
   const out: { iso: string; dow: number }[] = []
@@ -146,9 +161,8 @@ export function verteileExakt(
   const tage = monthDays(year, month1)
   const nSun = tage.filter((t) => t.dow === 0).length
 
-  // 1) Zuschlag-Schichten als Spezifikationen bauen (Netto = Ziel, keine
-  //    Überschneidung). Höchstens 8 Netto-Std/Tag – auch an Sonntagen;
-  //    Nachtfenster sind ohnehin ≤ 4 h (00–04 bzw. 20–24).
+  // 1) Zuschlag-Schichten als Spezifikationen bauen (Netto = Ziel).
+  //    Höchstens 8 Netto-Std/Tag – auch an Sonntagen und in der Nacht.
   //    Sonntags-Kapazität: nur so viele Sonntagsstunden wie Sonntage × 8 Std.
   //    Überzählige werden zu NORMALEN Stunden (Gesamtsumme bleibt exakt), mit
   //    klarer Warnung – Sonntag hat Vorrang, aber nicht über die 8-Std-Grenze
@@ -163,17 +177,24 @@ export function verteileExakt(
   // wir halten sie hier schlicht, die Variation steckt in den normalen Diensten.)
   const sunSpecs: Spec[] = []
   for (let rem = sundayCap; rem > 0.0001;) { const net = Math.min(rem, MAX_NET); sunSpecs.push({ cat: 'sun', net, brk: legalBreak(net * 60) }); rem = round2(rem - net) }
-  const n40Specs: Spec[] = []
-  for (let rem = n40; rem > 0.0001;) { const net = Math.min(rem, 4); n40Specs.push({ cat: 'n40', net, brk: 0 }); rem = round2(rem - net) }
-  const n25Specs: Spec[] = []
-  for (let rem = n25; rem > 0.0001;) { const net = Math.min(rem, 4); n25Specs.push({ cat: 'n25', net, brk: 0 }); rem = round2(rem - net) }
+  // Nacht = EINE realistische Spät-/Nachtschicht je Block (bis 8 Netto-Std, mit
+  // Pause), die abends beginnt und über Mitternacht läuft. Nacht-SUMME (= n25 +
+  // n40) wird exakt getroffen; die Aufteilung 25 %/40 % ergibt sich aus der
+  // tatsächlichen Uhrzeit (Realismus-Modus – von Jakob gewählt).
+  const nachtGesamt = round2(n25 + n40)
+  const nachtSpecs: Spec[] = []
+  for (let rem = nachtGesamt; rem > 0.0001;) {
+    const net = Math.min(rem, MAX_NET)
+    nachtSpecs.push({ cat: 'nacht', net, brk: nachtBreak(net, `nb-${nachtSpecs.length}-${net}`) })
+    rem = round2(rem - net)
+  }
 
   // 2) Normale Schichten füllen die restliche bezahlte Zeit auf. Wir legen
   //    zuerst die SPANNEN fest (volle 8,5-h-Blöcke + ein Rest), damit die
   //    bezahlte Summe exakt stimmt; erst danach wird jede Spanne realistisch in
   //    Netto + Pause aufgeteilt (splitSpan) – das ändert die Spanne nicht.
   const spanOf = (s: Spec) => Math.round(s.net * 60) + s.brk
-  const fixSpan = [...sunSpecs, ...n40Specs, ...n25Specs].reduce((a, s) => a + spanOf(s), 0)
+  const fixSpan = [...sunSpecs, ...nachtSpecs].reduce((a, s) => a + spanOf(s), 0)
   let restSpan = Math.round(bezahlt * 60) - fixSpan
   const FULL_SPAN = MAX_NET * 60 + 30 // 8 h Netto + 30 Min Pause = 510 Min, max. darstellbare Einzel-Spanne
   const normSpecs: Spec[] = []
@@ -244,9 +265,7 @@ export function verteileExakt(
     return true
   }
   const startFor = (spec: Spec, span: number, iso: string) =>
-    spec.cat === 'n40' ? nightStart(0, 4 * 60, span, `s-${iso}`)
-      : spec.cat === 'n25' ? nightStart(20 * 60, 24 * 60, span, `s-${iso}`)
-        : dayStart(span, `s-${iso}`)
+    spec.cat === 'nacht' ? nachtStart(span, `s-${iso}`) : dayStart(span, `s-${iso}`)
 
   // 3a) Sonntage zuerst (Vorrang + exakt). Woche-Cap und „1 frei" hier gelockert
   //     – der Sonntag MUSS gesetzt werden; Ruhezeit und 7-Tage-Block bleiben hart.
@@ -258,16 +277,15 @@ export function verteileExakt(
   }
 
   // Generischer, wochenausgeglichener Platzierer. `nightPref`: Nacht bevorzugt
-  // Fr/Sa (erst Wochentag, dann Wochenausgleich); normal umgekehrt (erst
+  // Freitag (erst Wochentag, dann Wochenausgleich); normal umgekehrt (erst
   // gleichmäßig über die Wochen, dann Wochentag → freie Tage = Mo/Mi/Do).
-  const nonSun = tage.filter((t) => t.dow !== 0)
   let capWarned = false
-  const verteile = (q: Spec[], nightPref: boolean) => {
+  const verteile = (q: Spec[], nightPref: boolean, days: { iso: string; dow: number }[]) => {
     while (q.length) {
       const spec = q[0], span = spanOf(spec)
-      let cands = nonSun.filter((t) => canPlace(t.iso, startFor(spec, span, t.iso), span, true, true))
+      let cands = days.filter((t) => canPlace(t.iso, startFor(spec, span, t.iso), span, true, true))
       let relaxedCap = false
-      if (!cands.length) { cands = nonSun.filter((t) => canPlace(t.iso, startFor(spec, span, t.iso), span, false, true)); relaxedCap = true }
+      if (!cands.length) { cands = days.filter((t) => canPlace(t.iso, startFor(spec, span, t.iso), span, false, true)); relaxedCap = true }
       if (!cands.length) break // passt unter den Regeln nirgends mehr → Rest als Warnung
       cands.sort((a, b) => {
         const wa = weekPaid.get(mondayKey(a.iso)) ?? 0, wb = weekPaid.get(mondayKey(b.iso)) ?? 0
@@ -282,11 +300,14 @@ export function verteileExakt(
     }
   }
 
-  // 3b) Nacht (Fr/Sa bevorzugt), 3c) normale Tagschichten.
-  const nachtQ: Spec[] = [...n40Specs, ...n25Specs]
+  // 3b) Nacht zuerst – NUR Mo–Fr (eine Nachtschicht quert in den Folgetag; an
+  //     Samstag würde sie in den Sonntag laufen und dort fälschlich als
+  //     Sonntag+Nacht zählen → Sonntagssumme kaputt). Freitag wird bevorzugt
+  //     (Fr-Abend → Sa-Nacht = Wochenendabdeckung). 3c) normale Tagschichten Mo–Sa.
+  const nachtQ: Spec[] = [...nachtSpecs]
   const normQ: Spec[] = [...normSpecs]
-  verteile(nachtQ, true)
-  verteile(normQ, false)
+  verteile(nachtQ, true, tage.filter((t) => t.dow >= 1 && t.dow <= 5))
+  verteile(normQ, false, tage.filter((t) => t.dow !== 0))
 
   shifts.sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin)
 
