@@ -268,7 +268,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                     <span className="flex items-center gap-3 text-xs text-textMuted">
                       {pd.summe.ruheVerletzt && <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[0.65rem] font-medium text-danger" title={`Kürzeste Ruhezeit ${n2(pd.summe.minRuhe ?? 0)} h (unter 11 h)`}>Ruhe &lt; 11 h</span>}
                       {pd.warning && <span className="text-amber-400" title={pd.warning}>⚠</span>}
-                      <span className="tabular-nums">{pd.tage} Tage · {n2(pd.paidSum)} Std</span>
+                      <span className="tabular-nums">{pd.tage} Tage · <span className="font-medium text-text">{n2(pd.paidSum)} Std bezahlt</span></span>
                       <span className={`transition-transform duration-300 ${auf ? 'rotate-180' : ''}`}>⌄</span>
                     </span>
                   </button>
@@ -277,12 +277,13 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                       <div className="px-4 pb-4">
                         {pd.warning && <p className="mb-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-300">{pd.warning}</p>}
                         <div className="overflow-x-auto">
-                          <table className="w-full min-w-[40rem] text-sm">
+                          <table className="w-full min-w-[46rem] text-sm">
                             <thead>
                               <tr className="text-left text-[0.65rem] uppercase tracking-wide text-textMuted">
                                 <th className="py-1 pr-4 font-medium">Datum</th>
                                 <th className="py-1 pr-4 font-medium">Von–Bis</th>
                                 <th className="py-1 pr-3 text-right font-medium">Pause</th>
+                                <th className="py-1 pr-3 text-right font-semibold text-text">Bezahlt</th>
                                 <th className="py-1 pr-3 text-right font-medium">Netto</th>
                                 <th className="py-1 pr-3 text-right font-medium">Ruhe</th>
                                 <th className="py-1 pr-3 text-right font-medium">N 25%</th>
@@ -296,7 +297,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                                   <td className="whitespace-nowrap py-1.5 pr-4">{dLabel(s.date)}</td>
                                   <td className="whitespace-nowrap py-1.5 pr-4 tabular-nums">{s.von}–{s.bis}</td>
                                   <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{s.pause}′</td>
-                                  <td className="py-1.5 pr-3 text-right tabular-nums">{n2(s.netto)}</td>
+                                  <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-text">{n2(s.bezahlt)}</td>
+                                  <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{n2(s.netto)}</td>
                                   <td className={`py-1.5 pr-3 text-right tabular-nums ${s.ruhe != null && s.ruhe < 11 ? 'font-semibold text-danger' : 'text-textMuted'}`}
                                     title={s.ruhe != null && s.ruhe < 11 ? 'Ruhezeit unter 11 h (§ 5 ArbZG)' : undefined}>
                                     {s.ruhe == null ? '–' : n2(s.ruhe)}
@@ -310,7 +312,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                             <tfoot>
                               <tr className="border-t border-border font-semibold">
                                 <td className="py-1.5 pr-4" colSpan={3}>Summe</td>
-                                <td className="py-1.5 pr-3 text-right tabular-nums">{n2(pd.summe.netto)}</td>
+                                <td className="py-1.5 pr-3 text-right tabular-nums text-text">{n2(pd.summe.bezahlt)}</td>
+                                <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{n2(pd.summe.netto)}</td>
                                 <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">
                                   {pd.summe.minRuhe == null ? '–' : <span className={pd.summe.ruheVerletzt ? 'text-danger' : ''}>min {n2(pd.summe.minRuhe)}</span>}
                                 </td>
@@ -329,8 +332,10 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
             })}
           </div>
           <div className="border-t border-border px-4 py-2 text-xs text-textMuted">
-            Spalten: Ruhe = Ruhezeit zur Vorschicht (§ 5 ArbZG ≥ 11 h, sonst rot) · N 25 % (04–06 &amp; 20–24 Uhr) ·
-            N 40 % (00–04 Uhr, steuerfrei) · So 50 % – reine Arbeitszeit (§ 3b EStG). Passt es? Oben „Excel herunterladen"
+            <strong className="text-text">Bezahlt</strong> = deine „Gesamt Std" (Beginn→Ende inkl. bezahlter Pause) – darauf läuft der Lohn.
+            <strong className="text-text"> Netto</strong> = reine Arbeitszeit ohne Pause (deshalb kleiner). ·
+            Ruhe = Ruhezeit zur Vorschicht (§ 5 ArbZG ≥ 11 h, sonst rot) · N 25 % (04–06 &amp; 20–24 Uhr) ·
+            N 40 % (00–04 Uhr, steuerfrei) · So 50 % – reine Arbeitszeit (§ 3b EStG). Oben „Excel herunterladen"
             lädt denselben Plan als Stundenzettel mit editierbaren Formeln.
           </div>
         </div>
