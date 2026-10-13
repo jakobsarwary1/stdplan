@@ -29,7 +29,7 @@ export type ExactShift = {
 export type ExactResult = { shifts: ExactShift[]; warnings: string[] }
 
 const MIN_REST_MIN = 11 * 60 // § 5 ArbZG
-const MAX_SUN_NET = 11 // Tagschicht 08:00 + Pause endet ≤ 20:00 (kein Nachtfenster)
+const MAX_NET = 8 // harte Obergrenze: nie mehr als 8 Netto-Std/Tag (auch sonntags)
 const NORMAL_NET = 8
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
@@ -89,9 +89,22 @@ export function verteileExakt(
   const n40 = Math.max(0, ziel.n40)
   if (bezahlt <= 0) return { shifts: [], warnings }
 
+  const tage = monthDays(year, month1)
+  const nSun = tage.filter((t) => t.dow === 0).length
+
   // 1) Zuschlag-Schichten als Vorlagen bauen (Netto = Ziel, keine Überschneidung).
+  //    Höchstens 8 Netto-Std/Tag – auch an Sonntagen; Nachtfenster sind ohnehin
+  //    ≤ 4 h (00–04 bzw. 20–24).
+  // Sonntags-Kapazität: nur so viele Sonntagsstunden, wie Sonntage × 8 Std
+  // hergeben. Überzählige werden zu NORMALEN Stunden (damit die Gesamtsumme
+  // stimmt), mit klarer Warnung – Sonntag hat Vorrang, aber nicht über die
+  // 8-Std-Grenze und die Zahl der Sonntage hinaus.
+  const sundayCap = Math.min(sunday, nSun * MAX_NET)
+  if (round2(sunday - sundayCap) > 0.0001) {
+    warnings.push(`Sonntag: nur ${n2(sundayCap)} von ${n2(sunday)} Std möglich (nur ${nSun} Sonntage × max. 8 Std) – die übrigen ${n2(sunday - sundayCap)} Std werden als normale Stunden verplant.`)
+  }
   const sundayTmpl: Tmpl[] = []
-  for (let rem = sunday; rem > 0.0001;) { const net = Math.min(rem, MAX_SUN_NET); sundayTmpl.push({ startMin: 8 * 60, net }); rem = round2(rem - net) }
+  for (let rem = sundayCap; rem > 0.0001;) { const net = Math.min(rem, MAX_NET); sundayTmpl.push({ startMin: 8 * 60, net }); rem = round2(rem - net) }
   const n40Tmpl: Tmpl[] = []
   for (let rem = n40; rem > 0.0001;) { const net = Math.min(rem, 4); n40Tmpl.push({ startMin: 0, net }); rem = round2(rem - net) }
   const n25Tmpl: Tmpl[] = []
@@ -105,22 +118,19 @@ export function verteileExakt(
   if (restSpan < 0) {
     warnings.push('Die Zuschlagsstunden ergeben allein schon mehr bezahlte Zeit als die eingegebene Gesamtsumme – bitte Gesamt-Std erhöhen oder Zuschläge senken.')
   } else {
+    // Volle 8-Std-Schichten, bis der Rest in EINE Schicht ≤ 8 Netto passt; die
+    // letzte Schicht bringt die bezahlte Summe minutengenau aufs Ziel. KEINE
+    // Schicht überschreitet die 8-Netto-Grenze.
     const vollSpan = spanMin(NORMAL_NET)
-    while (restSpan >= vollSpan + 60) { normalTmpl.push({ startMin: 8 * 60, net: NORMAL_NET }); restSpan -= vollSpan }
+    while (restSpan > vollSpan) { normalTmpl.push({ startMin: 8 * 60, net: NORMAL_NET }); restSpan -= vollSpan }
     if (restSpan > 0) {
-      const net = netForSpan(restSpan)
-      if (net >= 0.5) normalTmpl.push({ startMin: 8 * 60, net: round2(net) })
-      else if (normalTmpl.length > 0) {
-        // Mini-Rest auf die letzte normale Schicht aufschlagen (minutengenau).
-        const last = normalTmpl[normalTmpl.length - 1]
-        last.net = round2(netForSpan(spanMin(last.net) + restSpan))
-      }
+      const net = Math.min(MAX_NET, round2(netForSpan(restSpan)))
+      if (net > 0.01) normalTmpl.push({ startMin: 8 * 60, net })
     }
   }
 
   // 3) Vorlagen auf Tage verteilen: Sonntage nur Sonntagsschichten, Werktage die
   //    übrigen; eine Schicht pro Tag; Ruhezeit ≥ 11 h, sonst Tag freilassen.
-  const tage = monthDays(year, month1)
   const dayMs = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d) }
   const weekdayQ: Tmpl[] = [...n40Tmpl, ...n25Tmpl, ...normalTmpl]
   const sunQ: Tmpl[] = [...sundayTmpl]
@@ -143,8 +153,8 @@ export function verteileExakt(
   // 4) Nicht untergebrachte Stunden als Warnung (Ziel wird dann knapp verfehlt).
   const fehltSun = round2(sunQ.reduce((s, t) => s + t.net, 0))
   const fehltWerk = round2(weekdayQ.reduce((s, t) => s + t.net, 0))
-  if (fehltSun > 0) warnings.push(`${n2(fehltSun)} Sonntagsstunden konnten nicht platziert werden (zu wenige freie Sonntage/Ruhezeit).`)
-  if (fehltWerk > 0) warnings.push(`${n2(fehltWerk)} Stunden konnten nicht platziert werden (zu wenige Werktage/Ruhezeit).`)
+  if (fehltSun > 0) warnings.push(`Sonntag: nur ${n2(sunday - fehltSun)} von ${n2(sunday)} Std möglich (max. 8 Std/Tag – zu wenige Sonntage oder Ruhezeit im Monat).`)
+  if (fehltWerk > 0) warnings.push(`${n2(fehltWerk)} Stunden konnten nicht platziert werden (max. 8 Std/Tag, zu wenige Werktage/Ruhezeit).`)
 
   return { shifts, warnings }
 }
