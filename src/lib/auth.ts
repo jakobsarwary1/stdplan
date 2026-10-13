@@ -6,7 +6,7 @@ export type CurrentUser = {
   id: string
   email: string | null
   companyId: string | null
-  role: 'super_admin' | 'company_owner' | 'dispatcher' | 'driver'
+  role: 'company_owner' | 'dispatcher' | 'driver'
   companyName: string | null
 }
 
@@ -64,13 +64,6 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
 export async function requireUser(): Promise<CurrentUser> {
   const user = await getCurrentUser()
   if (!user) redirect('/login')
-  return user
-}
-
-/** Wie requireUser(), verlangt zusätzlich die Rolle super_admin. */
-export async function requireSuperAdmin(): Promise<CurrentUser> {
-  const user = await requireUser()
-  if (user.role !== 'super_admin') redirect('/')
   return user
 }
 

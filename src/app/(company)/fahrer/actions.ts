@@ -4,7 +4,6 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
-import { uploadDocument } from '@/lib/storage'
 import { padEmployeeNumber } from '@/lib/employeeNumber'
 
 function str(formData: FormData, key: string): string | null {
@@ -155,44 +154,4 @@ export async function deleteDriver(driverId: string) {
 
   revalidatePath('/fahrer')
   redirect('/fahrer')
-}
-
-export async function uploadDriverDocument(driverId: string, formData: FormData) {
-  const user = await requireCompanyUser()
-
-  const file = formData.get('file') as File | null
-  const type = str(formData, 'type')
-  const side = str(formData, 'side')
-  if (!file || file.size === 0) throw new Error('Bitte eine Datei auswählen.')
-  if (!type) throw new Error('Bitte einen Dokumenttyp auswählen.')
-
-  let path: string
-  try {
-    path = await uploadDocument(user.companyId, file)
-  } catch (err) {
-    // Ausführlich in die Server-Logs schreiben (in Vercel unter "Runtime
-    // Logs" sichtbar), damit sich zukünftige Upload-Fehler direkt anhand
-    // der echten Fehlermeldung diagnostizieren lassen, statt nur den
-    // generischen "Application error" zu sehen.
-    console.error('Dokument-Upload fehlgeschlagen:', { driverId, fileName: file.name, fileSize: file.size, fileType: file.type, error: err })
-    throw new Error(`Dokument-Upload fehlgeschlagen: ${(err as Error).message}`)
-  }
-
-  await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
-    tx.driverDocument.create({
-      data: { driverId, type, side, fileUrl: path }
-    })
-  )
-
-  revalidatePath(`/fahrer/${driverId}`)
-}
-
-export async function deleteDriverDocument(driverId: string, documentId: string) {
-  const user = await requireCompanyUser()
-
-  await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
-    tx.driverDocument.delete({ where: { id: documentId } })
-  )
-
-  revalidatePath(`/fahrer/${driverId}`)
 }

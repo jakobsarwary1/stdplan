@@ -2,35 +2,19 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
-import { getDocumentUrl } from '@/lib/storage'
 import { Button, Card, Field, Input } from '@/components/ui'
 import { AddressFields } from '@/components/AddressFields'
 import { stripEmployeeNumberPadding } from '@/lib/employeeNumber'
 import {
   deleteDriver,
-  deleteDriverDocument,
   updateDriverBeschaeftigung,
-  updateDriverPersoenlich,
-  uploadDriverDocument
+  updateDriverPersoenlich
 } from '../actions'
 
 const TABS = [
   { key: 'persoenlich', label: 'Persönliche Daten' },
-  { key: 'beschaeftigung', label: 'Beschäftigung' },
-  { key: 'dokumente', label: 'Dokumente' }
+  { key: 'beschaeftigung', label: 'Beschäftigung' }
 ] as const
-
-const DOCUMENT_TYPES = [
-  'Arbeitsvertrag',
-  'Führerschein',
-  'Personenbeförderungsschein',
-  'Personalausweis / Aufenthaltstitel',
-  'Sozialversicherungsausweis',
-  'Steuer-ID-Bescheinigung',
-  'Krankenkassenbescheinigung',
-  'A-Fragebogen Angestellte',
-  'Sonstiges'
-]
 
 const EMPLOYMENT_TYPES = [
   { value: 'fulltime', label: 'Vollzeit' },
@@ -58,7 +42,7 @@ export default async function DriverDetailPage({
   const justSaved = searchParams.saved === '1'
 
   const driver = await withTenantContext({ companyId: user.companyId, isSuperAdmin: false }, (tx) =>
-    tx.driver.findUnique({ where: { id: params.id }, include: { documents: true } })
+    tx.driver.findUnique({ where: { id: params.id } })
   )
 
   if (!driver) notFound()
@@ -66,7 +50,6 @@ export default async function DriverDetailPage({
   const updatePersoenlich = updateDriverPersoenlich.bind(null, driver.id)
   const updateBeschaeftigung = updateDriverBeschaeftigung.bind(null, driver.id)
   const removeDriver = deleteDriver.bind(null, driver.id)
-  const uploadDoc = uploadDriverDocument.bind(null, driver.id)
 
   return (
     <div>
@@ -206,92 +189,11 @@ export default async function DriverDetailPage({
               />
               <p className="mt-1 text-xs text-textMuted">Zwischen 13,90 € (gesetzlicher Mindestlohn 2026) und 30,00 €. Komma oder Punkt möglich.</p>
             </Field>
-            <p className="text-xs text-textMuted">
-              Minijob-Einstellungen (Verdienstgrenze, Pauschalabgaben) folgen in Phase 6 (Vergütung &amp; Lohnabrechnung).
-            </p>
             <Button type="submit">Speichern</Button>
           </form>
         </Card>
       )}
 
-      {activeTab === 'dokumente' && (
-        <div className="max-w-2xl space-y-6">
-          <Card>
-            <h2 className="mb-4 font-semibold">Dokument hochladen</h2>
-            <form action={uploadDoc} className="space-y-4">
-              <div className="field">
-                <label className="label">Dokumenttyp</label>
-                <select name="type" className="input" required>
-                  {DOCUMENT_TYPES.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label className="label">Seite (optional)</label>
-                <select name="side" className="input">
-                  <option value="">—</option>
-                  <option value="Vorderseite">Vorderseite</option>
-                  <option value="Rückseite">Rückseite</option>
-                </select>
-              </div>
-              <Field label="Datei">
-                <input type="file" name="file" className="input" required />
-              </Field>
-              <Button type="submit">Hochladen</Button>
-            </form>
-          </Card>
-
-          <Card>
-            <h2 className="mb-4 font-semibold">Hochgeladene Dokumente</h2>
-            {driver.documents.length === 0 ? (
-              <p className="text-sm text-textMuted">Noch keine Dokumente hochgeladen.</p>
-            ) : (
-              <ul className="space-y-2 text-sm">
-                {driver.documents.map((d) => (
-                  <DriverDocumentRow key={d.id} driverId={driver.id} documentId={d.id} type={d.type} side={d.side} path={d.fileUrl} />
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
-      )}
     </div>
-  )
-}
-
-async function DriverDocumentRow({
-  driverId,
-  documentId,
-  type,
-  side,
-  path
-}: {
-  driverId: string
-  documentId: string
-  type: string
-  side: string | null
-  path: string
-}) {
-  const url = await getDocumentUrl(path)
-  const remove = deleteDriverDocument.bind(null, driverId, documentId)
-
-  return (
-    <li className="flex items-center justify-between border-b border-border pb-2 last:border-0">
-      <div>
-        <span className="font-medium">{type}</span>
-        {side && <span className="ml-2 text-textMuted">({side})</span>}
-      </div>
-      <div className="flex items-center gap-3">
-        {url && (
-          <a href={url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-            Öffnen
-          </a>
-        )}
-        <form action={remove}>
-          <button type="submit" className="text-danger hover:underline">Löschen</button>
-        </form>
-      </div>
-    </li>
   )
 }

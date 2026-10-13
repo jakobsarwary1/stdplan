@@ -29,22 +29,18 @@ model Company {
   shiftTemplates        ShiftTemplate[]
   demandProfiles        DemandProfile[]
   shifts                Shift[]
-  compensationFormulas  CompensationFormula[]
-  revenueEntries        RevenueEntry[]
   settings              CompanySettings?
 
   @@map("companies")
 }
 
 enum MemberRole {
-  super_admin
   company_owner
   dispatcher
   driver
 }
 
-// Verknüpft einen Supabase-Auth-Nutzer (auth.users.id) mit einem Unternehmen + Rolle.
-// super_admin-Zeilen haben companyId = null (plattformweit, kein Unternehmen).
+// Verknüpft einen Supabase-Auth-Nutzer (auth.users.id) mit dem Unternehmen + Rolle.
 model CompanyMember {
   id        String     @id @default(uuid())
   companyId String?
@@ -59,8 +55,8 @@ model CompanyMember {
   @@map("company_members")
 }
 
-// Zentrale, firmenweite Einstellungen (Minijob-Standardsätze, Nachtfenster,
-// Pausenregeln, Bargeld-Verrechnung usw.) - ein Datensatz pro Unternehmen.
+// Zentrale, firmenweite Planungs-Einstellungen (Nachtfenster, Ruhezeit,
+// max. Abwesenheit) - ein Datensatz pro Unternehmen.
 model CompanySettings {
   id        String  @id @default(uuid())
   companyId String  @unique
@@ -71,17 +67,6 @@ model CompanySettings {
   nightEnd            String  @default("06:00")
   minRestHours        Float   @default(11)
   maxAbsenceHours     Float   @default(10)
-  cashNettingEnabled  Boolean @default(true)
-
-  // Minijob-Pauschalabgaben-Standard (§ 8 SGB IV), pro Fahrer überschreibbar
-  minijobMonthlyEarningLimit Float @default(603)
-  minijobKvFlatRate          Float @default(0.13)
-  minijobRvFlatRate          Float @default(0.15)
-  minijobU1Rate               Float @default(0.011)
-  minijobU2Rate               Float @default(0.0024)
-  minijobInsolvenzRate        Float @default(0.0006)
-  minijobPauschsteuerRate     Float @default(0.02)
-  minijobOtherRate            Float @default(0)
 
   updatedAt DateTime @updatedAt
 
@@ -133,42 +118,11 @@ model Vehicle {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  documents       VehicleDocument[]
-  costs           VehicleCost[]
   assignments     VehicleDriverAssignment[]
   shifts          Shift[]
-  maintenance     MaintenanceRecord[]
 
   @@index([companyId])
   @@map("vehicles")
-}
-
-model VehicleDocument {
-  id         String    @id @default(uuid())
-  vehicleId  String
-  vehicle    Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  type       String // Fahrzeugschein | Mietwagengenehmigung / Konzessionsurkunde | TÜV-Bericht / HU-Bescheinigung | UVV-Prüfprotokoll | ...
-  side       String? // Vorderseite | Rückseite
-  fileUrl    String
-  uploadedAt DateTime  @default(now())
-  expiryDate DateTime?
-
-  @@index([vehicleId])
-  @@map("vehicle_documents")
-}
-
-model VehicleCost {
-  id          String   @id @default(uuid())
-  vehicleId   String
-  vehicle     Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  category    String // Tanken | Reparatur | Wartung | Reifen | Versicherung | Finanzierung | Leasing | Autowäsche | Parken | Sonstiges
-  amount      Float
-  periodStart DateTime
-  periodEnd   DateTime
-  note        String?
-
-  @@index([vehicleId])
-  @@map("vehicle_costs")
 }
 
 enum DriverRole {
@@ -213,11 +167,6 @@ enum DriverStatus {
   terminated
 }
 
-enum CompensationMode {
-  hourly
-  formula
-}
-
 model Driver {
   id             String         @id @default(uuid())
   companyId      String
@@ -254,61 +203,19 @@ model Driver {
   taxId                  String?
   qualifications String[]       @default([])
 
-  compensationMode      CompensationMode @default(hourly)
-  compensationFormulaId String?
-  compensationFormula   CompensationFormula? @relation(fields: [compensationFormulaId], references: [id])
   hourlyRate             Float?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  documents         DriverDocument[]
-  monthlyConfirmations DriverMonthlyConfirmation[]
   unavailability    DriverUnavailability[]
   highDemandWindows DriverHighDemandWindow[]
-  minijobSettings   MinijobSettings?
   assignments       VehicleDriverAssignment[]
   shifts            Shift[] @relation("ShiftDriver")
   substituteShifts  Shift[] @relation("ShiftPrimaryDriver")
-  revenueEntries    RevenueEntry[]
 
   @@index([companyId])
   @@map("drivers")
-}
-
-model DriverMonthlyConfirmation {
-  id       String @id @default(uuid())
-  driverId String
-  driver   Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
-  year     Int
-  month    Int // 1-12
-
-  tipsConfirmed      Boolean @default(false) // Trinkgeld
-  expensesConfirmed  Boolean @default(false) // Spesen (falls ausgezahlt)
-  timesheetConfirmed Boolean @default(false) // Stundenzettel
-  cashWageConfirmed  Boolean @default(false) // Lohnbestätigung (falls bar ausgezahlt)
-
-  confirmedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  @@unique([driverId, year, month])
-  @@index([driverId])
-  @@map("driver_monthly_confirmations")
-}
-
-model DriverDocument {
-  id         String    @id @default(uuid())
-  driverId   String
-  driver     Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
-  type       String
-  side       String?
-  fileUrl    String
-  uploadedAt DateTime  @default(now())
-  expiryDate DateTime?
-
-  @@index([driverId])
-  @@map("driver_documents")
 }
 
 model DriverUnavailability {
@@ -337,26 +244,6 @@ model DriverHighDemandWindow {
 
   @@index([driverId])
   @@map("driver_high_demand_windows")
-}
-
-model MinijobSettings {
-  id       String @id @default(uuid())
-  driverId String @unique
-  driver   Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
-
-  legalCompliant          Boolean @default(true)
-  monthlyEarningLimit     Float? // leer = Firmenstandard aus CompanySettings verwenden
-  employeePaysRV          Boolean @default(true)
-  overrideCompanyDefaults Boolean @default(false)
-  kvFlatRate              Float?
-  rvFlatRate              Float?
-  u1Rate                  Float?
-  u2Rate                  Float?
-  insolvenzRate           Float?
-  pauschsteuerRate        Float?
-  otherRate               Float?
-
-  @@map("minijob_settings")
 }
 
 // ---------- Schichtmodelle & Nachfrageprofile ----------
@@ -484,72 +371,8 @@ model ShiftBreak {
   @@map("shift_breaks")
 }
 
-// ---------- Vergütung & Umsatz ----------
-
-model CompensationFormula {
-  id             String   @id @default(uuid())
-  companyId      String
-  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  name           String
-  description    String?
-  active         Boolean  @default(true)
-  isDefault      Boolean  @default(false)
-  steps          Json // Schritt-Kette, siehe Geschäftsregeln in Abschnitt 5.4 des Super-Prompts
-  currentVersion Int      @default(1)
-  createdAt      DateTime @default(now())
-
-  drivers Driver[]
-
-  @@index([companyId])
-  @@map("compensation_formulas")
-}
-
-enum RevenuePeriodType {
-  day
-  week
-}
-
-// Getrennte Geldkategorien, siehe Abschnitt 5.4: netRevenue/bonus =
-// Unternehmensumsatz, tip/surcharge = Fahrervergütung, cashPayout/
-// cashHandedIn = Firmenbargeld (KEIN Lohn), advance = bereits ausgezahlt.
-model RevenueEntry {
-  id          String            @id @default(uuid())
-  companyId   String
-  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  driverId    String
-  driver      Driver            @relation(fields: [driverId], references: [id], onDelete: Cascade)
-  periodStart DateTime
-  periodEnd   DateTime
-  periodType  RevenuePeriodType
-
-  netRevenue  Float @default(0)
-  bonus       Float @default(0)
-  tip         Float @default(0)
-  surcharge   Float @default(0)
-  cashPayout  Float @default(0) // Bar vom Kunden erhalten - KEIN Lohn
-  cashHandedIn Float @default(0) // Bar an Firma abgegeben
-  advance     Float @default(0) // Vorschuss, bereits an Fahrer ausgezahlt
-
-  createdAt DateTime @default(now())
-
-  @@index([companyId, driverId])
-  @@map("revenue_entries")
-}
-
-// ---------- Wartung ----------
-
-model MaintenanceRecord {
-  id             String    @id @default(uuid())
-  vehicleId      String
-  vehicle        Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  type           String
-  date           DateTime
-  mileage        Int?
-  cost           Float?
-  note           String?
-  nextDueDate    DateTime?
-  nextDueMileage Int?
-
-  @@index([vehicleId])
-  @@map("maintenance_records")
-}
+// ---------- Vergütung ----------
+// Fahrer haben einen optionalen Stundenlohn (Driver.hourlyRate) für die
+// Lohn-Zusammenfassung im Dienstplan-Excel. Weitere Vergütungs-/Umsatz-/
+// Wartungsmodelle wurden entfernt - stdplan ist ausschließlich das
+// Werkzeug zum Erstellen des Dienstplans.
