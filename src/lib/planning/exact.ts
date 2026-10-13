@@ -42,8 +42,11 @@ export type ExactShift = {
 }
 export type ExactResult = { shifts: ExactShift[]; warnings: string[] }
 
-const MIN_REST_MIN = 11 * 60 // § 5 ArbZG
+const MIN_REST_MIN = 11 * 60 // § 5 ArbZG – harte Untergrenze
+const REST_COMFORT_MIN = 13 * 60 // angestrebte, komfortable Ruhezeit (12–14 h)
 const MAX_NET = 8 // harte Obergrenze: nie mehr als 8 Netto-Std/Tag (auch sonntags)
+const GOOD_NET = 5 // angestrebte Mindestlänge je Schicht (Netto-Std)
+const MIN_NET = 4.5 // absolute Mindestlänge; darunter nur als Ausnahme (+ Warnung)
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
 // Zuschlagssichere Tagfenster (keine Überschneidung mit den Nachtfenstern
@@ -53,13 +56,6 @@ const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 const DAY_WINDOW_START = 6 * 60 // 06:00 – früher wäre 25-%-Nachtfenster (04–06)
 const DAY_START_LATEST = 10 * 60 // 10:00 – spätester Start für einen „frühen" Dienst
 const DAY_END_LATEST = 19 * 60 // 19:00 – schützt die 11-h-Ruhezeit
-
-/** Gesetzliche Mindestpause (§ 4 ArbZG) nach Arbeitszeit (Minuten). */
-function legalBreak(workMin: number): number {
-  if (workMin > 9 * 60) return 45
-  if (workMin > 6 * 60) return 30
-  return 0
-}
 
 /** Kleiner, deterministischer Pseudo-Zufall (mulberry32 auf FNV-Hash des Seeds). */
 function seededRand(seed: string): number {
@@ -75,6 +71,31 @@ function pick<T>(arr: T[], seed: string): T {
   return arr[Math.min(arr.length - 1, Math.floor(seededRand(seed) * arr.length))]
 }
 
+/** Teilt `total` (ganze Minuten) in `k` möglichst gleich große, ganzzahlige Teile. */
+function splitInt(total: number, k: number): number[] {
+  if (k <= 0) return []
+  const base = Math.floor(total / k), rest = total - base * k
+  return Array.from({ length: k }, (_, i) => base + (i < rest ? 1 : 0))
+}
+/**
+ * Zerlegt eine Netto-Stundensumme in möglichst WENIGE, gleich lange Schichten
+ * (jede ≤ 8 h) – damit keine unnötig kurzen Reste entstehen. Rückgabe in Std.
+ * Nur wenn die Summe selbst < Mindestlänge ist, entsteht EINE kurze Schicht.
+ */
+function evenNetChunks(totalHours: number): number[] {
+  const T = Math.round(totalHours * 60)
+  if (T <= 0) return []
+  const k = Math.max(1, Math.ceil(T / (MAX_NET * 60)))
+  return splitInt(T, k).map((min) => min / 60)
+}
+/** Pause einer Tag-/Sonntagsschicht: ≥ 4 h → mind. 30 Min (nie 0), > 9 h → 45. */
+function dayBreakFor(net: number): number {
+  const wm = net * 60
+  if (wm < 4 * 60) return 0
+  if (wm > 9 * 60) return 45
+  return 30
+}
+
 /** Schicht ab `startMin`, `net` Netto-Std, feste Pause `brk` (Min.) in der Mitte. */
 function makeShift(date: string, startMin: number, net: number, brk: number): ExactShift {
   const workMin = Math.max(0, Math.round(net * 60))
@@ -86,14 +107,15 @@ function makeShift(date: string, startMin: number, net: number, brk: number): Ex
 /**
  * Teilt eine bezahlte SPANNE `span` (Minuten) realistisch in Netto + Pause auf,
  * OHNE die Spanne zu verändern (damit die bezahlte Summe exakt bleibt).
- * Variiert die Pause in 15-Min-Schritten; Netto bleibt dabei zwischen 6 und 8 h
- * (bzw. = Spanne, wenn die Spanne ≤ 6 h ist – dann ohne Pause).
+ * Pause 30–120 Min, Netto bleibt zwischen 4,5 und 8 h. Oberhalb 4 h gibt es IMMER
+ * mind. 30 Min Pause (nie 0). Nur sehr kurze Spannen (≤ 4 h) laufen pausenlos –
+ * die vermeidet die Schicht-Stückelung ohnehin, wo immer es mit den Zielen geht.
  */
 function splitSpan(span: number, seed: string): { net: number; brk: number } {
-  if (span <= 6 * 60) return { net: span / 60, brk: 0 } // ≤ 6 h: keine Pflichtpause
-  // Pause so wählen, dass Netto in [6 h, 8 h] bleibt: brk ∈ [span−8h, span−6h] ∩ [30, 120]
+  if (span <= 4 * 60) return { net: span / 60, brk: 0 } // ≤ 4 h: keine Pflichtpause (Ausnahme)
+  // Pause so wählen, dass Netto in [4,5 h, 8 h] bleibt: brk ∈ [span−8h, span−4,5h] ∩ [30, 120]
   const minBrk = Math.max(30, span - MAX_NET * 60)
-  const maxBrk = Math.min(120, span - 6 * 60)
+  const maxBrk = Math.min(120, span - MIN_NET * 60)
   const steps: number[] = []
   for (let b = Math.ceil(minBrk / 15) * 15; b <= maxBrk; b += 15) steps.push(b)
   const brk = steps.length ? pick(steps, seed) : Math.max(30, Math.round(minBrk))
@@ -125,9 +147,9 @@ function nachtStart(span: number, seed: string): number {
   for (let s = NIGHT_WIN_START; s <= latest; s += 15) steps.push(s)
   return pick(steps, seed)
 }
-/** Realistische Pause einer Nachtschicht (30–90 Min bei > 6 h, sonst keine). */
+/** Realistische Pause einer Nachtschicht: ≥ 4 h → 30–90 Min (nie 0), sonst keine. */
 function nachtBreak(net: number, seed: string): number {
-  if (net * 60 <= 6 * 60) return 0
+  if (net * 60 < 4 * 60) return 0
   return pick([30, 45, 60, 75, 90], seed)
 }
 
@@ -171,44 +193,40 @@ export function verteileExakt(
   if (round2(sunday - sundayCap) > 0.0001) {
     warnings.push(`Sonntag: nur ${n2(sundayCap)} von ${n2(sunday)} Std möglich (nur ${nSun} Sonntage × max. 8 Std) – die übrigen ${n2(sunday - sundayCap)} Std werden als normale Stunden verplant.`)
   }
-  // Zuschlag-Schichten: Netto FIX (= exakte Ziele), Pause = gesetzliche Pflicht.
-  // (Die Pause dieser Schichten zu variieren würde nur die bezahlte Spanne
-  // ändern; sie wird über die normalen Schichten ohnehin exakt ausgeglichen –
-  // wir halten sie hier schlicht, die Variation steckt in den normalen Diensten.)
-  const sunSpecs: Spec[] = []
-  for (let rem = sundayCap; rem > 0.0001;) { const net = Math.min(rem, MAX_NET); sunSpecs.push({ cat: 'sun', net, brk: legalBreak(net * 60) }); rem = round2(rem - net) }
-  // Nacht = EINE realistische Spät-/Nachtschicht je Block (bis 8 Netto-Std, mit
-  // Pause), die abends beginnt und über Mitternacht läuft. Nacht-SUMME (= n25 +
-  // n40) wird exakt getroffen; die Aufteilung 25 %/40 % ergibt sich aus der
-  // tatsächlichen Uhrzeit (Realismus-Modus – von Jakob gewählt).
+  // Zuschlag-Schichten: Netto FIX (= exakte Ziele). Statt „volle 8 h + kurzer
+  // Rest" werden die Stunden auf möglichst WENIGE, GLEICH LANGE Schichten
+  // verteilt (evenNetChunks) – so entstehen keine unnötig kurzen Dienste. Pause
+  // je Schicht ≥ 30 Min (dayBreakFor/nachtBreak), nie 0 bei ≥ 4 h.
+  const sunSpecs: Spec[] = evenNetChunks(sundayCap).map((net) => ({ cat: 'sun' as const, net, brk: dayBreakFor(net) }))
+  // Nacht = realistische Spät-/Nachtschicht je Block (abends beginnend, über
+  // Mitternacht). Nacht-SUMME (= n25 + n40) exakt; 25/40-Split ergibt sich aus
+  // der echten Uhrzeit (Realismus-Modus – von Jakob gewählt).
   const nachtGesamt = round2(n25 + n40)
-  const nachtSpecs: Spec[] = []
-  for (let rem = nachtGesamt; rem > 0.0001;) {
-    const net = Math.min(rem, MAX_NET)
-    nachtSpecs.push({ cat: 'nacht', net, brk: nachtBreak(net, `nb-${nachtSpecs.length}-${net}`) })
-    rem = round2(rem - net)
-  }
+  const nachtSpecs: Spec[] = evenNetChunks(nachtGesamt).map((net, i) => ({ cat: 'nacht' as const, net, brk: nachtBreak(net, `nb-${i}-${net}`) }))
 
   // 2) Normale Schichten füllen die restliche bezahlte Zeit auf. Wir legen
-  //    zuerst die SPANNEN fest (volle 8,5-h-Blöcke + ein Rest), damit die
-  //    bezahlte Summe exakt stimmt; erst danach wird jede Spanne realistisch in
-  //    Netto + Pause aufgeteilt (splitSpan) – das ändert die Spanne nicht.
+  //    zuerst die SPANNEN fest – als möglichst WENIGE, gleich große Blöcke (statt
+  //    „volle Blöcke + kurzer Rest"), damit kein Mini-Dienst übrig bleibt –, dann
+  //    wird jede Spanne realistisch in Netto + Pause aufgeteilt (splitSpan; ändert
+  //    die Spanne nicht → bezahlte Summe bleibt exakt).
   const spanOf = (s: Spec) => Math.round(s.net * 60) + s.brk
   const fixSpan = [...sunSpecs, ...nachtSpecs].reduce((a, s) => a + spanOf(s), 0)
-  let restSpan = Math.round(bezahlt * 60) - fixSpan
-  const FULL_SPAN = MAX_NET * 60 + 30 // 8 h Netto + 30 Min Pause = 510 Min, max. darstellbare Einzel-Spanne
+  const restSpan = Math.round(bezahlt * 60) - fixSpan
+  const SPAN_MAX = MAX_NET * 60 + 120 // max. darstellbare Einzel-Spanne (8 h Netto + 120 Min Pause)
   const normSpecs: Spec[] = []
   if (restSpan < 0) {
     warnings.push('Die Zuschlagsstunden ergeben allein schon mehr bezahlte Zeit als die eingegebene Gesamtsumme – bitte Gesamt-Std erhöhen oder Zuschläge senken.')
-  } else {
-    const spans: number[] = []
-    while (restSpan > FULL_SPAN) { spans.push(FULL_SPAN); restSpan -= FULL_SPAN }
-    if (restSpan > 0.5) spans.push(Math.round(restSpan))
-    spans.forEach((span, i) => {
+  } else if (restSpan > 0.5) {
+    const k = Math.max(1, Math.ceil(restSpan / SPAN_MAX)) // wenige, gleich große Spannen
+    splitInt(Math.round(restSpan), k).forEach((span, i) => {
       const { net, brk } = splitSpan(span, `norm-${year}-${month1}-${i}-${span}`)
       if (net > 0.01) normSpecs.push({ cat: 'norm', net, brk })
     })
   }
+
+  // Warnung bei (unvermeidbar) kurzen Schichten < Mindestlänge.
+  const kurz = [...sunSpecs, ...nachtSpecs, ...normSpecs].filter((s) => s.net + 1e-6 < GOOD_NET).length
+  if (kurz > 0) warnings.push(`${kurz} kurze Schicht(en) unter ${n2(GOOD_NET)} Std – ließ sich mit den eingegebenen Zielstunden nicht ganz vermeiden (Mindestlänge ${n2(MIN_NET)} Std).`)
 
   // 3) Spezifikationen auf Tage verteilen – WOCHENWEISE AUSGEGLICHEN (nicht mehr
   //    die ersten Tage des Monats vollstopfen). Regeln dabei:
@@ -223,7 +241,8 @@ export function verteileExakt(
   const dayMs = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d) }
   const shiftIso = (iso: string, delta: number) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + delta)).toISOString().slice(0, 10) }
   const mondayKey = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); const off = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7; return shiftIso(iso, -off) }
-  const REST = MIN_REST_MIN * 60000
+  const REST = MIN_REST_MIN * 60000          // harte Untergrenze (11 h)
+  const REST_COMFORT = REST_COMFORT_MIN * 60000 // angestrebt (13 h)
   const WEEK_CAP_MIN = 30 * 60 // max. 30 bezahlte Std/Woche
   // Wochentags-Priorität: kleiner = zuerst belegen (So, Fr, Sa, Di, Do, Mi, Mo).
   const rank = (dow: number) => (dow === 0 ? 0 : dow === 5 ? 1 : dow === 6 ? 2 : dow === 2 ? 3 : dow === 4 ? 4 : dow === 3 ? 5 : 6)
@@ -235,7 +254,7 @@ export function verteileExakt(
   const daysInWeek = new Map<string, number>()  // Monatstage je Woche (für „1 frei")
   for (const t of tage) { const k = mondayKey(t.iso); daysInWeek.set(k, (daysInWeek.get(k) ?? 0) + 1) }
 
-  const restOK = (s: number, e: number) => !placed.some((p) => s < p.e + REST && p.s < e + REST)
+  const restOK = (s: number, e: number, restMs: number) => !placed.some((p) => s < p.e + restMs && p.s < e + restMs)
   const consecutive = (iso: string) => {
     let n = 1
     for (let d = shiftIso(iso, -1); workedDays.has(d); d = shiftIso(d, -1)) n++
@@ -254,10 +273,10 @@ export function verteileExakt(
   // Prüft alle strukturellen/rechtlichen Regeln. `cap`/`minFree` werden nur für
   // zwingende Schichten (Sonntag) gelockert; Ruhezeit und 7-Tage-Block bleiben
   // IMMER hart.
-  const canPlace = (iso: string, startMin: number, span: number, cap: boolean, minFree: boolean) => {
+  const canPlace = (iso: string, startMin: number, span: number, cap: boolean, minFree: boolean, restMs: number) => {
     if (workedDays.has(iso)) return false
     const s = dayMs(iso) + startMin * 60000, e = dayMs(iso) + (startMin + span) * 60000
-    if (!restOK(s, e)) return false
+    if (!restOK(s, e, restMs)) return false
     if (consecutive(iso) >= 7) return false // nie 7 Tage am Stück
     const k = mondayKey(iso)
     if (cap && (weekPaid.get(k) ?? 0) + span > WEEK_CAP_MIN) return false // max. 30 Std/Woche
@@ -273,7 +292,8 @@ export function verteileExakt(
   for (const t of tage) {
     if (t.dow !== 0 || sunQ.length === 0) continue
     const spec = sunQ[0], span = spanOf(spec), start = startFor(spec, span, t.iso)
-    if (canPlace(t.iso, start, span, false, false)) { commit(t.iso, start, spec, span); sunQ.shift() }
+    // Sonntage liegen 7 Tage auseinander → Ruhe ist ohnehin groß; harte 11 h genügt.
+    if (canPlace(t.iso, start, span, false, false, REST)) { commit(t.iso, start, spec, span); sunQ.shift() }
   }
 
   // Generischer, wochenausgeglichener Platzierer. `nightPref`: Nacht bevorzugt
@@ -283,9 +303,13 @@ export function verteileExakt(
   const verteile = (q: Spec[], nightPref: boolean, days: { iso: string; dow: number }[]) => {
     while (q.length) {
       const spec = q[0], span = spanOf(spec)
-      let cands = days.filter((t) => canPlace(t.iso, startFor(spec, span, t.iso), span, true, true))
+      // Stufen: zuerst mit KOMFORT-Ruhezeit (≈13 h) und allen Limits; dann 11 h;
+      // zuletzt Wochen-Cap lockern. Ruhezeit ≥ 11 h und „1 frei" bleiben hart.
+      const pick1 = (cap: boolean, rest: number) => days.filter((t) => canPlace(t.iso, startFor(spec, span, t.iso), span, cap, true, rest))
+      let cands = pick1(true, REST_COMFORT)
       let relaxedCap = false
-      if (!cands.length) { cands = days.filter((t) => canPlace(t.iso, startFor(spec, span, t.iso), span, false, true)); relaxedCap = true }
+      if (!cands.length) cands = pick1(true, REST)
+      if (!cands.length) { cands = pick1(false, REST); relaxedCap = true }
       if (!cands.length) break // passt unter den Regeln nirgends mehr → Rest als Warnung
       cands.sort((a, b) => {
         const wa = weekPaid.get(mondayKey(a.iso)) ?? 0, wb = weekPaid.get(mondayKey(b.iso)) ?? 0
