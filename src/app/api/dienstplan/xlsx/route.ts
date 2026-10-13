@@ -54,7 +54,7 @@ export async function POST(request: Request) {
       ['Name', 24, 'text'],
       ['Pers.-Nr.', 10, 'text'],
       ['€/Std', 8, 'eur'],
-      ['Gesamt Std', 11, 'std'],
+      ['Gesamt Std (bezahlt)', 14, 'std'],
       ['Sonntag 50%', 12, 'std'],
       ['Nacht 25%', 11, 'std'],
       ['Nacht 40%', 11, 'std'],

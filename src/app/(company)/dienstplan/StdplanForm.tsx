@@ -212,9 +212,10 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       )}
 
       <p className="text-xs text-textMuted">
-        Berechnung: Grundlohn = Gesamt&nbsp;Std × €/Std. Zuschläge stapeln on top: Sonntag +50 %, Nacht +25 % bzw. +40 %
+        <strong>Gesamt&nbsp;Std = bezahlte Stunden</strong> (Nettoarbeit + Pause; die Pause wird bezahlt, der Arbeitsweg zählt nie mit).
+        Grundlohn = Gesamt&nbsp;Std × €/Std. Zuschläge stapeln on top: Sonntag +50 %, Nacht +25 % bzw. +40 %
         auf die jeweils eingetragenen Stunden. „Krank", „1 % Brutto" und „abmelden" sind reine Textvermerke.
-        Der Stundenlohn ist je Zeile editierbar (für unterjährige Änderungen) – gespeichert wird er dauerhaft im Fahrer-Datensatz.
+        Der Stundenlohn ist je Zeile editierbar (für unterjährige Änderungen) – dauerhaft änderst du ihn im Fahrer-Datensatz.
       </p>
     </div>
   )
