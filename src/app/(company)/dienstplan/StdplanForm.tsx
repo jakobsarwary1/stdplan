@@ -101,14 +101,14 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       const res = await fetch('/api/dienstplan/xlsx', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ monthLabel, companyName, rows }),
+        body: JSON.stringify({ year, month, monthLabel, companyName, rows }),
       })
       if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || 'Fehler beim Erzeugen')
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `Dienstplan_${monthLabel.replace(' ', '_')}.xlsx`
+      a.download = `Stundenzettel_${monthLabel.replace(' ', '_')}.xlsx`
       a.click()
       URL.revokeObjectURL(url)
     } catch (err) {
@@ -127,8 +127,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
         <div>
           <h1 className="text-xl font-semibold">Dienstplan erstellen</h1>
           <p className="text-sm text-textMuted">
-            Monat wählen, je Fahrer Stunden &amp; Zuschläge eintragen → Dienstplan-Excel.
-            Eingaben werden im Browser automatisch gespeichert.
+            Monat wählen, je Fahrer bezahlte Stunden &amp; Zuschläge eintragen → vollständiger
+            Stundenzettel (tageweise, mit allen Regeln). Eingaben werden im Browser automatisch gespeichert.
           </p>
         </div>
         <div className="flex items-end gap-2">
@@ -151,7 +151,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
             disabled={busy}
             className="rounded bg-text px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50"
           >
-            {busy ? 'Erzeuge…' : 'Dienstplan-Excel erzeugen'}
+            {busy ? 'Erzeuge…' : 'Stundenzettel erzeugen'}
           </button>
         </div>
       </div>
@@ -174,7 +174,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                 <th className="px-2 py-2 text-right">Sonntag 50%</th>
                 <th className="px-2 py-2 text-right">Nacht 25%</th>
                 <th className="px-2 py-2 text-right">Nacht 40%</th>
-                <th className="px-2 py-2 text-right">Lohn gesamt</th>
+                <th className="px-2 py-2 text-right">Lohn (ca.)</th>
                 <th className="px-2 py-2">Krank</th>
                 <th className="px-2 py-2">1 % Brutto</th>
                 <th className="px-2 py-2">abmelden</th>
@@ -202,7 +202,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
             </tbody>
             <tfoot>
               <tr className="border-t border-border bg-black/5 font-semibold">
-                <td className="px-2 py-2" colSpan={7}>Lohn gesamt (alle Fahrer)</td>
+                <td className="px-2 py-2" colSpan={7}>Lohn ca. (alle Fahrer)</td>
                 <td className="px-2 py-2 text-right font-mono whitespace-nowrap">{eur(summe)} €</td>
                 <td colSpan={3} />
               </tr>
@@ -213,9 +213,12 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
 
       <p className="text-xs text-textMuted">
         <strong>Gesamt&nbsp;Std = bezahlte Stunden</strong> (Nettoarbeit + Pause; die Pause wird bezahlt, der Arbeitsweg zählt nie mit).
-        Grundlohn = Gesamt&nbsp;Std × €/Std. Zuschläge stapeln on top: Sonntag +50 %, Nacht +25 % bzw. +40 %
-        auf die jeweils eingetragenen Stunden. „Krank", „1 % Brutto" und „abmelden" sind reine Textvermerke.
-        Der Stundenlohn ist je Zeile editierbar (für unterjährige Änderungen) – dauerhaft änderst du ihn im Fahrer-Datensatz.
+        Aus diesen Eingaben wird im Excel pro Fahrer ein <strong>tageweiser Stundenzettel für den ganzen Monat</strong> erzeugt:
+        Schichten werden über die Tage verteilt (gesetzliche Pausen, Ruhezeiten), und die Zuschläge nach § 3b EStG
+        (Nacht 25 %/40 %, Sonntag 50 %) werden aus den tatsächlichen Schichtzeiten berechnet.
+        „Nacht 25/40" und „Sonntag" sind dabei <em>Zielvorgaben</em> – die genaue Aufteilung ergibt sich aus dem erzeugten Plan.
+        Die Spalte „Lohn (ca.)" hier ist nur eine Schnellschätzung; maßgeblich sind die Zahlen im Stundenzettel.
+        „Krank", „1 % Brutto" und „abmelden" sind Textvermerke. Stundenlohn je Zeile editierbar (dauerhaft im Fahrer-Datensatz).
       </p>
     </div>
   )
