@@ -1,8 +1,15 @@
 import { requireCompanyUser } from '@/lib/auth'
 import { withTenantContext } from '@/lib/prisma'
+import { stripEmployeeNumberPadding } from '@/lib/employeeNumber'
 import StdplanForm from './StdplanForm'
 
 export const dynamic = 'force-dynamic'
+
+/** Personalnummer ohne Füll-Nullen, aber mind. 2-stellig: "000042" -> "42", "000001" -> "01". */
+function persNr(raw: string | null | undefined): string {
+  const s = stripEmployeeNumberPadding(raw)
+  return /^\d+$/.test(s) ? s.padStart(2, '0') : s
+}
 
 export default async function DienstplanPage() {
   const user = await requireCompanyUser()
@@ -20,7 +27,7 @@ export default async function DienstplanPage() {
   const rows = drivers.map((d) => ({
     id: d.id,
     name: `${d.firstName} ${d.lastName}`.trim(),
-    employeeNumber: d.employeeNumber ?? '',
+    employeeNumber: persNr(d.employeeNumber),
     rate: d.hourlyRate ?? 13.9,
   }))
 

@@ -32,8 +32,11 @@ const num = (s: string): number => {
 }
 const eur = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-type PlanShift = { date: string; von: string; bis: string; pause: number; netto: number; bezahlt: number }
-type PlanDriver = { name: string; employeeNumber: string | null; tage: number; paidSum: number; warning: string | null; shifts: PlanShift[] }
+type PlanShift = { date: string; von: string; bis: string; pause: number; netto: number; bezahlt: number; ruhe: number | null; n25: number; n40: number; so: number }
+type PlanSum = { netto: number; bezahlt: number; n25: number; n40: number; so: number; minRuhe: number | null; ruheVerletzt: boolean }
+type PlanDriver = { name: string; employeeNumber: string | null; tage: number; paidSum: number; warning: string | null; summe: PlanSum; shifts: PlanShift[] }
+
+const n2 = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 const WT = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
 const dLabel = (iso: string) => {
@@ -164,21 +167,13 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
             tageweiser Stundenzettel als Excel mit Formeln. Eingaben werden automatisch im Browser gespeichert.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button onClick={planen} disabled={planBusy || ausgefuellt === 0}
-            className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-3 text-sm font-medium text-text transition-colors hover:border-accent disabled:cursor-not-allowed disabled:opacity-40"
-            title="Zeigt eine Vorschau der automatisch verteilten Schichten (ohne Fahrzeuge)">
-            {planBusy
-              ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-textMuted/40 border-t-text" /> Plane…</>
-              : <><span aria-hidden>🗓</span> Schichten automatisch planen</>}
-          </button>
-          <button onClick={erzeugen} disabled={busy || ausgefuellt === 0}
-            className="group inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-3 text-sm font-semibold text-bg shadow-lg shadow-accent/20 transition-all hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none">
-            {busy
-              ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-bg/40 border-t-bg" /> Erzeuge…</>
-              : <><span aria-hidden>↧</span> Stundenzettel erzeugen</>}
-          </button>
-        </div>
+        <button onClick={planen} disabled={planBusy || ausgefuellt === 0}
+          className="group inline-flex items-center gap-2 rounded-xl bg-accent px-5 py-3 text-sm font-semibold text-bg shadow-lg shadow-accent/20 transition-all hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+          title="Erstellt die Schicht-Vorschau. Die Excel-Datei lädst du erst danach in der Vorschau herunter.">
+          {planBusy
+            ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-bg/40 border-t-bg" /> Erstelle Vorschau…</>
+            : <><span aria-hidden>🗓</span> Stundenzettel-Vorschau erstellen</>}
+        </button>
       </div>
 
       {/* Klebende Toolbar-Karte */}
@@ -248,10 +243,18 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                 Automatisch verteilte Schichten für {monthLabel} – nur Vorschau, nichts wird gespeichert (ohne Fahrzeuge).
               </p>
             </div>
-            <button onClick={() => setPlan(null)}
-              className="shrink-0 rounded-lg border border-border px-2.5 py-1.5 text-xs text-textMuted transition-colors hover:text-text">
-              ✕ Schließen
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button onClick={erzeugen} disabled={busy}
+                className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-bg transition-all hover:brightness-105 disabled:opacity-50">
+                {busy
+                  ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-bg/40 border-t-bg" /> Lädt…</>
+                  : <><span aria-hidden>↧</span> Excel herunterladen</>}
+              </button>
+              <button onClick={() => setPlan(null)}
+                className="rounded-lg border border-border px-2.5 py-1.5 text-xs text-textMuted transition-colors hover:text-text">
+                ✕
+              </button>
+            </div>
           </div>
           <div className="divide-y divide-border">
             {plan.length === 0 && <div className="px-4 py-6 text-center text-sm text-textMuted">Keine Fahrer mit Stunden.</div>}
@@ -263,8 +266,9 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                     className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-bg/40">
                     <span className="font-medium text-text">{pd.name}</span>
                     <span className="flex items-center gap-3 text-xs text-textMuted">
+                      {pd.summe.ruheVerletzt && <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[0.65rem] font-medium text-danger" title={`Kürzeste Ruhezeit ${n2(pd.summe.minRuhe ?? 0)} h (unter 11 h)`}>Ruhe &lt; 11 h</span>}
                       {pd.warning && <span className="text-amber-400" title={pd.warning}>⚠</span>}
-                      <span className="tabular-nums">{pd.tage} Tage · {pd.paidSum.toLocaleString('de-DE', { minimumFractionDigits: 2 })} Std</span>
+                      <span className="tabular-nums">{pd.tage} Tage · {n2(pd.paidSum)} Std</span>
                       <span className={`transition-transform duration-300 ${auf ? 'rotate-180' : ''}`}>⌄</span>
                     </span>
                   </button>
@@ -273,13 +277,17 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                       <div className="px-4 pb-4">
                         {pd.warning && <p className="mb-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-300">{pd.warning}</p>}
                         <div className="overflow-x-auto">
-                          <table className="w-full text-sm">
+                          <table className="w-full min-w-[40rem] text-sm">
                             <thead>
                               <tr className="text-left text-[0.65rem] uppercase tracking-wide text-textMuted">
                                 <th className="py-1 pr-4 font-medium">Datum</th>
                                 <th className="py-1 pr-4 font-medium">Von–Bis</th>
-                                <th className="py-1 pr-4 font-medium">Pause</th>
-                                <th className="py-1 text-right font-medium">Netto Std</th>
+                                <th className="py-1 pr-3 text-right font-medium">Pause</th>
+                                <th className="py-1 pr-3 text-right font-medium">Netto</th>
+                                <th className="py-1 pr-3 text-right font-medium">Ruhe</th>
+                                <th className="py-1 pr-3 text-right font-medium">N 25%</th>
+                                <th className="py-1 pr-3 text-right font-medium">N 40%</th>
+                                <th className="py-1 text-right font-medium">So 50%</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -287,11 +295,30 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                                 <tr key={i} className="border-t border-border/50">
                                   <td className="whitespace-nowrap py-1.5 pr-4">{dLabel(s.date)}</td>
                                   <td className="whitespace-nowrap py-1.5 pr-4 tabular-nums">{s.von}–{s.bis}</td>
-                                  <td className="py-1.5 pr-4 tabular-nums">{s.pause} min</td>
-                                  <td className="py-1.5 text-right tabular-nums">{s.netto.toLocaleString('de-DE', { minimumFractionDigits: 2 })}</td>
+                                  <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{s.pause}′</td>
+                                  <td className="py-1.5 pr-3 text-right tabular-nums">{n2(s.netto)}</td>
+                                  <td className={`py-1.5 pr-3 text-right tabular-nums ${s.ruhe != null && s.ruhe < 11 ? 'font-semibold text-danger' : 'text-textMuted'}`}
+                                    title={s.ruhe != null && s.ruhe < 11 ? 'Ruhezeit unter 11 h (§ 5 ArbZG)' : undefined}>
+                                    {s.ruhe == null ? '–' : n2(s.ruhe)}
+                                  </td>
+                                  <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{s.n25 ? n2(s.n25) : '–'}</td>
+                                  <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{s.n40 ? n2(s.n40) : '–'}</td>
+                                  <td className="py-1.5 text-right tabular-nums text-textMuted">{s.so ? n2(s.so) : '–'}</td>
                                 </tr>
                               ))}
                             </tbody>
+                            <tfoot>
+                              <tr className="border-t border-border font-semibold">
+                                <td className="py-1.5 pr-4" colSpan={3}>Summe</td>
+                                <td className="py-1.5 pr-3 text-right tabular-nums">{n2(pd.summe.netto)}</td>
+                                <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">
+                                  {pd.summe.minRuhe == null ? '–' : <span className={pd.summe.ruheVerletzt ? 'text-danger' : ''}>min {n2(pd.summe.minRuhe)}</span>}
+                                </td>
+                                <td className="py-1.5 pr-3 text-right tabular-nums">{n2(pd.summe.n25)}</td>
+                                <td className="py-1.5 pr-3 text-right tabular-nums">{n2(pd.summe.n40)}</td>
+                                <td className="py-1.5 text-right tabular-nums">{n2(pd.summe.so)}</td>
+                              </tr>
+                            </tfoot>
                           </table>
                         </div>
                       </div>
@@ -302,7 +329,9 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
             })}
           </div>
           <div className="border-t border-border px-4 py-2 text-xs text-textMuted">
-            Passt die Verteilung? Dann „Stundenzettel erzeugen" – das Excel baut denselben Plan mit editierbaren Formeln.
+            Spalten: Ruhe = Ruhezeit zur Vorschicht (§ 5 ArbZG ≥ 11 h, sonst rot) · N 25 % (04–06 &amp; 20–24 Uhr) ·
+            N 40 % (00–04 Uhr, steuerfrei) · So 50 % – reine Arbeitszeit (§ 3b EStG). Passt es? Oben „Excel herunterladen"
+            lädt denselben Plan als Stundenzettel mit editierbaren Formeln.
           </div>
         </div>
       )}

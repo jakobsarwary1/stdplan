@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
 import { generateHoursBasedSchedule, type HoursTarget } from '@/lib/planning/hoursMode'
+import { computeShiftHours } from '@/lib/planning/wage'
 import { minToClock } from '@/lib/planning/format'
+
+const MIN_REST_HOURS = 11 // § 5 ArbZG
 
 // Vorschau der automatischen Schichtplanung (ohne Fahrzeuge): ruft pro Fahrer
 // die vorhandene Engine auf und gibt die generierten Tages-Schichten zurück.
@@ -48,20 +51,39 @@ export async function POST(request: Request) {
           warning = res.warning
         } catch (e) { warning = (e as Error).message }
 
-        const rowsOut = shifts
-          .slice()
-          .sort((a, b) => a.date.localeCompare(b.date))
-          .map((s) => ({
+        const sorted = shifts.slice().sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin)
+        let prevEndMs: number | null = null
+        const rowsOut = sorted.map((s) => {
+          const [y, m, d] = s.date.split('-').map(Number)
+          const startMs = new Date(y, m - 1, d, 0, s.startMin).getTime()
+          const endMs = new Date(y, m - 1, d, 0, s.endMin).getTime()
+          // Ruhezeit = Lücke zur vorherigen Schicht (Ende -> dieser Beginn), § 5 ArbZG i. d. R. 11 h.
+          const ruhe = prevEndMs != null ? round2((startMs - prevEndMs) / 3600000) : null
+          prevEndMs = endMs
+          const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.breaks })
+          return {
             date: s.date,
             von: minToClock(s.startMin),
             bis: minToClock(s.endMin),
             pause: s.breakMinutes,
             netto: round2(s.netHours),
             bezahlt: round2((s.endMin - s.startMin) / 60),
-          }))
+            ruhe,
+            n25: round2(h.night25),
+            n40: round2(h.night40),
+            so: round2(h.sunday50),
+          }
+        })
 
-        const paidSum = round2(rowsOut.reduce((s, x) => s + x.bezahlt, 0))
-        return { name: r.name, employeeNumber: r.employeeNumber ?? null, tage: rowsOut.length, paidSum, warning, shifts: rowsOut }
+        const sum = (sel: (x: typeof rowsOut[number]) => number) => round2(rowsOut.reduce((a, x) => a + sel(x), 0))
+        const ruheWerte = rowsOut.map((x) => x.ruhe).filter((v): v is number => v != null)
+        const minRuhe = ruheWerte.length ? Math.min(...ruheWerte) : null
+        const summe = {
+          netto: sum((x) => x.netto), bezahlt: sum((x) => x.bezahlt),
+          n25: sum((x) => x.n25), n40: sum((x) => x.n40), so: sum((x) => x.so),
+          minRuhe, ruheVerletzt: minRuhe != null && minRuhe < MIN_REST_HOURS,
+        }
+        return { name: r.name, employeeNumber: r.employeeNumber ?? null, tage: rowsOut.length, paidSum: summe.bezahlt, warning, summe, shifts: rowsOut }
       })
 
     return NextResponse.json({ drivers })
