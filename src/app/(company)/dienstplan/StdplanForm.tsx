@@ -216,8 +216,10 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
         Aus diesen Eingaben wird im Excel pro Fahrer ein <strong>tageweiser Stundenzettel für den ganzen Monat</strong> erzeugt:
         Schichten werden über die Tage verteilt (gesetzliche Pausen, Ruhezeiten), und die Zuschläge nach § 3b EStG
         (Nacht 25 %/40 %, Sonntag 50 %) werden aus den tatsächlichen Schichtzeiten berechnet.
-        „Nacht 25/40" und „Sonntag" sind dabei <em>Zielvorgaben</em> – die genaue Aufteilung ergibt sich aus dem erzeugten Plan.
-        Die Spalte „Lohn (ca.)" hier ist nur eine Schnellschätzung; maßgeblich sind die Zahlen im Stundenzettel.
+        „Nacht 25/40" und „Sonntag" sind dabei <em>Zielvorgaben</em> für den Startplan. Im Excel sind die gelben Felder
+        <strong>Von/Bis/Pause editierbar</strong> – alle übrigen Spalten (Netto, Nacht 25/40, Sonntag, Lohn) sind <strong>Formeln</strong>
+        und rechnen sich beim Ändern automatisch neu. So passt du den Stundenzettel direkt in Excel an.
+        Die Spalte „Lohn (ca.)" hier ist nur eine Schnellschätzung; maßgeblich sind die Formel-Zahlen im Stundenzettel.
         „Krank", „1 % Brutto" und „abmelden" sind Textvermerke. Stundenlohn je Zeile editierbar (dauerhaft im Fahrer-Datensatz).
       </p>
     </div>
