@@ -505,26 +505,67 @@ function stundenVon(s: RohSchicht) {
   return computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.breaks })
 }
 
-/**
- * Verteilt Minuten auf k Schichten, jede höchstens `max`.
- * Zuerst Viertelstunden, damit Beginn und Ende auf :00/:15/:30/:45 fallen,
- * dann 6 Minuten, dann der Rest Minute für Minute. Die Summe bleibt exakt.
- */
-function verteilSpannen(total: number, k: number, max: number): { spans: number[]; uebrig: number } {
-  if (k <= 0 || total <= 0) return { spans: [], uebrig: Math.max(0, total) }
-  const spans = Array.from({ length: k }, () => 0)
-  let left = Math.round(total)
-  const base15 = Math.min(max, Math.floor(Math.floor(left / k) / 15) * 15)
-  if (base15 > 0) {
-    for (let i = 0; i < k; i++) spans[i] = base15
-    left -= base15 * k
+const REST_MIN = 11 * 60
+/** Tagesrest endet um 19:00, damit der nächste Morgen um 06:00 noch 11 Std Ruhe hat und keine Nacht 25 % entsteht. */
+const FILL_ENDE = 19 * 60
+
+function absMin(date: string, min: number): number {
+  return Math.round(dayStartMs(date) / 60000) + min
+}
+
+/** true, wenn die neue Schicht keine vorhandene schneidet und zu beiden Seiten 11 Std Ruhe lässt. */
+function ruheOk(vorhanden: RohSchicht[], date: string, startMin: number, endMin: number): boolean {
+  const start = absMin(date, startMin)
+  const end = absMin(date, endMin)
+  for (const s of vorhanden) {
+    const ps = absMin(s.date, s.startMin)
+    const pe = absMin(s.date, s.endMin)
+    if (end <= ps) {
+      if (ps - end < REST_MIN) return false
+    } else if (start >= pe) {
+      if (start - pe < REST_MIN) return false
+    } else return false
   }
+  return true
+}
+
+/**
+ * Nachtschicht, die die offenen Quoten trifft und sie nicht überzieht.
+ * Ist Nacht 25 % noch offen, beginnt die Schicht um 20:00 (Pause 23:30–00:00).
+ * Ist Nacht 25 % voll, liegt die Arbeit nur in 00:00–04:00.
+ */
+function nachtEntwurf(n40: number, n25: number, paid: number): { start: number; span: number; breakAt: number | null } | null {
+  if (paid < 60) return null
+  if (n40 > 30 && n25 >= 210) {
+    const voll = n40 >= 240 && n25 >= 240 && paid >= 510
+    let span = voll ? 510 : 240 + Math.min(240, n40)
+    span = Math.min(span, paid)
+    if (span > 240 && span >= 300) return { start: 20 * 60, span, breakAt: 210 }
+  }
+  if (n40 > 30) {
+    if (n40 >= 240 && paid >= 270) return { start: 23 * 60 + 30, span: 270, breakAt: 0 }
+    const span = Math.min(240, n40, paid)
+    if (span >= 60) return { start: 4 * 60 - span, span, breakAt: null }
+  }
+  if (n25 > 30) {
+    const span = Math.min(240, n25, paid)
+    if (span >= 60) return { start: 20 * 60, span, breakAt: null }
+  }
+  return null
+}
+
+type Fenster = { date: string; startMin: number; maxSpan: number }
+
+/** Verteilt Minuten auf Fenster mit jeweils eigener Obergrenze. Summe bleibt exakt, solange die Fenster reichen. */
+function verteilInFenster(caps: number[], total: number): number[] {
+  const spans = caps.map(() => 0)
+  let left = Math.max(0, Math.round(total))
   const give = (step: number) => {
     let guard = 0
-    while (left >= step && guard++ < k * 80) {
+    while (left >= step && guard++ < Math.max(1, caps.length) * 120) {
       let placed = false
-      for (let i = 0; i < k && left >= step; i++) {
-        if (max - spans[i] >= step) {
+      for (let i = 0; i < caps.length && left >= step; i++) {
+        if (spans[i] + step <= caps[i]) {
           spans[i] += step
           left -= step
           placed = true
@@ -536,13 +577,14 @@ function verteilSpannen(total: number, k: number, max: number): { spans: number[
   give(15)
   give(6)
   give(1)
-  return { spans, uebrig: left }
+  return spans
 }
 
 /**
  * Plan nur aus den Monatsstunden. Der Nutzer gibt keine Uhrzeiten ein.
- * Reihenfolge: Sonntage, dann Nacht 40 % (abends ab 20:00, damit 00–04 Uhr
- * getroffen wird), dann Nacht 25 %, dann der Rest.
+ * Reihenfolge: Sonntage, dann Nacht 40 % und Nacht 25 % (ohne die Quote zu überziehen),
+ * dann der Rest auf Tage, an denen die 11-Std-Ruhe noch ein Fenster lässt.
+ * Der Morgen nach einer Nachtschicht bleibt für eine Spätschicht ab 15 Uhr frei.
  * Höchstens 2 freie Tage je Woche, wenn dabei mindestens 3 Std/Tag möglich sind.
  */
 export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel): ManualResult {
@@ -557,7 +599,6 @@ export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel):
 
   const schichten: RohSchicht[] = []
   const verwendet = new Set<string>()
-  const gesperrt = new Set<string>()
 
   for (const date of sonntage) {
     if (sundayLeft < 60 || paidLeft < 60) break
@@ -577,45 +618,30 @@ export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel):
   }
 
   const nachtPrio = [5, 1, 3, 4, 2]
-  const naechsteNacht = () => kalender
+  const naechsteNacht = (entwurf: { start: number; span: number }) => kalender
     .map((t) => t.iso)
     .filter((iso) => {
       const dow = dowOf(iso)
-      return dow >= 1 && dow <= 5 && !verwendet.has(iso) && !gesperrt.has(iso) && !verwendet.has(shiftIso(iso, 1))
+      return dow >= 1 && dow <= 5 && !verwendet.has(iso) && ruheOk(schichten, iso, entwurf.start, entwurf.start + entwurf.span)
     })
     .sort((a, b) => nachtPrio.indexOf(dowOf(a)) - nachtPrio.indexOf(dowOf(b)) || a.localeCompare(b))[0]
 
   let guard = 0
   while ((n40Left > 30 || n25Left > 30) && paidLeft >= 60 && guard++ < 40) {
-    const date = naechsteNacht()
+    const entwurf = nachtEntwurf(n40Left, n25Left, paidLeft)
+    if (!entwurf) break
+    const date = naechsteNacht(entwurf)
     if (!date) break
-    const vorher = n40Left + n25Left
-    let start = 20 * 60
-    let span = 0
-    let breakAt: number | null = null
-    if (n40Left > 30) {
-      if (n25Left < 60) {
-        start = 23 * 60
-        span = Math.min(5 * 60, paidLeft)
-        breakAt = 30
-      } else {
-        span = Math.min(510, paidLeft)
-        breakAt = span > 240 ? 210 : null
-      }
-    } else {
-      span = Math.min(4 * 60, n25Left, paidLeft)
-      breakAt = null
-    }
-    if (span < 60) break
-    const s = baueSchicht(date, start, span, breakAt)
+    const s = baueSchicht(date, entwurf.start, entwurf.span, entwurf.breakAt)
     const h = stundenVon(s)
+    const got40 = Math.round(h.night40 * 60)
+    const got25 = Math.round(h.night25 * 60)
+    if (got40 < 15 && got25 < 15) break
     schichten.push(s)
     verwendet.add(date)
-    gesperrt.add(shiftIso(date, 1))
     paidLeft -= s.endMin - s.startMin
-    n40Left -= Math.round(h.night40 * 60)
-    n25Left -= Math.round(h.night25 * 60)
-    if (n40Left + n25Left > vorher - 15) break
+    n40Left -= got40
+    n25Left -= got25
   }
 
   const wochen = new Map<string, string[]>()
@@ -623,68 +649,85 @@ export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel):
     const key = mondayKey(t.iso)
     wochen.set(key, [...(wochen.get(key) ?? []), t.iso])
   }
-  const poolJeWoche: string[][] = []
-  let minExtra = 0
-  for (const dates of wochen.values()) {
-    const frei = dates.filter((iso) => !verwendet.has(iso))
-    const noch = Math.max(0, frei.length - 2)
-    const pool = frei.filter((iso) => !gesperrt.has(iso) && dowOf(iso) !== 0).sort()
-    const n = Math.min(noch, pool.length)
-    minExtra += n
-    poolJeWoche.push(pool)
+
+  const fensterAm = (date: string): Fenster | null => {
+    if (verwendet.has(date) || dowOf(date) === 0) return null
+    let start = 6 * 60
+    let end = FILL_ENDE
+    const day = absMin(date, 0)
+    let prevEnd: number | null = null
+    let nextStart: number | null = null
+    for (const s of schichten) {
+      const ps = absMin(s.date, s.startMin)
+      const pe = absMin(s.date, s.endMin)
+      if (pe <= day + FILL_ENDE && (prevEnd == null || pe > prevEnd)) prevEnd = pe
+      if (ps >= day + start && (nextStart == null || ps < nextStart)) nextStart = ps
+    }
+    if (prevEnd != null) start = Math.max(start, prevEnd + REST_MIN - day)
+    if (nextStart != null) end = Math.min(end, nextStart - REST_MIN - day)
+    if (end - start > MAX_PAID_MIN) end = start + MAX_PAID_MIN
+    if (start >= 24 * 60 || end - start < 60) return null
+    return { date, startMin: start, maxSpan: end - start }
   }
-  const allePool = poolJeWoche.flat()
-  const dreiStunden = paidLeft >= minExtra * MIN_PAID_MIN
-  let filler: string[] = []
-  if (paidLeft >= 60 && allePool.length > 0) {
-    if (!dreiStunden) {
-      const count = paidLeft < MIN_PAID_MIN ? 1 : Math.min(allePool.length, Math.floor(paidLeft / MIN_PAID_MIN))
-      filler = pickEven(allePool, Math.max(1, count))
-      if (minExtra > 0) warnings.push('Zu wenig Stunden für höchstens 2 freie Tage je Woche bei mind. 3 Std/Tag. Die übrigen Stunden liegen gleichmäßig auf weniger Tagen.')
+
+  const alleFenster = kalender.map((t) => fensterAm(t.iso)).filter((f): f is Fenster => f != null)
+  const fensterNachDatum = new Map(alleFenster.map((f) => [f.date, f]))
+  const kapazitaet = (liste: Fenster[]) => liste.reduce((summe, f) => summe + f.maxSpan, 0)
+
+  let gewaehlt: Fenster[] = []
+  let muss = 0
+  if (paidLeft >= 60 && alleFenster.length > 0) {
+    for (const dates of wochen.values()) {
+      const pool = dates.map((iso) => fensterNachDatum.get(iso)).filter((f): f is Fenster => f != null)
+      const frei = dates.filter((iso) => !verwendet.has(iso)).length
+      const noch = Math.max(0, frei - 2)
+      const genommen = pickEven(pool.map((f) => f.date), Math.min(noch, pool.length))
+      for (const date of genommen) {
+        const f = fensterNachDatum.get(date)
+        if (f) gewaehlt.push(f)
+      }
+    }
+    muss = gewaehlt.length
+    if (muss > 0 && paidLeft < muss * MIN_PAID_MIN) {
+      const count = Math.max(1, Math.floor(paidLeft / MIN_PAID_MIN))
+      const daten = pickEven(gewaehlt.map((f) => f.date), Math.min(count, gewaehlt.length))
+      gewaehlt = daten.map((date) => fensterNachDatum.get(date)!).filter(Boolean)
+      warnings.push('Zu wenig Stunden für höchstens 2 freie Tage je Woche bei mind. 3 Std/Tag. Die übrigen Stunden liegen gleichmäßig auf weniger Tagen.')
     } else {
-      for (const pool of poolJeWoche) {
-        const dates = [...wochen.values()][poolJeWoche.indexOf(pool)]
-        const frei = dates.filter((iso) => !verwendet.has(iso))
-        const noch = Math.max(0, frei.length - 2)
-        filler.push(...pickEven(pool, Math.min(noch, pool.length)))
-      }
-      const rest = allePool.filter((iso) => !filler.includes(iso))
-      let extraGuard = 0
-      while (filler.length > 0 && filler.length < allePool.length && paidLeft / filler.length > MAX_PAID_MIN && rest.length > 0 && extraGuard++ < 31) {
-        if (paidLeft / (filler.length + 1) < MIN_PAID_MIN) break
-        filler.push(rest.shift()!)
-      }
-      if (filler.length === 0) {
-        const count = Math.min(allePool.length, Math.max(1, Math.floor(paidLeft / MIN_PAID_MIN)))
-        filler = pickEven(allePool, count)
+      const rest = alleFenster.filter((f) => !gewaehlt.some((g) => g.date === f.date))
+        .sort((a, b) => b.maxSpan - a.maxSpan || a.date.localeCompare(b.date))
+      let extra = 0
+      while (kapazitaet(gewaehlt) < paidLeft && extra < rest.length) {
+        gewaehlt.push(rest[extra])
+        extra++
       }
     }
   }
 
-  if (filler.length > 0) {
-    const { spans } = verteilSpannen(paidLeft, filler.length, MAX_PAID_MIN)
-    for (let i = 0; i < filler.length; i++) {
-      if (spans[i] < 60) continue
-      const s = baueSchicht(filler[i], 6 * 60, spans[i], null)
+  if (gewaehlt.length > 0 && paidLeft >= 60) {
+    gewaehlt.sort((a, b) => a.date.localeCompare(b.date))
+    const spans = verteilInFenster(gewaehlt.map((f) => f.maxSpan), paidLeft)
+    gewaehlt.forEach((f, i) => {
+      if (spans[i] < 60) return
+      const s = baueSchicht(f.date, f.startMin, spans[i], null)
+      if (!ruheOk(schichten, f.date, s.startMin, s.endMin)) return
       schichten.push(s)
-      verwendet.add(filler[i])
+      verwendet.add(f.date)
       paidLeft -= s.endMin - s.startMin
-    }
+    })
   }
 
   if (sundayLeft > 30) warnings.push(`Sonntag: ${round2(sundayLeft / 60)} Std passen nicht in den Monat oder ins Stundenbudget.`)
   if (n40Left > 30) warnings.push(`Nacht 40 %: ${round2(n40Left / 60)} Std passen nicht ins Stundenbudget.`)
   if (n25Left > 30) warnings.push(`Nacht 25 %: ${round2(n25Left / 60)} Std passen nicht ins Stundenbudget.`)
-  if (paidLeft > 30) warnings.push(`${round2(paidLeft / 60)} Std bleiben übrig (max. 8 Netto-Std je Tag).`)
+  if (paidLeft > 30) warnings.push(`${round2(paidLeft / 60)} Std bleiben übrig. Mehr passt nicht in den Monat, ohne die 11-Std-Ruhe oder 8 Std am Tag zu reißen.`)
 
   const freiZuViel = [...wochen.values()].filter((dates) => dates.filter((iso) => !verwendet.has(iso)).length > 2).length
   const budgetKnapp = warnings.some((w) => w.startsWith('Zu wenig Stunden'))
-  if (freiZuViel > 0 && !budgetKnapp) {
-    if (ziel.sunday > 0 || ziel.n25 > 0 || ziel.n40 > 0) {
-      warnings.push('Mehr als 2 freie Tage in manchen Wochen: Sonntag und Nacht verbrauchen die Stunden in langen Schichten.')
-    } else {
-      warnings.push('Nicht überall höchstens 2 freie Tage: das Stundenbudget lässt das bei mindestens 3 Std/Tag nicht zu.')
-    }
+  if (freiZuViel > 0 && !budgetKnapp && paidLeft <= 30 && (ziel.sunday > 0 || ziel.n25 > 0 || ziel.n40 > 0)) {
+    warnings.push('Mehr als 2 freie Tage in manchen Wochen: Sonntag und Nacht verbrauchen die Stunden in langen Schichten.')
+  } else if (freiZuViel > 0 && !budgetKnapp && paidLeft > 30) {
+    warnings.push('Mehr als 2 freie Tage in manchen Wochen: die 11-Std-Ruhe nach einer Nachtschicht lässt dort keine weitere Schicht zu.')
   }
 
   const ergebnis = ausRoh(schichten, warnings)
