@@ -10,8 +10,9 @@
 //   • Pause: bis 4 Std Spanne keine; darüber 30 Min, ab mehr als 9 Std Netto 45.
 //   • Ruhezeit zur Vorschicht mindestens 11 Std (§ 5 ArbZG). Darunter Warnung.
 //   • Nacht 25 %: 04–06 und 20–24 Uhr. Nacht 40 %: 00–04 Uhr. Sonntag 50 %.
-//   • Nachtschicht beginnt abends (20:00 oder 23:00), nie um 00:00.
-//     Der Folgetag bleibt frei, damit die 11 Std Ruhe nicht in den Morgen laufen.
+//   • Nachtschicht beginnt abends, nie um 00:00. Start, Ende und Länge
+//     streuen (fester Keim aus Monat und Vorgaben, Bildschirm = Excel).
+//     Die Summen bleiben minutengenau. Erfundene Zuschlagsstunden gibt es nicht.
 //   • Höchstens 2 freie Tage je Woche, wenn dabei mindestens 3 Std/Tag möglich sind.
 //
 // `berechneManuell` bleibt für eine ältere Tagesliste (Fenster + Bezahlt-Stunden).
@@ -486,19 +487,37 @@ type RohSchicht = {
   breaks: { start: number; end: number }[]
 }
 
-/** Schicht mit festem Start. Die Pause liegt bei `breakAt` Minuten nach Beginn, sonst um die Mitte, auf eine Viertelstunde gezogen. */
-function baueSchicht(date: string, startMin: number, spanMin: number, breakAt: number | null): RohSchicht {
+/**
+ * Schicht mit festem Start. `pauseMin` darf länger sein als das gesetzliche
+ * Minimum (höchstens 120), nie kürzer. Ohne Angabe liegt die Pause um die
+ * Mitte, auf 5 Minuten gezogen. `breakAt` ist die Lage ab Schichtbeginn.
+ */
+function baueSchicht(
+  date: string,
+  startMin: number,
+  spanMin: number,
+  breakAt: number | null,
+  pauseMin: number | null = null,
+): RohSchicht {
   const span = Math.max(0, Math.round(spanMin))
-  const { pause } = pauseUndNetto(span)
+  const legal = pauseUndNetto(span).pause
+  let pause = pauseMin == null ? legal : Math.max(legal, Math.round(pauseMin))
+  if (pause > 120) pause = 120
+  if (pause >= span) pause = legal >= span ? 0 : legal
   let off = breakAt
   if (pause <= 0) off = null
   else if (off == null) {
     const mid = Math.round((span - pause) / 2)
-    const snap = Math.round(mid / 15) * 15
-    off = Math.max(0, Math.min(snap, span - pause))
+    off = Math.max(0, Math.min(Math.round(mid / 5) * 5, span - pause))
   } else off = Math.max(0, Math.min(Math.round(off), span - pause))
   const breaks = pause > 0 && off != null ? [{ start: off, end: off + pause }] : []
-  return { date, startMin, endMin: startMin + span, pause: breaks.length ? pause : 0, breaks }
+  return {
+    date,
+    startMin: Math.round(startMin),
+    endMin: Math.round(startMin) + span,
+    pause: breaks.length ? pause : 0,
+    breaks,
+  }
 }
 
 function stundenVon(s: RohSchicht) {
@@ -531,60 +550,519 @@ function ruheOk(vorhanden: RohSchicht[], date: string, startMin: number, endMin:
 
 /**
  * Nachtschicht, die die offenen Quoten trifft und sie nicht überzieht.
+ * Sicherheitsnetz, wenn die gestreute Verteilung nicht aufgeht:
  * Ist Nacht 25 % noch offen, beginnt die Schicht um 20:00 (Pause 23:30–00:00).
  * Ist Nacht 25 % voll, liegt die Arbeit nur in 00:00–04:00.
  */
-function nachtEntwurf(n40: number, n25: number, paid: number): { start: number; span: number; breakAt: number | null } | null {
+function nachtEntwurf(n40: number, n25: number, paid: number): { start: number; span: number; breakAt: number | null; pause: number | null } | null {
   if (paid < 60) return null
   if (n40 > 30 && n25 >= 210) {
     const voll = n40 >= 240 && n25 >= 240 && paid >= 510
     let span = voll ? 510 : 240 + Math.min(240, n40)
     span = Math.min(span, paid)
-    if (span > 240 && span >= 300) return { start: 20 * 60, span, breakAt: 210 }
+    if (span > 240 && span >= 300) return { start: 20 * 60, span, breakAt: 210, pause: null }
   }
   if (n40 > 30) {
-    if (n40 >= 240 && paid >= 270) return { start: 23 * 60 + 30, span: 270, breakAt: 0 }
+    if (n40 >= 240 && paid >= 270) return { start: 23 * 60 + 30, span: 270, breakAt: 0, pause: 30 }
     const span = Math.min(240, n40, paid)
-    if (span >= 60) return { start: 4 * 60 - span, span, breakAt: null }
+    if (span >= 60) {
+      const start = 4 * 60 - span
+      if (start >= 15) return { start, span, breakAt: null, pause: null }
+      // Volle 4 Std würden um 00:00 beginnen. Die Zeit davor wird Pause, die Arbeit bleibt nach Mitternacht.
+      const pauseLen = Math.max(15, span - 225)
+      if (pauseLen <= 120 && span - pauseLen >= 60 && 1440 - pauseLen >= 22 * 60) {
+        return { start: 1440 - pauseLen, span, breakAt: 0, pause: pauseLen }
+      }
+    }
   }
   if (n25 > 30) {
     const span = Math.min(240, n25, paid)
-    if (span >= 60) return { start: 20 * 60, span, breakAt: null }
+    if (span >= 60) return { start: 20 * 60, span, breakAt: null, pause: null }
   }
   return null
 }
 
 type Fenster = { date: string; startMin: number; maxSpan: number }
+type Rng = () => number
+type Uhren = { starts: number[]; ends: number[]; dauern: number[] }
+type Shape = { start: number; span: number; breakAt: number | null; pause: number }
+type Biss = { n40: number; n25: number }
 
-/** Verteilt Minuten auf Fenster mit jeweils eigener Obergrenze. Summe bleibt exakt, solange die Fenster reichen. */
-function verteilInFenster(caps: number[], total: number): number[] {
-  const spans = caps.map(() => 0)
-  let left = Math.max(0, Math.round(total))
-  const give = (step: number) => {
-    let guard = 0
-    while (left >= step && guard++ < Math.max(1, caps.length) * 120) {
-      let placed = false
-      for (let i = 0; i < caps.length && left >= step; i++) {
-        if (spans[i] + step <= caps[i]) {
-          spans[i] += step
-          left -= step
-          placed = true
-        }
-      }
-      if (!placed) break
+function mischkern(n: number): number {
+  let x = n | 0
+  x = Math.imul(x ^ (x >>> 16), 0x7feb352d)
+  x = Math.imul(x ^ (x >>> 15), 0x846ca68b)
+  return (x ^ (x >>> 16)) >>> 0
+}
+
+/** Gleicher Monat und gleiche Vorgaben → gleicher Plan. Anderer Monat → andere Uhrzeiten. */
+function rngAusZiel(year: number, month1: number, ziel: VorschlagZiel): Rng {
+  let h = mischkern(year * 100 + month1)
+  h = mischkern(h ^ mischkern(Math.round(ziel.bezahlt * 60)))
+  h = mischkern(h ^ mischkern(Math.round((ziel.sunday || 0) * 60) + 17))
+  h = mischkern(h ^ mischkern(Math.round((ziel.n25 || 0) * 60) + 29))
+  h = mischkern(h ^ mischkern(Math.round((ziel.n40 || 0) * 60) + 47))
+  let a = h || 1
+  return () => {
+    a |= 0
+    a = (a + 0x6d2b79f5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function uhr(min: number): number {
+  return ((Math.round(min) % 1440) + 1440) % 1440
+}
+
+function abstandZu(wert: number, liste: number[], kreis: boolean): number {
+  if (liste.length === 0) return 240
+  let best = 99999
+  for (const v of liste) {
+    let d = Math.abs(wert - v)
+    if (kreis) d = Math.min(d, 1440 - d)
+    if (d < best) best = d
+  }
+  return best
+}
+
+function mische<T>(liste: T[], rng: Rng): T[] {
+  const arr = [...liste]
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    const tmp = arr[i]
+    arr[i] = arr[j]
+    arr[j] = tmp
+  }
+  return arr
+}
+
+function clampN(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n))
+}
+
+/** Minuten auf Fenster verteilen: Summe exakt, Längen möglichst verschieden. */
+function verteilUngleich(caps: number[], total: number, rng: Rng): number[] {
+  const n = caps.length
+  const deckel = caps.map((c) => Math.max(0, Math.round(c)))
+  const spans = new Array<number>(n).fill(0)
+  if (n === 0 || total <= 0) return spans
+  let left = Math.min(Math.round(total), deckel.reduce((a, b) => a + b, 0))
+  const mindest = left >= n * MIN_PAID_MIN ? MIN_PAID_MIN : 60
+
+  if (mindest >= 60 && left >= n * Math.min(mindest, 60)) {
+    const reihe = mische(deckel.map((_, i) => i), rng)
+    for (const i of reihe) {
+      const geb = Math.min(deckel[i], mindest)
+      if (geb < 60 || left < geb) continue
+      const restTage = reihe.filter((j) => spans[j] === 0 && j !== i && deckel[j] >= 60).length
+      if (left - geb < restTage * 60 && restTage > 0) continue
+      spans[i] = geb
+      left -= geb
     }
   }
-  give(15)
-  give(6)
-  give(1)
+
+  const aktiv: number[] = []
+  for (let i = 0; i < n; i++) if (deckel[i] > spans[i]) aktiv.push(i)
+  if (aktiv.length > 0 && left > 0) {
+    const perm = mische(aktiv, rng)
+    const gewicht = new Map<number, number>()
+    perm.forEach((idx, k) => gewicht.set(idx, 0.35 + (k / Math.max(1, perm.length - 1)) * 1.3))
+    const sumW = aktiv.reduce((s, i) => s + (gewicht.get(i) ?? 1), 0)
+    let used = 0
+    for (let k = 0; k < aktiv.length; k++) {
+      const i = aktiv[k]
+      const room = deckel[i] - spans[i]
+      const roh = k === aktiv.length - 1 ? left - used : Math.round(((left * (gewicht.get(i) ?? 1)) / sumW) / 5) * 5
+      const add = Math.max(0, Math.min(room, left - used, roh))
+      spans[i] += add
+      used += add
+    }
+    left -= used
+  }
+  let rest = left
+  let guard = 0
+  while (rest > 0 && guard++ < rest + 2) {
+    const step = rest >= 5 ? 5 : 1
+    let pick = -1
+    let best = -1e9
+    for (let i = 0; i < n; i++) {
+      if (deckel[i] - spans[i] < step) continue
+      const next = spans[i] + step
+      let near = 9999
+      for (let j = 0; j < n; j++) {
+        if (j === i || spans[j] <= 0) continue
+        near = Math.min(near, Math.abs(spans[j] - next))
+      }
+      const fuell = next / Math.max(1, deckel[i])
+      let sc = Math.min(near, 120) - fuell * 25 + rng() * 3
+      if (near < 20) sc -= 70
+      if (sc > best) { best = sc; pick = i }
+    }
+    if (pick < 0) break
+    spans[pick] += step
+    rest -= step
+  }
+  for (let i = 0; i < n; i++) {
+    if (spans[i] <= 0 || spans[i] >= 60) continue
+    let scrap = spans[i]
+    spans[i] = 0
+    for (let j = 0; j < n && scrap > 0; j++) {
+      if (j === i || spans[j] < 60) continue
+      const room = deckel[j] - spans[j]
+      if (room <= 0) continue
+      const give = Math.min(room, scrap)
+      spans[j] += give
+      scrap -= give
+    }
+    if (scrap > 0) spans[i] = scrap
+  }
+  const belegt = spans.filter((s) => s > 0).length
+  const boden = belegt > 0 && spans.filter((s) => s >= MIN_PAID_MIN).length === belegt ? MIN_PAID_MIN : 60
+  for (let pass = 0; pass < n * 3; pass++) {
+    let moved = false
+    for (let i = 0; i < n && !moved; i++) {
+      if (spans[i] < boden) continue
+      for (let j = i + 1; j < n; j++) {
+        if (spans[j] < boden) continue
+        const diff = Math.abs(spans[i] - spans[j])
+        if (diff >= 25) continue
+        const step = diff === 0 ? 20 : 15
+        const geben = (from: number, to: number) => {
+          if (spans[from] - step < boden) return false
+          if (deckel[to] - spans[to] < step) return false
+          const nf = spans[from] - step
+          const nt = spans[to] + step
+          if (Math.abs(nf - nt) <= diff) return false
+          for (let k = 0; k < n; k++) {
+            if (k === from || k === to || spans[k] < boden) continue
+            if (Math.abs(spans[k] - nf) < 15 || Math.abs(spans[k] - nt) < 15) return false
+          }
+          spans[from] = nf
+          spans[to] = nt
+          return true
+        }
+        if (geben(i, j) || geben(j, i)) { moved = true; break }
+      }
+    }
+    if (!moved) break
+  }
   return spans
+}
+
+const MESS_TAG = '2026-10-06' // Dienstag, damit die Probe keine Sonntagsstunden zählt
+
+function mess(shape: Shape): { n40: number; n25: number; paid: number; net: number } {
+  const s = baueSchicht(MESS_TAG, shape.start, shape.span, shape.breakAt, shape.pause)
+  const h = stundenVon(s)
+  return {
+    n40: Math.round(h.night40 * 60),
+    n25: Math.round(h.night25 * 60),
+    paid: s.endMin - s.startMin,
+    net: Math.round(h.workedHours * 60),
+  }
+}
+
+function shapePasst(shape: Shape, n40: number, n25: number, paidCap: number): boolean {
+  if (shape.span <= 0 || shape.span > paidCap || shape.start < 0) return false
+  if (uhr(shape.start) === 0) return false
+  if (shape.pause < 0 || shape.pause > 120 || (shape.pause > 0 && shape.pause >= shape.span)) return false
+  const m = mess(shape)
+  if (Math.abs(m.n40 - n40) > 1 || Math.abs(m.n25 - n25) > 1) return false
+  if (n25 === 0 && m.n25 > 1) return false
+  if (n40 === 0 && m.n40 > 1) return false
+  if (m.net > n40 + n25 + 1) return false
+  if (m.net > MAX_NET_MIN + 1) return false
+  if (m.paid > paidCap) return false
+  return true
+}
+
+function merkeSchicht(uhren: Uhren, s: RohSchicht) {
+  uhren.starts.push(uhr(s.startMin))
+  uhren.ends.push(uhr(s.endMin))
+  uhren.dauern.push(s.endMin - s.startMin)
+}
+
+function scoreForm(shape: Shape, uhren: Uhren): number {
+  const start = uhr(shape.start)
+  const end = uhr(shape.start + shape.span)
+  const ds = abstandZu(start, uhren.starts, true)
+  const de = abstandZu(end, uhren.ends, true)
+  const dd = abstandZu(shape.span, uhren.dauern, false)
+  const legal = pauseUndNetto(shape.span).pause
+  const extra = Math.max(0, shape.pause - legal)
+  let sc = Math.min(ds, 180) * 4 + Math.min(de, 180) * 4 + Math.min(dd, 150) * 3
+  sc -= extra / 5
+  if (ds < 20) sc -= 2000
+  if (de < 20) sc -= 2000
+  if (uhren.dauern.length > 0 && dd < 25) sc -= 800
+  return sc
+}
+
+/** Alle Uhrzeiten, die genau diese Nacht-40- und Nacht-25-Minuten liefern. */
+function formenFuer(n40: number, n25: number, paidCap: number): Shape[] {
+  const out: Shape[] = []
+  const gesehen = new Set<string>()
+  const push = (shape: Shape) => {
+    const key = `${shape.start}|${shape.span}|${shape.breakAt ?? '-'}|${shape.pause}`
+    if (gesehen.has(key)) return
+    gesehen.add(key)
+    if (shapePasst(shape, n40, n25, paidCap)) out.push(shape)
+  }
+
+  if (n40 <= 0 && n25 <= 0) return out
+
+  if (n25 <= 0 && n40 >= 15) {
+    if (n40 <= 240 - 15) {
+      for (let start = 15; start <= 240 - n40; start += 10) push({ start, span: n40, breakAt: null, pause: 0 })
+    }
+    for (let pause = 30; pause <= 120; pause += 10) {
+      const start = 1440 - pause
+      const span = pause + n40
+      if (start < 22 * 60 || span > paidCap) continue
+      if (1440 + n40 > 1680) continue
+      push({ start, span, breakAt: 0, pause })
+    }
+    for (let workStart = 10; workStart <= 240 - n40; workStart += 10) {
+      const earliest = Math.max(22 * 60, 1440 + workStart - 120)
+      const latest = 1440 + workStart - 30
+      for (let start = earliest; start <= latest; start += 10) {
+        if (start >= 1440) continue
+        const pause = 1440 + workStart - start
+        const span = 1440 + workStart + n40 - start
+        if (pause < 30 || pause > 120 || span > paidCap) continue
+        push({ start, span, breakAt: 0, pause })
+      }
+    }
+  }
+
+  if (n40 <= 0 && n25 >= 15 && n25 <= 240) {
+    for (let start = 20 * 60; start <= 1440 - n25; start += 10) {
+      push({ start, span: n25, breakAt: null, pause: 0 })
+    }
+    if (n25 <= 120) {
+      for (let start = 4 * 60; start <= 6 * 60 - n25; start += 10) {
+        push({ start, span: n25, breakAt: null, pause: 0 })
+      }
+    }
+  }
+
+  if (n40 >= 15 && n25 >= 15 && n40 < 240 && n25 <= 210 && n40 + n25 <= 480) {
+    if (n40 + n25 <= 240) {
+      const start = 1440 - n25
+      if (start >= 20 * 60) push({ start, span: n40 + n25, breakAt: null, pause: 0 })
+    }
+    const start = 23 * 60 + 30 - n25
+    const end = 1440 + n40
+    const span = end - start
+    if (start >= 20 * 60 && span > 240 && span <= MAX_PAID_MIN && span <= paidCap) {
+      push({ start, span, breakAt: n25, pause: 30 })
+    }
+  }
+
+  if (n40 >= 240 && n25 >= 30 && n25 <= 240 && n40 + n25 <= 480) {
+    const sum = n25 + 30
+    for (let post = 0; post <= 120; post += 10) {
+      const pre = sum - post
+      if (pre < 30 || pre > 240) continue
+      const start = 1440 - pre
+      const end = 1680 + post
+      const span = end - start
+      if (start < 20 * 60 || span > MAX_PAID_MIN || span > paidCap || end > 1800) continue
+      const latest = pre - 30
+      for (let b = 0; b <= latest; b += 20) push({ start, span, breakAt: b, pause: 30 })
+      if (post >= 30) {
+        const breakAt = pre + 240
+        if (breakAt + 30 <= span) push({ start, span, breakAt, pause: 30 })
+      }
+    }
+  }
+
+  return out
+}
+
+/**
+ * Netto-Minuten je Sonntag. Volle 8 Std bleiben gleich lang (Gesetz),
+ * kleinere Ziele werden auf unterschiedlich lange Sonntage verteilt.
+ */
+function sonntagNetto(total: number, anzahl: number, paidBudget: number, rng: Rng): number[] {
+  const max = MAX_NET_MIN
+  if (total < 60 || anzahl <= 0 || paidBudget < 60) return []
+  const ziel = Math.min(total, anzahl * max)
+  const minK = Math.ceil(ziel / max)
+  if (minK > anzahl) return new Array(anzahl).fill(max)
+  const maxK = Math.min(anzahl, Math.max(minK, Math.floor(ziel / Math.min(3 * 60, ziel))))
+  let beste: number[] | null = null
+  let besteNote = -1
+  for (let k = minK; k <= maxK; k++) {
+    const minTeil = Math.min(3 * 60, Math.floor(ziel / k))
+    const teile = teileMinuten(ziel, k, max, minTeil, rng)
+    if (!teile) continue
+    const paid = teile.reduce((s, n) => s + spanFuerNetto(n), 0)
+    if (paid > paidBudget) continue
+    const verschieden = new Set(teile.map((n) => Math.round(n / 15))).size
+    const erzwungenGleich = teile.every((n) => n === teile[0])
+    const note = (erzwungenGleich ? 0 : 40) + verschieden * 10 + (k > minK && !erzwungenGleich ? 8 : 0) - paid / 60
+    if (note > besteNote) { beste = teile; besteNote = note }
+  }
+  if (beste) return beste
+  const not: number[] = []
+  let rest = ziel
+  for (let i = 0; i < anzahl && rest >= 60; i++) {
+    const netto = Math.min(max, rest)
+    const span = spanFuerNetto(netto)
+    if (span > paidBudget) break
+    not.push(netto)
+    rest -= netto
+  }
+  return not
+}
+
+function teileMinuten(total: number, k: number, maxTeil: number, minTeil: number, rng: Rng): number[] | null {
+  if (k <= 0 || total <= 0) return null
+  if (k === 1) return total <= maxTeil ? [total] : null
+  if (total < k * minTeil || total > k * maxTeil) return null
+  const parts = new Array<number>(k).fill(minTeil)
+  let left = total - k * minTeil
+  let guard = 0
+  while (left > 0 && guard++ < 20000) {
+    let placed = false
+    for (const step of [30, 15, 5, 1]) {
+      if (left < step) continue
+      let pick = -1
+      let best = 1e9
+      for (let i = 0; i < k; i++) {
+        if (parts[i] + step > maxTeil) continue
+        const next = parts[i] + step
+        let same = 0
+        for (let j = 0; j < k; j++) if (j !== i && Math.abs(parts[j] - next) < 25) same++
+        const sc = same * 10 + rng()
+        if (sc < best) { best = sc; pick = i }
+      }
+      if (pick < 0) continue
+      parts[pick] += step
+      left -= step
+      placed = true
+      break
+    }
+    if (!placed) return null
+  }
+  return parts
+}
+
+function sonntagStart(span: number, uhren: Uhren, rng: Rng): number {
+  const earliest = 6 * 60
+  const latest = Math.max(earliest, FILL_ENDE - span)
+  let best = earliest
+  let bestSc = -1e9
+  for (let start = earliest; start <= latest; start += 5) {
+    const end = start + span
+    const ds = abstandZu(uhr(start), uhren.starts, true)
+    const de = abstandZu(uhr(end), uhren.ends, true)
+    let sc = Math.min(ds, 180) * 2 + Math.min(de, 180) * 2 + rng() * 6
+    if (ds < 20) sc -= 2000
+    if (de < 20) sc -= 2000
+    if (sc > bestSc) { bestSc = sc; best = start }
+  }
+  return best
+}
+
+function pausenLage(span: number, index: number): number | null {
+  const pause = pauseUndNetto(span).pause
+  if (pause <= 0) return null
+  const fracs = [0.22, 0.35, 0.48, 0.61, 0.74, 0.3, 0.55]
+  const latest = span - pause
+  const off = Math.round((latest * fracs[index % fracs.length]) / 5) * 5
+  return Math.max(0, Math.min(off, latest))
+}
+
+function startImFenster(earliest: number, span: number, maxSpan: number, uhren: Uhren, rng: Rng): number {
+  const latest = earliest + Math.max(0, maxSpan - span)
+  let best = earliest
+  let bestSc = -1e9
+  const von = Math.ceil(earliest / 5) * 5
+  if (von > latest) return earliest
+  for (let start = von; start <= latest; start += 5) {
+    const end = start + span
+    if (end > earliest + maxSpan) continue
+    const ds = abstandZu(uhr(start), uhren.starts, true)
+    const de = abstandZu(uhr(end), uhren.ends, true)
+    let sc = Math.min(ds, 180) * 2 + Math.min(de, 180) * 2 + rng() * 5
+    if (ds < 20) sc -= 2000
+    if (de < 20) sc -= 2000
+    if (sc > bestSc) { bestSc = sc; best = start }
+  }
+  return best
+}
+
+function waehleFenster(pool: Fenster[], count: number, rng: Rng): Fenster[] {
+  if (count <= 0) return []
+  if (count >= pool.length) return [...pool]
+  const scored = pool.map((f) => ({ f, sc: f.maxSpan + rng() * 150 }))
+  scored.sort((a, b) => b.sc - a.sc)
+  return scored.slice(0, count).map((s) => s.f)
+}
+
+function waehleDaten(dates: string[], count: number, rng: Rng): string[] {
+  if (count <= 0) return []
+  if (count >= dates.length) return [...dates].sort()
+  const keys = dates.map(() => rng())
+  return dates
+    .map((d, i) => ({ d, k: keys[i] }))
+    .sort((a, b) => a.k - b.k)
+    .slice(0, count)
+    .map((x) => x.d)
+    .sort()
+}
+
+/**
+ * Nächster Nachtbrocken. Jeder Brocken passt in eine Schicht, und der Rest
+ * passt in die übrigen Schichten (höchstens 4 Std Nacht 40 % und 8 Std Netto).
+ */
+function waehleBiss(n40: number, n25: number, slots: number, rng: Rng): Biss | null {
+  if (slots <= 0) return null
+  if (n40 <= 1 && n25 <= 1) return null
+  const min40 = n40 > 1 ? Math.max(0, n40 - (slots - 1) * 240) : 0
+  const max40 = Math.min(240, Math.max(0, n40))
+  if (min40 > max40) return null
+  const versuche: number[] = []
+  if (slots === 1 || (n40 <= 240 && n40 - min40 < 60)) versuche.push(max40)
+  const span = Math.max(0, max40 - Math.max(min40, n40 > 0 ? Math.min(60, max40) : 0))
+  const basis = Math.max(min40, Math.min(max40, n40 > 0 ? Math.max(min40, Math.min(60, max40)) : 0))
+  for (let i = 0; i < 6; i++) {
+    let x = slots === 1 ? max40 : Math.round(basis + rng() * Math.max(1, max40 - basis))
+    if (n40 - x > 0 && n40 - x < 60 && n40 <= 240) x = n40
+    x = clampN(x, min40, max40)
+    versuche.push(x)
+  }
+  if (span === 0) versuche.push(max40)
+
+  for (const x0 of versuche) {
+    const x = clampN(Math.round(x0), min40, max40)
+    const maxYCap = x <= 0 ? 240 : x >= 240 ? Math.min(240, 480 - x) : Math.min(210, 480 - x)
+    const min25 = n25 > 1 ? Math.max(0, n25 - (slots - 1) * 240) : 0
+    const max25 = Math.min(maxYCap, Math.max(0, n25))
+    if (min25 > max25) continue
+    let y = slots === 1 ? max25 : Math.round(min25 + rng() * Math.max(1, max25 - min25))
+    if (n25 - y > 0 && n25 - y < 60 && n25 <= maxYCap) y = n25
+    y = clampN(Math.round(y), min25, max25)
+    if (x + y > 480) continue
+    if (x < 15 && y < 15) continue
+    if (x > 0 && x < 45 && x !== n40) continue
+    if (y > 0 && y < 30 && y !== n25 && n25 >= 60) continue
+    return { n40: x, n25: y }
+  }
+  const min25Pflicht = n25 > 1 ? Math.max(0, n25 - (slots - 1) * 240) : 0
+  if (min25Pflicht > 0) return null
+  return { n40: clampN(min40, 0, max40), n25: 0 }
 }
 
 /**
  * Plan nur aus den Monatsstunden. Der Nutzer gibt keine Uhrzeiten ein.
  * Reihenfolge: Sonntage, dann Nacht 40 % und Nacht 25 % (ohne die Quote zu überziehen),
  * dann der Rest auf Tage, an denen die 11-Std-Ruhe noch ein Fenster lässt.
- * Der Morgen nach einer Nachtschicht bleibt für eine Spätschicht ab 15 Uhr frei.
+ * Uhrzeiten und Tageslängen streuen. Dieselben Vorgaben bleiben stabil.
  * Höchstens 2 freie Tage je Woche, wenn dabei mindestens 3 Std/Tag möglich sind.
  */
 export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel): ManualResult {
@@ -597,51 +1075,350 @@ export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel):
   let n40Left = Math.round(Math.max(0, ziel.n40) * 60)
   if (paidLeft <= 0) return berechneManuell([])
 
+  const rng = rngAusZiel(year, month1, ziel)
+  const uhren: Uhren = { starts: [], ends: [], dauern: [] }
   const schichten: RohSchicht[] = []
   const verwendet = new Set<string>()
 
-  for (const date of sonntage) {
+  const sonntagTeile = sonntagNetto(sundayLeft, sonntage.length, paidLeft, rng)
+  const sonntagTage = waehleDaten(sonntage, sonntagTeile.length, rng)
+  for (let i = 0; i < sonntagTage.length; i++) {
+    const date = sonntagTage[i]
     if (sundayLeft < 60 || paidLeft < 60) break
-    let netto = Math.min(MAX_NET_MIN, sundayLeft)
+    let netto = Math.min(sonntagTeile[i] ?? 0, sundayLeft, MAX_NET_MIN)
     let span = spanFuerNetto(netto)
     if (span > paidLeft) {
       span = paidLeft
       netto = pauseUndNetto(span).nettoMin
     }
     if (netto < 60) break
-    const s = baueSchicht(date, 6 * 60, span, null)
+    const s = baueSchicht(date, sonntagStart(span, uhren, rng), span, pausenLage(span, i))
     const h = stundenVon(s)
-    schichten.push(s)
-    verwendet.add(date)
-    paidLeft -= Math.round((s.endMin - s.startMin))
-    sundayLeft -= Math.round(h.sunday50 * 60)
-  }
-
-  const nachtPrio = [5, 1, 3, 4, 2]
-  const naechsteNacht = (entwurf: { start: number; span: number }) => kalender
-    .map((t) => t.iso)
-    .filter((iso) => {
-      const dow = dowOf(iso)
-      return dow >= 1 && dow <= 5 && !verwendet.has(iso) && ruheOk(schichten, iso, entwurf.start, entwurf.start + entwurf.span)
-    })
-    .sort((a, b) => nachtPrio.indexOf(dowOf(a)) - nachtPrio.indexOf(dowOf(b)) || a.localeCompare(b))[0]
-
-  let guard = 0
-  while ((n40Left > 30 || n25Left > 30) && paidLeft >= 60 && guard++ < 40) {
-    const entwurf = nachtEntwurf(n40Left, n25Left, paidLeft)
-    if (!entwurf) break
-    const date = naechsteNacht(entwurf)
-    if (!date) break
-    const s = baueSchicht(date, entwurf.start, entwurf.span, entwurf.breakAt)
-    const h = stundenVon(s)
-    const got40 = Math.round(h.night40 * 60)
-    const got25 = Math.round(h.night25 * 60)
-    if (got40 < 15 && got25 < 15) break
     schichten.push(s)
     verwendet.add(date)
     paidLeft -= s.endMin - s.startMin
-    n40Left -= got40
-    n25Left -= got25
+    sundayLeft -= Math.round(h.sunday50 * 60)
+    merkeSchicht(uhren, s)
+  }
+
+  const lege = (shape: Shape, date: string) => {
+    const s = baueSchicht(date, shape.start, shape.span, shape.breakAt, shape.pause)
+    const h = stundenVon(s)
+    schichten.push(s)
+    verwendet.add(date)
+    paidLeft -= s.endMin - s.startMin
+    n40Left -= Math.round(h.night40 * 60)
+    n25Left -= Math.round(h.night25 * 60)
+    merkeSchicht(uhren, s)
+  }
+
+  const findeDatum = (shape: Shape): string | null => {
+    const dowZahl = new Map<number, number>()
+    const wochenZahl = new Map<string, number>()
+    for (const s of schichten) {
+      const dow = dowOf(s.date)
+      if (dow >= 1 && dow <= 5) dowZahl.set(dow, (dowZahl.get(dow) ?? 0) + 1)
+      const key = mondayKey(s.date)
+      wochenZahl.set(key, (wochenZahl.get(key) ?? 0) + 1)
+    }
+    let best: { date: string; sc: number } | null = null
+    for (const t of kalender) {
+      const iso = t.iso
+      const dow = t.dow
+      if (dow < 1 || dow > 5 || verwendet.has(iso)) continue
+      if (!ruheOk(schichten, iso, shape.start, shape.start + shape.span)) continue
+      let sc = -(dowZahl.get(dow) ?? 0) * 25 - (wochenZahl.get(mondayKey(iso)) ?? 0) * 12 + rng() * 18
+      if (!best || sc > best.sc) best = { date: iso, sc }
+    }
+    return best ? best.date : null
+  }
+
+  const syncUhren = () => {
+    uhren.starts.length = 0
+    uhren.ends.length = 0
+    uhren.dauern.length = 0
+    for (const s of schichten) merkeSchicht(uhren, s)
+  }
+
+  const gleicheStunden = (a: number, b: number) => Math.abs(Math.round(a * 60) - Math.round(b * 60)) <= 1
+
+  /** Restliche Zuschlagsminuten an eine bestehende Schicht hängen, statt einen kurzen Resttag zu erfinden. */
+  const dehneArbeit = (add40: number, add25: number): boolean => {
+    const need = add40 + add25
+    if (need <= 0 || need > paidLeft || add40 > n40Left + 1 || add25 > n25Left + 1) return false
+    for (const i of mische(schichten.map((_, k) => k), rng)) {
+      const s = schichten[i]
+      if (dowOf(s.date) === 0) continue
+      const span0 = s.endMin - s.startMin
+      const span = span0 + need
+      if (span > MAX_PAID_MIN) continue
+      const neu = baueSchicht(s.date, s.startMin, span, s.breaks[0]?.start ?? null, s.pause > 0 ? s.pause : null)
+      if (!ruheOk(schichten.filter((_, k) => k !== i), neu.date, neu.startMin, neu.endMin)) continue
+      const a = stundenVon(s)
+      const b = stundenVon(neu)
+      const d40 = Math.round(b.night40 * 60) - Math.round(a.night40 * 60)
+      const d25 = Math.round(b.night25 * 60) - Math.round(a.night25 * 60)
+      const dSo = Math.round(b.sunday50 * 60) - Math.round(a.sunday50 * 60)
+      if (Math.abs(d40 - add40) > 1 || Math.abs(d25 - add25) > 1 || Math.abs(dSo) > 1) continue
+      const delta = neu.endMin - neu.startMin - span0
+      if (delta <= 0 || delta > paidLeft) continue
+      const fremd = schichten.filter((_, k) => k !== i).map((x) => uhr(x.endMin))
+      if (fremd.length > 0 && abstandZu(uhr(neu.endMin), fremd, true) < 12) continue
+      schichten[i] = neu
+      paidLeft -= delta
+      n40Left -= d40
+      n25Left -= d25
+      syncUhren()
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Bezahlte Restminuten, ohne Arbeitszeit oder Zuschlag zu ändern.
+   * Zuerst echter Tag, danach eine Pause vor der bestehenden Arbeit.
+   */
+  const dehneTag = (T: number): boolean => {
+    if (T <= 0 || T > paidLeft) return false
+    let bestI = -1
+    let bestNeu: RohSchicht | null = null
+    let bestSc = -1e9
+    for (let i = 0; i < schichten.length; i++) {
+      const s = schichten[i]
+      const a = stundenVon(s)
+      if (a.night40 > 0.02 || a.night25 > 0.02 || s.startMin < 6 * 60) continue
+      const span = s.endMin - s.startMin + T
+      if (span > MAX_PAID_MIN || s.endMin + T > FILL_ENDE) continue
+      const neu = baueSchicht(s.date, s.startMin, span, s.breaks[0]?.start ?? pausenLage(span, i))
+      if (neu.endMin > FILL_ENDE) continue
+      if (!ruheOk(schichten.filter((_, k) => k !== i), neu.date, neu.startMin, neu.endMin)) continue
+      const b = stundenVon(neu)
+      if (b.night40 > 0.02 || b.night25 > 0.02 || !gleicheStunden(a.sunday50, b.sunday50)) continue
+      if (neu.endMin - neu.startMin - (s.endMin - s.startMin) !== T) continue
+      let near = 9999
+      for (let k = 0; k < schichten.length; k++) {
+        if (k === i) continue
+        near = Math.min(near, Math.abs((neu.endMin - neu.startMin) - (schichten[k].endMin - schichten[k].startMin)))
+      }
+      let sc = Math.min(near, 120) + rng()
+      if (near < 20) sc -= 80
+      if (sc > bestSc) { bestSc = sc; bestI = i; bestNeu = neu }
+    }
+    if (bestI < 0 || !bestNeu) return false
+    schichten[bestI] = bestNeu
+    paidLeft -= T
+    return true
+  }
+
+  const dehnePausenfront = (T: number): boolean => {
+    if (T <= 0 || T > paidLeft) return false
+    let bestI = -1
+    let bestNeu: RohSchicht | null = null
+    let bestSc = -1e9
+    for (let i = 0; i < schichten.length; i++) {
+      const s = schichten[i]
+      const altBreak = s.breaks[0]?.start ?? null
+      if (s.pause > 0 && altBreak !== 0) continue
+      const neuePause = s.pause + T
+      if (neuePause > 120) continue
+      const neuStart = s.startMin - T
+      if (neuStart < 0) continue
+      if (s.startMin >= 20 * 60) {
+        if (neuStart < 20 * 60) continue
+      } else if (s.startMin >= 6 * 60) {
+        if (neuStart < 6 * 60) continue
+      } else continue
+      const span = s.endMin - s.startMin + T
+      if (span > MAX_PAID_MIN || span <= neuePause) continue
+      const neu = baueSchicht(s.date, neuStart, span, 0, neuePause)
+      if (neu.pause !== neuePause) continue
+      if (!ruheOk(schichten.filter((_, k) => k !== i), neu.date, neu.startMin, neu.endMin)) continue
+      const a = stundenVon(s)
+      const b = stundenVon(neu)
+      if (!gleicheStunden(a.night40, b.night40) || !gleicheStunden(a.night25, b.night25) || !gleicheStunden(a.sunday50, b.sunday50)) continue
+      if (neu.endMin - neu.startMin - (s.endMin - s.startMin) !== T) continue
+      let nearD = 9999
+      let nearS = 9999
+      for (let k = 0; k < schichten.length; k++) {
+        if (k === i) continue
+        nearD = Math.min(nearD, Math.abs((neu.endMin - neu.startMin) - (schichten[k].endMin - schichten[k].startMin)))
+        nearS = Math.min(nearS, abstandZu(uhr(neu.startMin), [uhr(schichten[k].startMin)], true))
+      }
+      let sc = Math.min(nearD, 90) + Math.min(nearS, 90) + rng()
+      if (nearD < 15 || nearS < 10) sc -= 60
+      if (sc > bestSc) { bestSc = sc; bestI = i; bestNeu = neu }
+    }
+    if (bestI < 0 || !bestNeu) return false
+    schichten[bestI] = bestNeu
+    paidLeft -= T
+    return true
+  }
+
+  const schliessePaid = () => {
+    let guard = 0
+    while (paidLeft > 0 && guard++ < 80) {
+      const ganz = paidLeft
+      const grob = paidLeft > 90 ? 45 : paidLeft
+      if (dehneTag(grob) || dehnePausenfront(grob)) continue
+      if (grob !== ganz && (dehneTag(ganz) || dehnePausenfront(Math.min(ganz, 30)))) continue
+      if (paidLeft >= 15 && (dehneTag(15) || dehnePausenfront(15))) continue
+      if (paidLeft >= 5 && (dehneTag(5) || dehnePausenfront(5))) continue
+      if (dehneTag(paidLeft) || dehnePausenfront(paidLeft)) continue
+      break
+    }
+  }
+
+  const fuelleBunt = (zielN: number): boolean => {
+    let gelegt = 0
+    let guard = 0
+    while ((n40Left > 1 || n25Left > 1) && paidLeft >= 45 && gelegt < zielN && guard++ < 48) {
+      if (gelegt > 0 && n40Left + n25Left < 90 && n40Left + n25Left <= paidLeft) {
+        if (dehneArbeit(Math.max(0, n40Left), Math.max(0, n25Left))) continue
+      }
+      const slots = Math.max(1, zielN - gelegt)
+      let placed = false
+      for (let versuch = 0; versuch < 8 && !placed; versuch++) {
+        const bite = waehleBiss(n40Left, n25Left, slots, rng)
+        if (!bite || (bite.n40 < 15 && bite.n25 < 15)) continue
+        const slack = paidLeft - n40Left - n25Left
+        const eng = slack < 60 * slots
+        const bewertet = formenFuer(bite.n40, bite.n25, paidLeft)
+          .map((v) => ({ v, m: mess(v), sc: scoreForm(v, uhren) + rng() * 8 }))
+          .filter(({ v, m }) => {
+            if (m.paid > paidLeft || m.n40 > n40Left + 1 || m.n25 > n25Left + 1) return false
+            if (n25Left <= 1 && m.n25 > 1) return false
+            if (n40Left <= 1 && m.n40 > 1) return false
+            if (paidLeft - m.paid < Math.max(0, n40Left - m.n40) + Math.max(0, n25Left - m.n25) - 1) return false
+            if (eng && v.pause - pauseUndNetto(v.span).pause > 0) return false
+            return true
+          })
+          .sort((a, b) => b.sc - a.sc)
+        for (const { v } of bewertet) {
+          const date = findeDatum(v)
+          if (!date) continue
+          lege(v, date)
+          gelegt++
+          placed = true
+          break
+        }
+      }
+      if (!placed) return false
+    }
+    return n40Left <= 1 && n25Left <= 1
+  }
+
+  const fuelleSicher = () => {
+    const nachtPrio = [5, 1, 3, 4, 2]
+    const naechstes = (start: number, span: number) => kalender
+      .map((t) => t.iso)
+      .filter((iso) => {
+        const dow = dowOf(iso)
+        return dow >= 1 && dow <= 5 && !verwendet.has(iso) && ruheOk(schichten, iso, start, start + span)
+      })
+      .sort((a, b) => nachtPrio.indexOf(dowOf(a)) - nachtPrio.indexOf(dowOf(b)) || a.localeCompare(b))[0]
+    let guard = 0
+    while ((n40Left > 30 || n25Left > 30) && paidLeft >= 60 && guard++ < 40) {
+      const entwurf = nachtEntwurf(n40Left, n25Left, paidLeft)
+      if (!entwurf) break
+      const vorlage = baueSchicht(MESS_TAG, entwurf.start, entwurf.span, entwurf.breakAt, entwurf.pause)
+      const hv = stundenVon(vorlage)
+      const want40 = Math.round(hv.night40 * 60)
+      const want25 = Math.round(hv.night25 * 60)
+      const bewerte = (v: Shape) => {
+        const m = mess(v)
+        let sc = scoreForm(v, uhren) + rng()
+        if (n40Left > paidLeft + 30 && m.paid > 0) sc += (m.n40 / m.paid) * 600
+        return { v, m, sc }
+      }
+      const treffer = formenFuer(want40, want25, paidLeft)
+        .map((v) => bewerte(v))
+        .filter(({ m }) => Math.abs(m.n40 - want40) <= 1 && Math.abs(m.n25 - want25) <= 1 && m.paid <= paidLeft)
+      const minPaid = treffer.reduce((m, x) => Math.min(m, x.m.paid), 1e9)
+      let passend = treffer.filter((x) => x.m.paid <= minPaid + 1).sort((a, b) => b.sc - a.sc)
+      if (n40Left > paidLeft + 30 && passend.length > 0) {
+        const top = passend[0].v
+        const kollision = abstandZu(uhr(top.start), uhren.starts, true) < 20
+          || abstandZu(uhr(top.start + top.span), uhren.ends, true) < 20
+        if (kollision) {
+          for (const abzug of [30, 60, 90, 120]) {
+            const ziel40 = want40 - abzug
+            if (ziel40 < 60) continue
+            passend.push(...formenFuer(ziel40, want25, paidLeft)
+              .map((v) => bewerte(v))
+              .filter(({ m }) => Math.abs(m.n40 - ziel40) <= 1 && Math.abs(m.n25 - want25) <= 1 && m.paid <= paidLeft))
+          }
+          passend.sort((a, b) => b.sc - a.sc)
+        }
+      }
+      const frei = passend.filter(({ v }) => abstandZu(uhr(v.start), uhren.starts, true) >= 20 && abstandZu(uhr(v.start + v.span), uhren.ends, true) >= 20)
+      const reihe = frei.length > 0 ? frei : passend
+      let gesetzt = false
+      for (const { v } of reihe) {
+        const date = naechstes(v.start, v.span)
+        if (!date) continue
+        lege(v, date)
+        gesetzt = true
+        break
+      }
+      if (gesetzt) continue
+      const date = naechstes(entwurf.start, entwurf.span)
+      if (!date) break
+      const s = baueSchicht(date, entwurf.start, entwurf.span, entwurf.breakAt, entwurf.pause)
+      const h = stundenVon(s)
+      const got40 = Math.round(h.night40 * 60)
+      const got25 = Math.round(h.night25 * 60)
+      if (got40 < 15 && got25 < 15) break
+      schichten.push(s)
+      verwendet.add(date)
+      paidLeft -= s.endMin - s.startMin
+      n40Left -= got40
+      n25Left -= got25
+      merkeSchicht(uhren, s)
+    }
+  }
+
+  const schnapp = () => ({
+    schichten: schichten.map((s) => ({ ...s, breaks: s.breaks.map((b) => ({ ...b })) })),
+    verwendet: [...verwendet],
+    paidLeft,
+    n40Left,
+    n25Left,
+    starts: [...uhren.starts],
+    ends: [...uhren.ends],
+    dauern: [...uhren.dauern],
+  })
+  const zurueck = (st: ReturnType<typeof schnapp>) => {
+    schichten.splice(0, schichten.length, ...st.schichten.map((s) => ({ ...s, breaks: s.breaks.map((b) => ({ ...b })) })))
+    verwendet.clear()
+    for (const d of st.verwendet) verwendet.add(d)
+    paidLeft = st.paidLeft
+    n40Left = st.n40Left
+    n25Left = st.n25Left
+    uhren.starts.splice(0, uhren.starts.length, ...st.starts)
+    uhren.ends.splice(0, uhren.ends.length, ...st.ends)
+    uhren.dauern.splice(0, uhren.dauern.length, ...st.dauern)
+  }
+
+  const weekdays = kalender.filter((t) => t.dow >= 1 && t.dow <= 5 && !verwendet.has(t.iso)).length
+  const minN = Math.max(
+    n40Left > 1 ? Math.ceil(n40Left / 240) : 0,
+    n25Left > 1 ? Math.ceil(n25Left / 240) : 0,
+    n40Left + n25Left > 1 ? Math.ceil((n40Left + n25Left) / MAX_NET_MIN) : 0,
+  )
+  if (minN > 0 && weekdays > 0) {
+    const basis = schnapp()
+    const slack = paidLeft - n40Left - n25Left
+    const extraCap = slack >= 6 * 60 ? 4 : slack >= 2 * 60 ? 2 : 0
+    let fertig = false
+    for (const extra of [...new Set([extraCap, extraCap > 0 ? Math.ceil(extraCap / 2) : 0, 0])]) {
+      zurueck(basis)
+      const ziel = Math.min(weekdays, minN + extra)
+      if (ziel > 0 && fuelleBunt(ziel)) { fertig = true; break }
+    }
+    if (!fertig) {
+      zurueck(basis)
+      fuelleSicher()
+    }
   }
 
   const wochen = new Map<string, string[]>()
@@ -665,14 +1442,13 @@ export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel):
     }
     if (prevEnd != null) start = Math.max(start, prevEnd + REST_MIN - day)
     if (nextStart != null) end = Math.min(end, nextStart - REST_MIN - day)
-    if (end - start > MAX_PAID_MIN) end = start + MAX_PAID_MIN
     if (start >= 24 * 60 || end - start < 60) return null
     return { date, startMin: start, maxSpan: end - start }
   }
 
   const alleFenster = kalender.map((t) => fensterAm(t.iso)).filter((f): f is Fenster => f != null)
   const fensterNachDatum = new Map(alleFenster.map((f) => [f.date, f]))
-  const kapazitaet = (liste: Fenster[]) => liste.reduce((summe, f) => summe + f.maxSpan, 0)
+  const kapazitaet = (liste: Fenster[]) => liste.reduce((summe, f) => summe + Math.min(f.maxSpan, MAX_PAID_MIN), 0)
 
   let gewaehlt: Fenster[] = []
   let muss = 0
@@ -681,18 +1457,17 @@ export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel):
       const pool = dates.map((iso) => fensterNachDatum.get(iso)).filter((f): f is Fenster => f != null)
       const frei = dates.filter((iso) => !verwendet.has(iso)).length
       const noch = Math.max(0, frei - 2)
-      const genommen = pickEven(pool.map((f) => f.date), Math.min(noch, pool.length))
-      for (const date of genommen) {
-        const f = fensterNachDatum.get(date)
-        if (f) gewaehlt.push(f)
-      }
+      for (const f of waehleFenster(pool, Math.min(noch, pool.length), rng)) gewaehlt.push(f)
     }
     muss = gewaehlt.length
     if (muss > 0 && paidLeft < muss * MIN_PAID_MIN) {
-      const count = Math.max(1, Math.floor(paidLeft / MIN_PAID_MIN))
-      const daten = pickEven(gewaehlt.map((f) => f.date), Math.min(count, gewaehlt.length))
-      gewaehlt = daten.map((date) => fensterNachDatum.get(date)!).filter(Boolean)
-      warnings.push('Zu wenig Stunden für höchstens 2 freie Tage je Woche bei mind. 3 Std/Tag. Die übrigen Stunden liegen gleichmäßig auf weniger Tagen.')
+      const maxCount = Math.max(1, Math.min(gewaehlt.length, Math.floor(paidLeft / MIN_PAID_MIN)))
+      const minCount = Math.max(1, Math.ceil(paidLeft / MAX_PAID_MIN))
+      let count = maxCount
+      while (count > minCount && paidLeft - count * MIN_PAID_MIN < count * 45) count--
+      const daten = waehleDaten(gewaehlt.map((f) => f.date), Math.min(count, gewaehlt.length), rng)
+      gewaehlt = daten.map((date) => fensterNachDatum.get(date)).filter((f): f is Fenster => f != null)
+      warnings.push('Zu wenig Stunden für höchstens 2 freie Tage je Woche bei mind. 3 Std/Tag. Die übrigen Stunden liegen auf weniger Tagen, unterschiedlich lang.')
     } else {
       const rest = alleFenster.filter((f) => !gewaehlt.some((g) => g.date === f.date))
         .sort((a, b) => b.maxSpan - a.maxSpan || a.date.localeCompare(b.date))
@@ -706,15 +1481,71 @@ export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel):
 
   if (gewaehlt.length > 0 && paidLeft >= 60) {
     gewaehlt.sort((a, b) => a.date.localeCompare(b.date))
-    const spans = verteilInFenster(gewaehlt.map((f) => f.maxSpan), paidLeft)
+    const spans = verteilUngleich(gewaehlt.map((f) => Math.min(f.maxSpan, MAX_PAID_MIN)), paidLeft, rng)
     gewaehlt.forEach((f, i) => {
-      if (spans[i] < 60) return
-      const s = baueSchicht(f.date, f.startMin, spans[i], null)
+      const span = spans[i] ?? 0
+      if (span < 60) return
+      const lage = pausenLage(span, i)
+      let s = baueSchicht(f.date, startImFenster(f.startMin, span, f.maxSpan, uhren, rng), span, lage)
+      if (!ruheOk(schichten, f.date, s.startMin, s.endMin)) s = baueSchicht(f.date, f.startMin, span, lage)
       if (!ruheOk(schichten, f.date, s.startMin, s.endMin)) return
       schichten.push(s)
       verwendet.add(f.date)
       paidLeft -= s.endMin - s.startMin
+      merkeSchicht(uhren, s)
     })
+  }
+
+  schliessePaid()
+
+  for (let pass = 0; pass < 8; pass++) {
+    let moved = false
+    for (let i = 0; i < schichten.length; i++) {
+      const s = schichten[i]
+      const span = s.endMin - s.startMin
+      const fremdS = schichten.filter((_, k) => k !== i).map((x) => uhr(x.startMin))
+      const fremdE = schichten.filter((_, k) => k !== i).map((x) => uhr(x.endMin))
+      const ds0 = abstandZu(uhr(s.startMin), fremdS, true)
+      const de0 = abstandZu(uhr(s.endMin), fremdE, true)
+      if (ds0 >= 20 && de0 >= 20) continue
+      const h0 = stundenVon(s)
+      const sonntag = dowOf(s.date) === 0
+      const fenster = fensterNachDatum.get(s.date)
+      const tag = !sonntag && h0.night40 < 0.02 && h0.night25 < 0.02 && s.startMin >= 6 * 60
+      let lo = s.startMin - 90
+      let hi = s.startMin + 90
+      if (sonntag || tag) {
+        const earliest = fenster ? fenster.startMin : 6 * 60
+        const room = fenster ? fenster.maxSpan : FILL_ENDE - earliest
+        lo = Math.max(lo, earliest)
+        hi = Math.min(hi, earliest + Math.max(0, room - span))
+      } else if (s.startMin >= 20 * 60) {
+        lo = Math.max(lo, 20 * 60)
+      } else if (s.startMin < 6 * 60) {
+        lo = Math.max(lo, 15)
+        hi = Math.min(hi, Math.max(lo, 4 * 60 - span))
+      }
+      let best = s.startMin
+      let bestSc = -1
+      for (let start = Math.ceil(lo / 5) * 5; start <= hi; start += 5) {
+        if (start === s.startMin || uhr(start) === 0) continue
+        const end = start + span
+        if (!ruheOk(schichten.filter((_, k) => k !== i), s.date, start, end)) continue
+        const probe = baueSchicht(s.date, start, span, s.breaks[0]?.start ?? null, s.pause > 0 ? s.pause : null)
+        if (probe.endMin - probe.startMin !== span) continue
+        const h = stundenVon(probe)
+        if (!gleicheStunden(h.night40, h0.night40) || !gleicheStunden(h.night25, h0.night25) || !gleicheStunden(h.sunday50, h0.sunday50)) continue
+        const ds = abstandZu(uhr(start), fremdS, true)
+        const de = abstandZu(uhr(end), fremdE, true)
+        if (ds < 20 || de < 20) continue
+        const sc = Math.min(ds, 180) + Math.min(de, 180)
+        if (sc > bestSc) { bestSc = sc; best = start }
+      }
+      if (best === s.startMin) continue
+      schichten[i] = baueSchicht(s.date, best, span, s.breaks[0]?.start ?? null, s.pause > 0 ? s.pause : null)
+      moved = true
+    }
+    if (!moved) break
   }
 
   if (sundayLeft > 30) warnings.push(`Sonntag: ${round2(sundayLeft / 60)} Std passen nicht in den Monat oder ins Stundenbudget.`)
