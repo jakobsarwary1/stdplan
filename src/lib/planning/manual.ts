@@ -1,22 +1,21 @@
-// Manuelle Tageseingabe für den Stundenzettel.
+// Schichtplan aus den Monatsstunden.
 //
-// Der Nutzer gibt je Tag selbst vor:
-//   • ob der Tag gearbeitet wird
-//   • das erlaubte Fenster (Von–Bis)
-//   • die bezahlten Stunden dieses Tages (Beginn→Ende, Pause inklusive)
+// Der Nutzer gibt nur die Summen des Monats: Gesamt (bezahlt), Sonntag,
+// Nacht 40 % und Nacht 25 %. `erstellePlan` legt die Tage fest und setzt
+// Start, Pause und Ende. Keine Uhrzeit kommt vom Nutzer.
 //
-// Gerechnet werden nur: Start, Pause, Ende, Bezahlt, Netto, Nacht 25 %,
-// Nacht 40 %, Sonntag 50 % und die Ruhezeit zur vorherigen Schicht.
 // Dieselben Regeln wie in wage.ts / exact.ts:
 //   • Bezahlt = Spanne Beginn→Ende. Die Pause ist bezahlt und bleibt drin.
 //   • Netto = Spanne minus Pause. Zuschläge laufen nur auf diese Arbeitszeit.
 //   • Pause: bis 4 Std Spanne keine; darüber 30 Min, ab mehr als 9 Std Netto 45.
-//   • Ruhezeit zur Vorschicht mindestens 11 Std (§ 5 ArbZG). Darunter Warnung,
-//     die Schicht wird nicht aus dem Fenster geschoben.
+//   • Ruhezeit zur Vorschicht mindestens 11 Std (§ 5 ArbZG). Darunter Warnung.
 //   • Nacht 25 %: 04–06 und 20–24 Uhr. Nacht 40 %: 00–04 Uhr. Sonntag 50 %.
+//   • Nachtschicht beginnt abends (20:00 oder 23:00), nie um 00:00.
+//     Der Folgetag bleibt frei, damit die 11 Std Ruhe nicht in den Morgen laufen.
+//   • Höchstens 2 freie Tage je Woche, wenn dabei mindestens 3 Std/Tag möglich sind.
 //
-// Der Auto-Vorschlag füllt Tage, Fenster und Bezahlt-Stunden. Er ist eine
-// Vorlage und darf danach Zeile für Zeile überschrieben werden.
+// `berechneManuell` bleibt für eine ältere Tagesliste (Fenster + Bezahlt-Stunden).
+// Der Bildschirm schickt diese Liste nicht mehr.
 
 import { requiredBreakMinutes } from './breaks'
 import { minToClock } from './format'
@@ -477,4 +476,274 @@ export function schlageVor(year: number, month1: number, ziel: VorschlagZiel): V
     .map((p) => ({ date: p.date, von: p.von, bis: p.bis, bezahlt: round2(p.spanMin / 60) }))
 
   return { tage, warnings }
+}
+
+type RohSchicht = {
+  date: string
+  startMin: number
+  endMin: number
+  pause: number
+  breaks: { start: number; end: number }[]
+}
+
+/** Schicht mit festem Start. Die Pause liegt bei `breakAt` Minuten nach Beginn, sonst um die Mitte, auf eine Viertelstunde gezogen. */
+function baueSchicht(date: string, startMin: number, spanMin: number, breakAt: number | null): RohSchicht {
+  const span = Math.max(0, Math.round(spanMin))
+  const { pause } = pauseUndNetto(span)
+  let off = breakAt
+  if (pause <= 0) off = null
+  else if (off == null) {
+    const mid = Math.round((span - pause) / 2)
+    const snap = Math.round(mid / 15) * 15
+    off = Math.max(0, Math.min(snap, span - pause))
+  } else off = Math.max(0, Math.min(Math.round(off), span - pause))
+  const breaks = pause > 0 && off != null ? [{ start: off, end: off + pause }] : []
+  return { date, startMin, endMin: startMin + span, pause: breaks.length ? pause : 0, breaks }
+}
+
+function stundenVon(s: RohSchicht) {
+  return computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.breaks })
+}
+
+/**
+ * Verteilt Minuten auf k Schichten, jede höchstens `max`.
+ * Zuerst Viertelstunden, damit Beginn und Ende auf :00/:15/:30/:45 fallen,
+ * dann 6 Minuten, dann der Rest Minute für Minute. Die Summe bleibt exakt.
+ */
+function verteilSpannen(total: number, k: number, max: number): { spans: number[]; uebrig: number } {
+  if (k <= 0 || total <= 0) return { spans: [], uebrig: Math.max(0, total) }
+  const spans = Array.from({ length: k }, () => 0)
+  let left = Math.round(total)
+  const base15 = Math.min(max, Math.floor(Math.floor(left / k) / 15) * 15)
+  if (base15 > 0) {
+    for (let i = 0; i < k; i++) spans[i] = base15
+    left -= base15 * k
+  }
+  const give = (step: number) => {
+    let guard = 0
+    while (left >= step && guard++ < k * 80) {
+      let placed = false
+      for (let i = 0; i < k && left >= step; i++) {
+        if (max - spans[i] >= step) {
+          spans[i] += step
+          left -= step
+          placed = true
+        }
+      }
+      if (!placed) break
+    }
+  }
+  give(15)
+  give(6)
+  give(1)
+  return { spans, uebrig: left }
+}
+
+/**
+ * Plan nur aus den Monatsstunden. Der Nutzer gibt keine Uhrzeiten ein.
+ * Reihenfolge: Sonntage, dann Nacht 40 % (abends ab 20:00, damit 00–04 Uhr
+ * getroffen wird), dann Nacht 25 %, dann der Rest.
+ * Höchstens 2 freie Tage je Woche, wenn dabei mindestens 3 Std/Tag möglich sind.
+ */
+export function erstellePlan(year: number, month1: number, ziel: VorschlagZiel): ManualResult {
+  const warnings: string[] = []
+  const kalender = monthDays(year, month1)
+  const sonntage = kalender.filter((t) => t.dow === 0).map((t) => t.iso)
+  let paidLeft = Math.round(Math.max(0, ziel.bezahlt) * 60)
+  let sundayLeft = Math.round(Math.max(0, ziel.sunday) * 60)
+  let n25Left = Math.round(Math.max(0, ziel.n25) * 60)
+  let n40Left = Math.round(Math.max(0, ziel.n40) * 60)
+  if (paidLeft <= 0) return berechneManuell([])
+
+  const schichten: RohSchicht[] = []
+  const verwendet = new Set<string>()
+  const gesperrt = new Set<string>()
+
+  for (const date of sonntage) {
+    if (sundayLeft < 60 || paidLeft < 60) break
+    let netto = Math.min(MAX_NET_MIN, sundayLeft)
+    let span = spanFuerNetto(netto)
+    if (span > paidLeft) {
+      span = paidLeft
+      netto = pauseUndNetto(span).nettoMin
+    }
+    if (netto < 60) break
+    const s = baueSchicht(date, 6 * 60, span, null)
+    const h = stundenVon(s)
+    schichten.push(s)
+    verwendet.add(date)
+    paidLeft -= Math.round((s.endMin - s.startMin))
+    sundayLeft -= Math.round(h.sunday50 * 60)
+  }
+
+  const nachtPrio = [5, 1, 3, 4, 2]
+  const naechsteNacht = () => kalender
+    .map((t) => t.iso)
+    .filter((iso) => {
+      const dow = dowOf(iso)
+      return dow >= 1 && dow <= 5 && !verwendet.has(iso) && !gesperrt.has(iso) && !verwendet.has(shiftIso(iso, 1))
+    })
+    .sort((a, b) => nachtPrio.indexOf(dowOf(a)) - nachtPrio.indexOf(dowOf(b)) || a.localeCompare(b))[0]
+
+  let guard = 0
+  while ((n40Left > 30 || n25Left > 30) && paidLeft >= 60 && guard++ < 40) {
+    const date = naechsteNacht()
+    if (!date) break
+    const vorher = n40Left + n25Left
+    let start = 20 * 60
+    let span = 0
+    let breakAt: number | null = null
+    if (n40Left > 30) {
+      if (n25Left < 60) {
+        start = 23 * 60
+        span = Math.min(5 * 60, paidLeft)
+        breakAt = 30
+      } else {
+        span = Math.min(510, paidLeft)
+        breakAt = span > 240 ? 210 : null
+      }
+    } else {
+      span = Math.min(4 * 60, n25Left, paidLeft)
+      breakAt = null
+    }
+    if (span < 60) break
+    const s = baueSchicht(date, start, span, breakAt)
+    const h = stundenVon(s)
+    schichten.push(s)
+    verwendet.add(date)
+    gesperrt.add(shiftIso(date, 1))
+    paidLeft -= s.endMin - s.startMin
+    n40Left -= Math.round(h.night40 * 60)
+    n25Left -= Math.round(h.night25 * 60)
+    if (n40Left + n25Left > vorher - 15) break
+  }
+
+  const wochen = new Map<string, string[]>()
+  for (const t of kalender) {
+    const key = mondayKey(t.iso)
+    wochen.set(key, [...(wochen.get(key) ?? []), t.iso])
+  }
+  const poolJeWoche: string[][] = []
+  let minExtra = 0
+  for (const dates of wochen.values()) {
+    const frei = dates.filter((iso) => !verwendet.has(iso))
+    const noch = Math.max(0, frei.length - 2)
+    const pool = frei.filter((iso) => !gesperrt.has(iso) && dowOf(iso) !== 0).sort()
+    const n = Math.min(noch, pool.length)
+    minExtra += n
+    poolJeWoche.push(pool)
+  }
+  const allePool = poolJeWoche.flat()
+  const dreiStunden = paidLeft >= minExtra * MIN_PAID_MIN
+  let filler: string[] = []
+  if (paidLeft >= 60 && allePool.length > 0) {
+    if (!dreiStunden) {
+      const count = paidLeft < MIN_PAID_MIN ? 1 : Math.min(allePool.length, Math.floor(paidLeft / MIN_PAID_MIN))
+      filler = pickEven(allePool, Math.max(1, count))
+      if (minExtra > 0) warnings.push('Zu wenig Stunden für höchstens 2 freie Tage je Woche bei mind. 3 Std/Tag. Die übrigen Stunden liegen gleichmäßig auf weniger Tagen.')
+    } else {
+      for (const pool of poolJeWoche) {
+        const dates = [...wochen.values()][poolJeWoche.indexOf(pool)]
+        const frei = dates.filter((iso) => !verwendet.has(iso))
+        const noch = Math.max(0, frei.length - 2)
+        filler.push(...pickEven(pool, Math.min(noch, pool.length)))
+      }
+      const rest = allePool.filter((iso) => !filler.includes(iso))
+      let extraGuard = 0
+      while (filler.length > 0 && filler.length < allePool.length && paidLeft / filler.length > MAX_PAID_MIN && rest.length > 0 && extraGuard++ < 31) {
+        if (paidLeft / (filler.length + 1) < MIN_PAID_MIN) break
+        filler.push(rest.shift()!)
+      }
+      if (filler.length === 0) {
+        const count = Math.min(allePool.length, Math.max(1, Math.floor(paidLeft / MIN_PAID_MIN)))
+        filler = pickEven(allePool, count)
+      }
+    }
+  }
+
+  if (filler.length > 0) {
+    const { spans } = verteilSpannen(paidLeft, filler.length, MAX_PAID_MIN)
+    for (let i = 0; i < filler.length; i++) {
+      if (spans[i] < 60) continue
+      const s = baueSchicht(filler[i], 6 * 60, spans[i], null)
+      schichten.push(s)
+      verwendet.add(filler[i])
+      paidLeft -= s.endMin - s.startMin
+    }
+  }
+
+  if (sundayLeft > 30) warnings.push(`Sonntag: ${round2(sundayLeft / 60)} Std passen nicht in den Monat oder ins Stundenbudget.`)
+  if (n40Left > 30) warnings.push(`Nacht 40 %: ${round2(n40Left / 60)} Std passen nicht ins Stundenbudget.`)
+  if (n25Left > 30) warnings.push(`Nacht 25 %: ${round2(n25Left / 60)} Std passen nicht ins Stundenbudget.`)
+  if (paidLeft > 30) warnings.push(`${round2(paidLeft / 60)} Std bleiben übrig (max. 8 Netto-Std je Tag).`)
+
+  const freiZuViel = [...wochen.values()].filter((dates) => dates.filter((iso) => !verwendet.has(iso)).length > 2).length
+  const budgetKnapp = warnings.some((w) => w.startsWith('Zu wenig Stunden'))
+  if (freiZuViel > 0 && !budgetKnapp) {
+    if (ziel.sunday > 0 || ziel.n25 > 0 || ziel.n40 > 0) {
+      warnings.push('Mehr als 2 freie Tage in manchen Wochen: Sonntag und Nacht verbrauchen die Stunden in langen Schichten.')
+    } else {
+      warnings.push('Nicht überall höchstens 2 freie Tage: das Stundenbudget lässt das bei mindestens 3 Std/Tag nicht zu.')
+    }
+  }
+
+  const ergebnis = ausRoh(schichten, warnings)
+  const n25Mehr = ergebnis.summe.n25 - Math.max(0, ziel.n25)
+  if (n25Mehr > 0.3) {
+    ergebnis.warnings.push(`Nacht 25 %: ${round2(n25Mehr)} Std entstehen mit, weil die Nachtschicht vor Mitternacht beginnt.`)
+  }
+  return ergebnis
+}
+
+function ausRoh(roh: RohSchicht[], extra: string[]): ManualResult {
+  const sorted = [...roh].sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin)
+  const tage: DayResult[] = []
+  const warnings = [...extra]
+  let prevEndMs: number | null = null
+  let ruheVerletzungen = 0
+  for (const s of sorted) {
+    const startMs = dayStartMs(s.date) + s.startMin * 60000
+    const endMs = dayStartMs(s.date) + s.endMin * 60000
+    const ruhe = prevEndMs != null ? round2((startMs - prevEndMs) / 3600000) : null
+    if (ruhe != null && ruhe < 11) ruheVerletzungen++
+    const h = stundenVon(s)
+    const hinweise: string[] = []
+    if (ruhe != null && ruhe < 11) hinweise.push('Ruhezeit unter 11 Std.')
+    prevEndMs = endMs
+    tage.push({
+      date: s.date, aktiv: true,
+      von: minToClock(s.startMin), bis: minToClock(s.endMin),
+      startMin: s.startMin, endMin: s.endMin,
+      start: minToClock(s.startMin), ende: minToClock(s.endMin), overnight: s.endMin >= 1440,
+      pause: s.pause, breaks: s.breaks,
+      bezahlt: round2((s.endMin - s.startMin) / 60), netto: round2(h.workedHours),
+      ruhe, n25: round2(h.night25), n40: round2(h.night40), so: round2(h.sunday50),
+      warnung: hinweise.length ? hinweise.join(' ') : null,
+    })
+  }
+  const ruhen = tage.map((t) => t.ruhe).filter((v): v is number => v != null)
+  const minRuhe = ruhen.length ? Math.min(...ruhen) : null
+  if (ruheVerletzungen > 0) warnings.unshift(`Ruhezeit unter 11 Std an ${ruheVerletzungen} Tag(en).`)
+  // Summe aus den Rohminuten, nicht aus den schon gerundeten Tageswerten.
+  let paidMin = 0
+  let nettoH = 0
+  let n25H = 0
+  let n40H = 0
+  let soH = 0
+  for (const s of sorted) {
+    paidMin += s.endMin - s.startMin
+    const h = stundenVon(s)
+    nettoH += h.workedHours
+    n25H += h.night25
+    n40H += h.night40
+    soH += h.sunday50
+  }
+  return {
+    tage, warnings,
+    summe: {
+      netto: round2(nettoH), bezahlt: round2(paidMin / 60),
+      n25: round2(n25H), n40: round2(n40H), so: round2(soH),
+      minRuhe, ruheVerletzt: minRuhe != null && minRuhe < 11,
+    },
+  }
 }

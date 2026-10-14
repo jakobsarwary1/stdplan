@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server'
 import ExcelJS from 'exceljs'
 import { getCurrentUser } from '@/lib/auth'
-import { verteileExakt, type ExactShift } from '@/lib/planning/exact'
-import { berechneManuell, type DayInput } from '@/lib/planning/manual'
+import { type ExactShift } from '@/lib/planning/exact'
+import { berechneManuell, erstellePlan, type DayInput } from '@/lib/planning/manual'
 import { computeShiftHours, sumShiftHours, computeWage } from '@/lib/planning/wage'
 
 /** Eingabezeile aus der Monatstabelle (ein Fahrer). */
@@ -162,10 +162,22 @@ function buildPlan(drivers: DriverInput[], year: number, month: number): { rows:
           })
         }
       } else {
-        shifts = verteileExakt(year, month, {
+        const res = erstellePlan(year, month, {
           bezahlt: total, sunday: Number(dr.sunday) || 0,
           n25: Number(dr.night25) || 0, n40: Number(dr.night40) || 0,
-        }).shifts
+        })
+        for (const t of res.tage) {
+          if (t.warnung) hinweis.set(t.date, t.warnung)
+          if (t.startMin == null || t.endMin == null || t.bezahlt <= 0) continue
+          shifts.push({
+            date: t.date, startMin: t.startMin, endMin: t.endMin,
+            breakMinutes: t.pause, breaks: t.breaks, netHours: t.netto,
+          })
+        }
+        if (res.warnings.length > 0 && shifts[0]) {
+          const vorher = hinweis.get(shifts[0].date)
+          hinweis.set(shifts[0].date, [vorher, res.warnings.join(' · ')].filter(Boolean).join(' '))
+        }
       }
     } catch { shifts = [] }
 

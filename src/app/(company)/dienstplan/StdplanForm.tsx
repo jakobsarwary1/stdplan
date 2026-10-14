@@ -1,12 +1,9 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { berechneManuell, schlageVor, type ManualResult } from '@/lib/planning/manual'
+import { erstellePlan, type ManualResult } from '@/lib/planning/manual'
 
 type Driver = { id: string; name: string; employeeNumber: string; rate: number }
-
-/** Ein vom Nutzer gesetzter Tag. Von/Bis ist das Fenster, nicht die fertige Schicht. */
-type DayDraft = { date: string; aktiv: boolean; von: string; bis: string; bezahlt: string }
 
 /** Eingabewerte je Fahrer für den Monat. Alles optional – leer = 0 / kein Text. */
 type Entry = {
@@ -18,7 +15,6 @@ type Entry = {
   krank: string
   brutto: string
   abmelden: string
-  tage?: DayDraft[]
 }
 
 const MONATE = [
@@ -42,32 +38,22 @@ type PlanSum = { netto: number; bezahlt: number; n25: number; n40: number; so: n
 type PlanZiel = { bezahlt: number; sunday: number; n25: number; n40: number }
 type PlanDriver = { name: string; employeeNumber: string | null; ziel: PlanZiel; manuell?: boolean; tage: number; paidSum: number; warning: string | null; summe: PlanSum; shifts: PlanShift[] }
 
-function monthIso(year: number, month: number): string[] {
-  const out: string[] = []
-  const d = new Date(year, month - 1, 1)
-  while (d.getMonth() === month - 1) {
-    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
-    d.setDate(d.getDate() + 1)
-  }
-  return out
-}
-
-function fmtStd(n: number): string {
-  return String(Math.round(n * 100) / 100).replace('.', ',')
-}
-
-function leererTag(date: string): DayDraft {
-  return { date, aktiv: false, von: '', bis: '', bezahlt: '' }
-}
 const istSonntag = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d).getDay() === 0 }
 
 const n2 = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-const WT = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
-const dLabel = (iso: string) => {
+const MONAT_KURZ = ['Jan.', 'Feb.', 'März', 'Apr.', 'Mai', 'Juni', 'Juli', 'Aug.', 'Sept.', 'Okt.', 'Nov.', 'Dez.']
+const WOCHENTAG = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag']
+
+function isoTeile(iso: string) {
   const [y, m, d] = iso.split('-').map(Number)
-  const dow = new Date(y, m - 1, d).getDay()
-  return `${WT[dow]} ${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}.`
+  return { y, m, d, dow: new Date(y, m - 1, d).getDay() }
+}
+
+/** „Montag, der 5.“ */
+function tagSatz(iso: string) {
+  const { d, dow } = isoTeile(iso)
+  return `${WOCHENTAG[dow]}, der ${d}.`
 }
 
 export default function StdplanForm({ drivers, companyName }: { drivers: Driver[]; companyName: string }) {
@@ -83,18 +69,31 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
   const [planBusy, setPlanBusy] = useState(false)
   const [plan, setPlan] = useState<PlanDriver[] | null>(null)
   const [planAktiv, setPlanAktiv] = useState<string>('')
-  const [vorschlagHinweis, setVorschlagHinweis] = useState<Record<string, string>>({})
 
   const storageKey = `stdplan:v1:${year}-${String(month).padStart(2, '0')}`
 
   useEffect(() => {
-    let geladen: Record<string, Entry> = {}
+    let geladen: Record<string, Partial<Entry>> = {}
     try {
       const roh = localStorage.getItem(storageKey)
       if (roh) geladen = JSON.parse(roh)
     } catch { /* ignore */ }
     const next: Record<string, Entry> = {}
-    for (const d of drivers) next[d.id] = geladen[d.id] ?? leer(d.rate)
+    for (const d of drivers) {
+      const alt = geladen[d.id]
+      const basis = leer(d.rate)
+      // Alte Tageslisten (Aktiv/Von/Bis) werden verworfen. Der Plan kommt aus den Summen.
+      next[d.id] = alt ? {
+        rate: alt.rate ?? basis.rate,
+        total: alt.total ?? '',
+        sunday: alt.sunday ?? '',
+        night25: alt.night25 ?? '',
+        night40: alt.night40 ?? '',
+        krank: alt.krank ?? '',
+        brutto: alt.brutto ?? '',
+        abmelden: alt.abmelden ?? '',
+      } : basis
+    }
     setData(next)
   }, [storageKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -106,43 +105,6 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
   const set = (id: string, feld: keyof Entry, wert: string) =>
     setData((d) => ({ ...d, [id]: { ...d[id], [feld]: wert } }))
 
-  const tagAendern = (id: string, date: string, patch: Partial<DayDraft>) =>
-    setData((d) => {
-      const e = d[id] ?? leer(0)
-      const by = new Map((e.tage ?? []).map((t) => [t.date, t]))
-      const next = { ...(by.get(date) ?? leererTag(date)), ...patch }
-      if (patch.aktiv === undefined && (num(next.bezahlt) > 0 || next.von || next.bis)) next.aktiv = true
-      by.set(date, next)
-      const tage = monthIso(year, month).map((dt) => by.get(dt) ?? leererTag(dt))
-      return { ...d, [id]: { ...e, tage } }
-    })
-
-  const tageLeeren = (id: string) => {
-    setData((d) => ({ ...d, [id]: { ...d[id], tage: [] } }))
-    setVorschlagHinweis((h) => ({ ...h, [id]: '' }))
-  }
-
-  const vorschlagEinsetzen = (id: string) => {
-    const e = data[id] ?? leer(0)
-    const res = schlageVor(year, month, {
-      bezahlt: num(e.total), sunday: num(e.sunday), n25: num(e.night25), n40: num(e.night40),
-    })
-    const by = new Map(res.tage.map((t) => [t.date, t]))
-    const tage = monthIso(year, month).map((date) => {
-      const hit = by.get(date)
-      return hit
-        ? { date, aktiv: true, von: hit.von, bis: hit.bis, bezahlt: fmtStd(hit.bezahlt) }
-        : leererTag(date)
-    })
-    setData((d) => ({ ...d, [id]: { ...(d[id] ?? leer(0)), tage } }))
-    setOpen((o) => ({ ...o, [id]: true }))
-    setVorschlagHinweis((h) => ({ ...h, [id]: res.warnings.join(' ') }))
-  }
-
-  const tageFuerApi = (e: Entry) => (e.tage ?? [])
-    .filter((t) => t.aktiv && num(t.bezahlt) > 0)
-    .map((t) => ({ date: t.date, von: t.von, bis: t.bis, bezahlt: num(t.bezahlt) }))
-
   const monthLabel = `${MONATE[month - 1]} ${year}`
 
   const berechnet = useMemo(() => drivers.map((d, i) => {
@@ -152,20 +114,17 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
     const sunday = num(e.sunday)
     const n25 = num(e.night25)
     const n40 = num(e.night40)
-    const aktive = (e.tage ?? []).filter((t) => t.aktiv && num(t.bezahlt) > 0)
-    const calc: ManualResult | null = aktive.length
-      ? berechneManuell(aktive.map((t) => ({ date: t.date, aktiv: true, von: t.von, bis: t.bis, bezahlt: num(t.bezahlt) })))
+    const plan: ManualResult | null = total > 0
+      ? erstellePlan(year, month, { bezahlt: total, sunday, n25, n40 })
       : null
-    const manuell = aktive.length > 0
-    const basis = calc && calc.summe.bezahlt > 0 ? calc.summe.bezahlt : total
-    const soStd = calc && calc.summe.bezahlt > 0 ? calc.summe.so : sunday
-    const n25Std = calc && calc.summe.bezahlt > 0 ? calc.summe.n25 : n25
-    const n40Std = calc && calc.summe.bezahlt > 0 ? calc.summe.n40 : n40
+    const basis = plan ? plan.summe.bezahlt : 0
+    const soStd = plan ? plan.summe.so : 0
+    const n25Std = plan ? plan.summe.n25 : 0
+    const n40Std = plan ? plan.summe.n40 : 0
     const gesamt = basis * rate + soStd * rate * 0.5 + n25Std * rate * 0.25 + n40Std * rate * 0.4
-    const zuschlag = sunday > 0 || n25 > 0 || n40 > 0
     const vermerk = !!(e.krank || e.brutto || e.abmelden)
-    return { sn: i + 1, d, e, rate, total, gesamt, gefuellt: total > 0 || manuell, manuell, calc, zuschlag, vermerk }
-  }), [drivers, data])
+    return { sn: i + 1, d, e, rate, total, sunday, n25, n40, gesamt, gefuellt: total > 0, plan, vermerk }
+  }), [drivers, data, year, month])
 
   const sichtbar = useMemo(() => {
     const q = suche.trim().toLowerCase()
@@ -184,7 +143,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       const rows = berechnet.map((r) => ({
         sn: r.sn, name: r.d.name, employeeNumber: r.d.employeeNumber, rate: r.rate,
         total: num(r.e.total), sunday: num(r.e.sunday), night25: num(r.e.night25), night40: num(r.e.night40),
-        krank: r.e.krank, brutto: r.e.brutto, abmelden: r.e.abmelden, tage: tageFuerApi(r.e),
+        krank: r.e.krank, brutto: r.e.brutto, abmelden: r.e.abmelden,
       }))
       const res = await fetch('/api/dienstplan/xlsx', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -211,7 +170,6 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       const rows = berechnet.filter((r) => r.gefuellt).map((r) => ({
         name: r.d.name, employeeNumber: r.d.employeeNumber, rate: r.rate,
         total: num(r.e.total), sunday: num(r.e.sunday), night25: num(r.e.night25), night40: num(r.e.night40),
-        tage: tageFuerApi(r.e),
       }))
       const res = await fetch('/api/dienstplan/plan', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -244,9 +202,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Dienstplan erstellen</h1>
           <p className="mt-1 max-w-xl text-sm leading-relaxed text-textMuted">
-            Je Fahrer die bezahlten Stunden eintragen. Unter Details kannst du die Tage, das
-            Von–Bis-Fenster und die Bezahlt-Stunden selbst setzen – Start, Pause, Ende und Zuschläge
-            rechnet das System. Der Vorschlag ist optional und überschreibbar.
+            Trag je Fahrer nur die Stunden des Monats ein. Das System legt die Tage fest
+            — höchstens zwei frei je Woche — und setzt Start, Pause und Ende.
           </p>
         </div>
         <button onClick={() => planen()} disabled={planBusy || ausgefuellt === 0}
@@ -327,9 +284,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
               <div>
                 <h3 className="font-semibold text-text">Planungs-Vorschau</h3>
                 <p className="text-xs text-textMuted">
-                  {aktiv?.manuell
-                    ? `Aus den eingetragenen Tagen für ${monthLabel} – nur Vorschau, nichts wird gespeichert.`
-                    : `Automatisch verteilte Schichten für ${monthLabel} – nur Vorschau, nichts wird gespeichert (ohne Fahrzeuge).`}
+                  {`Aus den Monatsstunden für ${monthLabel}. Tage und Uhrzeiten setzt das System.`}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -374,11 +329,11 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                         title={`Kürzeste Ruhezeit ${n2(aktiv.summe.minRuhe ?? 0)} h`}>Ruhe &lt; 11 h</span>
                     )}
                   </div>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
                     <ZielIst label="Gesamt (bezahlt)" ziel={aktiv.ziel.bezahlt} ist={aktiv.summe.bezahlt} />
                     <ZielIst label="Sonntag 50 %" ziel={aktiv.ziel.sunday} ist={aktiv.summe.so} />
-                    <ZielIst label="Nacht gesamt" ziel={aktiv.ziel.n25 + aktiv.ziel.n40} ist={aktiv.summe.n25 + aktiv.summe.n40}
-                      sub={`tatsächlich 25 % ${n2(aktiv.summe.n25)} · 40 % ${n2(aktiv.summe.n40)}`} />
+                    <ZielIst label="Nacht 40 %" ziel={aktiv.ziel.n40} ist={aktiv.summe.n40} />
+                    <ZielIst label="Nacht 25 %" ziel={aktiv.ziel.n25} ist={aktiv.summe.n25} />
                   </div>
                 </div>
 
@@ -408,7 +363,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                         const kurz = s.bezahlt > 0 && s.bezahlt < 4
                         return (
                           <tr key={i} className={`border-t border-border/40 ${so ? 'bg-accent/[0.06]' : i % 2 ? 'bg-bg/20' : ''}`}>
-                            <td className={`whitespace-nowrap py-1.5 pr-4 ${so ? 'font-medium text-accent' : ''}`}>{dLabel(s.date)}</td>
+                            <td className={`whitespace-nowrap py-1.5 pr-4 ${so ? 'font-medium text-accent' : ''}`}>{tagSatz(s.date)}</td>
                             <td className="whitespace-nowrap py-1.5 pr-4 tabular-nums">
                               {nacht && <span className="mr-1" title="Schicht mit Nachtzuschlag">🌙</span>}{s.von}–{s.bis}
                             </td>
@@ -477,9 +432,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                 <div className={`w-1.5 shrink-0 ${r.gefuellt ? 'bg-accent' : 'bg-transparent'}`} />
 
                 <div className="min-w-0 flex-1">
-                  {/* Kernzeile */}
+                  {/* Kopf: Name, Lohn, Aktionen */}
                   <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
-                    {/* Name + Status */}
                     <div className="flex min-w-0 flex-1 items-center gap-3">
                       <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
                         r.gefuellt ? 'bg-accent/15 text-accent' : 'bg-border text-textMuted'
@@ -495,161 +449,64 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                       </div>
                     </div>
 
-                    {/* Kernfelder */}
-                    <div className="grid grid-cols-2 items-end gap-3 sm:flex sm:items-end">
-                      <Field label="€ / Std">
-                        <Unit suffix="€"><input className="inp pr-6 text-right tabular-nums" inputMode="decimal"
-                          value={r.e.rate} onChange={(e) => set(r.d.id, 'rate', e.target.value)} /></Unit>
-                      </Field>
-                      <Field label="Gesamt Std" tip="Bezahlte Stunden = Nettoarbeit + Pause. Die Pause ist bezahlt, der Arbeitsweg zählt nie mit.">
-                        <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
-                          placeholder="0" value={r.e.total} onChange={(e) => set(r.d.id, 'total', e.target.value)} /></Unit>
-                      </Field>
-                      <div className="col-span-2 text-right sm:col-auto sm:min-w-[7rem]">
-                        <div className="text-[0.62rem] font-medium uppercase tracking-wider text-textMuted">Lohn (ca.)</div>
-                        <div className={`text-base font-semibold tabular-nums ${r.gefuellt ? 'text-text' : 'text-textMuted'}`}>
-                          {eur(r.gesamt)} €
-                        </div>
+                    <div className="text-right sm:min-w-[7.5rem]">
+                      <div className="text-[0.62rem] font-medium uppercase tracking-wider text-textMuted">Lohn (ca.)</div>
+                      <div className={`text-base font-semibold tabular-nums ${r.gefuellt ? 'text-text' : 'text-textMuted'}`}>
+                        {eur(r.gesamt)} €
                       </div>
+                      {r.plan && (r.plan.summe.so > 0 || r.plan.summe.n25 > 0 || r.plan.summe.n40 > 0) && (
+                        <div className="text-[0.62rem] text-textMuted">inkl. Zuschläge</div>
+                      )}
                     </div>
 
-                    {/* Aktionen: Vorschau + Details */}
                     <div className="flex items-center gap-2 sm:self-center">
                       <button onClick={() => planen(r.d.name)} disabled={!r.gefuellt || planBusy}
                         className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-medium text-textMuted transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                        title={r.gefuellt ? 'Planungs-Vorschau für diesen Fahrer öffnen' : 'Erst Gesamtstunden eintragen'}>
+                        title={r.gefuellt ? 'Vorschau und Excel für diesen Fahrer' : 'Erst Gesamtstunden eintragen'}>
                         <span aria-hidden>👁</span> Vorschau
                       </button>
                       <button onClick={() => setOpen((o) => ({ ...o, [r.d.id]: !o[r.d.id] }))}
                         className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-medium text-textMuted transition-colors hover:border-accent hover:text-text"
                         aria-expanded={auf}>
-                        Details
-                        {(r.zuschlag || r.vermerk || r.manuell) && !auf && <span className="h-1.5 w-1.5 rounded-full bg-accent" title="Enthält Angaben" />}
+                        Vermerke
+                        {r.vermerk && !auf && <span className="h-1.5 w-1.5 rounded-full bg-accent" title="Enthält Vermerke" />}
                         <span className={`transition-transform duration-300 ${auf ? 'rotate-180' : ''}`}>⌄</span>
                       </button>
                     </div>
                   </div>
 
-                  {/* Aufklappbereich */}
+                  {/* Nur die Monatssummen. Tage und Uhrzeiten setzt das System. */}
+                  <div className="grid grid-cols-2 gap-3 px-4 pb-4 sm:grid-cols-3 lg:grid-cols-5">
+                    <Field label="€ / Std">
+                      <Unit suffix="€"><input className="inp pr-6 text-right tabular-nums" inputMode="decimal"
+                        value={r.e.rate} onChange={(e) => set(r.d.id, 'rate', e.target.value)} /></Unit>
+                    </Field>
+                    <Field label="Gesamt Std" tip="Bezahlte Stunden des Monats, Pause inklusive. Das System verteilt sie auf die Tage.">
+                      <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
+                        placeholder="0" value={r.e.total} onChange={(e) => set(r.d.id, 'total', e.target.value)} /></Unit>
+                    </Field>
+                    <Field label="Sonntag" tip="Arbeitsstunden am Sonntag, ohne Pause. Das System legt sie auf die Sonntage.">
+                      <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
+                        placeholder="0" value={r.e.sunday} onChange={(e) => set(r.d.id, 'sunday', e.target.value)} /></Unit>
+                    </Field>
+                    <Field label="Nacht 40 %" tip="Arbeitsstunden von 0 bis 4 Uhr, ohne Pause.">
+                      <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
+                        placeholder="0" value={r.e.night40} onChange={(e) => set(r.d.id, 'night40', e.target.value)} /></Unit>
+                    </Field>
+                    <Field label="Nacht 25 %" tip="Arbeitsstunden von 20 bis 24 Uhr und von 4 bis 6 Uhr, ohne Pause.">
+                      <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
+                        placeholder="0" value={r.e.night25} onChange={(e) => set(r.d.id, 'night25', e.target.value)} /></Unit>
+                    </Field>
+                  </div>
+
+                  {r.plan && (
+                    <WochenPlan year={year} month={month} plan={r.plan} ziel={{ bezahlt: r.total, sunday: r.sunday, n40: r.n40, n25: r.n25 }} />
+                  )}
+
+                  {/* Vermerke */}
                   <div className={`grid transition-all duration-300 ease-out ${auf ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
                     <div className="overflow-hidden">
                       <div className="space-y-4 border-t border-border/70 bg-bg/40 p-4">
-                        <section>
-                          <h4 className="mb-2 text-[0.68rem] font-semibold uppercase tracking-wider text-textMuted">
-                            Zuschläge – Zielvorgabe (Std)
-                          </h4>
-                          <div className="grid gap-3 sm:grid-cols-3">
-                            <Field label="Sonntag 50 %">
-                              <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
-                                placeholder="0" value={r.e.sunday} onChange={(e) => set(r.d.id, 'sunday', e.target.value)} /></Unit>
-                            </Field>
-                            <Field label="Nacht 25 %">
-                              <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
-                                placeholder="0" value={r.e.night25} onChange={(e) => set(r.d.id, 'night25', e.target.value)} /></Unit>
-                            </Field>
-                            <Field label="Nacht 40 %">
-                              <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
-                                placeholder="0" value={r.e.night40} onChange={(e) => set(r.d.id, 'night40', e.target.value)} /></Unit>
-                            </Field>
-                          </div>
-                        </section>
-                        <section>
-                          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                            <h4 className="text-[0.68rem] font-semibold uppercase tracking-wider text-textMuted">
-                              Tage, Fenster, Bezahlt-Stunden
-                            </h4>
-                            <div className="flex items-center gap-2">
-                              <button type="button" onClick={() => vorschlagEinsetzen(r.d.id)} disabled={r.total <= 0}
-                                className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-textMuted transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                                title="Füllt die Tage aus den Monatsstunden. Sonntag, dann Nacht, dann der Rest. Danach überschreibbar.">
-                                Vorschlag einsetzen
-                              </button>
-                              {r.manuell && (
-                                <button type="button" onClick={() => tageLeeren(r.d.id)}
-                                  className="rounded-lg px-2 py-1 text-xs text-textMuted hover:text-text">
-                                  Tage zurücksetzen
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                          <p className="mb-2 text-xs leading-relaxed text-textMuted">
-                            Du setzt die Tage, das Von–Bis-Fenster und die Bezahlt-Stunden. Das System rechnet Start, Pause, Ende, Netto, Nacht 25/40 %, Sonntag 50 % und die Ruhe zur Vorschicht.
-                            Ohne gesetzte Tage bleibt die bisherige automatische Verteilung.
-                          </p>
-                          {vorschlagHinweis[r.d.id] && (
-                            <p className="mb-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-300">{vorschlagHinweis[r.d.id]}</p>
-                          )}
-                          {r.calc && (
-                            <p className="mb-2 text-xs tabular-nums text-textMuted">
-                              Summe bezahlt {n2(r.calc.summe.bezahlt)} Std
-                              {r.total > 0 && <> · Ziel {n2(r.total)}</>}
-                              {' '}· Netto {n2(r.calc.summe.netto)} · N25 {n2(r.calc.summe.n25)} · N40 {n2(r.calc.summe.n40)} · So {n2(r.calc.summe.so)}
-                              {r.calc.summe.minRuhe != null && <> · kürzeste Ruhe {n2(r.calc.summe.minRuhe)} h</>}
-                            </p>
-                          )}
-                          <div className="max-h-96 overflow-auto rounded-xl border border-border">
-                            <table className="w-full min-w-[62rem] text-xs">
-                              <thead className="sticky top-0 bg-surface text-left text-[0.62rem] uppercase tracking-wide text-textMuted">
-                                <tr>
-                                  <th className="px-2 py-1.5 font-medium">Tag</th>
-                                  <th className="px-2 py-1.5 font-medium">Aktiv</th>
-                                  <th className="px-2 py-1.5 font-medium">Von</th>
-                                  <th className="px-2 py-1.5 font-medium">Bis</th>
-                                  <th className="px-2 py-1.5 text-right font-medium">Bezahlt</th>
-                                  <th className="px-2 py-1.5 font-medium">Start</th>
-                                  <th className="px-2 py-1.5 text-right font-medium">Pause</th>
-                                  <th className="px-2 py-1.5 font-medium">Ende</th>
-                                  <th className="px-2 py-1.5 text-right font-medium">Netto</th>
-                                  <th className="px-2 py-1.5 text-right font-medium">Ruhe</th>
-                                  <th className="px-2 py-1.5 text-right font-medium">N 25%</th>
-                                  <th className="px-2 py-1.5 text-right font-medium">N 40%</th>
-                                  <th className="px-2 py-1.5 text-right font-medium">So 50%</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {monthIso(year, month).map((date) => {
-                                  const entwurf = (r.e.tage ?? []).find((t) => t.date === date) ?? leererTag(date)
-                                  const erg = r.calc?.tage.find((t) => t.date === date)
-                                  const so = istSonntag(date)
-                                  return (
-                                    <tr key={date} className={`border-t border-border/50 ${so ? 'bg-accent/[0.06]' : ''}`} title={erg?.warnung ?? undefined}>
-                                      <td className={`whitespace-nowrap px-2 py-1 ${so ? 'font-medium text-accent' : ''}`}>{dLabel(date)}</td>
-                                      <td className="px-2 py-1">
-                                        <input type="checkbox" checked={entwurf.aktiv} className="h-3.5 w-3.5 accent-accent"
-                                          onChange={(e) => tagAendern(r.d.id, date, { aktiv: e.target.checked })} />
-                                      </td>
-                                      <td className="px-2 py-1">
-                                        <input type="time" step={60} value={entwurf.von} className="inp px-1 py-1 text-xs"
-                                          onChange={(e) => tagAendern(r.d.id, date, { von: e.target.value })} />
-                                      </td>
-                                      <td className="px-2 py-1">
-                                        <input type="time" step={60} value={entwurf.bis} className="inp px-1 py-1 text-xs"
-                                          onChange={(e) => tagAendern(r.d.id, date, { bis: e.target.value })} />
-                                      </td>
-                                      <td className="px-2 py-1">
-                                        <input inputMode="decimal" value={entwurf.bezahlt} placeholder="0"
-                                          className="inp w-16 px-1 py-1 text-right text-xs tabular-nums"
-                                          onChange={(e) => tagAendern(r.d.id, date, { bezahlt: e.target.value })} />
-                                      </td>
-                                      <td className="whitespace-nowrap px-2 py-1 tabular-nums">{erg?.start ?? '–'}</td>
-                                      <td className="px-2 py-1 text-right tabular-nums text-textMuted">{erg?.aktiv ? `${erg.pause}′` : '–'}</td>
-                                      <td className={`whitespace-nowrap px-2 py-1 tabular-nums ${erg?.warnung ? 'text-amber-300' : ''}`}>
-                                        {erg?.ende ? `${erg.ende}${erg.overnight ? '+1' : ''}` : '–'}
-                                      </td>
-                                      <td className="px-2 py-1 text-right tabular-nums">{erg?.aktiv ? n2(erg.netto) : '–'}</td>
-                                      <td className={`px-2 py-1 text-right tabular-nums ${erg?.ruhe != null && erg.ruhe < 11 ? 'font-semibold text-danger' : 'text-textMuted'}`}>
-                                        {erg?.ruhe == null ? '–' : n2(erg.ruhe)}
-                                      </td>
-                                      <td className="px-2 py-1 text-right tabular-nums">{erg?.n25 ? n2(erg.n25) : '–'}</td>
-                                      <td className="px-2 py-1 text-right tabular-nums">{erg?.n40 ? n2(erg.n40) : '–'}</td>
-                                      <td className="px-2 py-1 text-right tabular-nums">{erg?.so ? n2(erg.so) : '–'}</td>
-                                    </tr>
-                                  )
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                        </section>
                         <section>
                           <h4 className="mb-2 text-[0.68rem] font-semibold uppercase tracking-wider text-textMuted">Vermerke</h4>
                           <div className="grid gap-3 sm:grid-cols-3">
@@ -686,11 +543,114 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       {/* Kompakte Fußnote */}
       <p className="text-xs leading-relaxed text-textMuted/80">
         Beim Erzeugen entsteht pro Fahrer ein tageweiser Monats-Stundenzettel als <strong className="text-textMuted">Excel mit Formeln</strong>.
-        Gesetzte Tage gehen mit der gerechneten Start- und Endzeit hinein; ohne Tage verteilt die bisherige Planung die Monatsstunden.
-        In Excel bleiben Von/Bis/Pause gelb und editierbar, Zuschläge (§ 3b: Nacht 25/40 %, Sonntag 50 %) und Lohn rechnen sich neu.
-        „Lohn (ca.)" hier ist eine Schnellschätzung.
+        Die Uhrzeiten kommen aus diesem Plan. In Excel bleiben Von/Bis/Pause gelb und editierbar, Zuschläge (§ 3b: Nacht 25/40 %, Sonntag 50 %) und Lohn rechnen sich neu.
+        „Lohn (ca.)" ist Grundlohn plus die Zuschläge, die der Plan wirklich erreicht.
       </p>
     </div>
+  )
+}
+
+/** Lesbarer Wochenplan. Nur Anzeige: die Tage und Uhrzeiten kommen aus erstellePlan. */
+function WochenPlan({ year, month, plan, ziel }: {
+  year: number
+  month: number
+  plan: ManualResult
+  ziel: { bezahlt: number; sunday: number; n40: number; n25: number }
+}) {
+  const byDate = new Map(plan.tage.filter((t) => t.bezahlt > 0).map((t) => [t.date, t]))
+  const gruppen = new Map<string, string[]>()
+  const cursor = new Date(year, month - 1, 1)
+  while (cursor.getMonth() === month - 1) {
+    const iso = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`
+    const { y, m, d, dow } = isoTeile(iso)
+    const montag = new Date(y, m - 1, d - ((dow + 6) % 7))
+    const key = `${montag.getFullYear()}-${String(montag.getMonth() + 1).padStart(2, '0')}-${String(montag.getDate()).padStart(2, '0')}`
+    gruppen.set(key, [...(gruppen.get(key) ?? []), iso])
+    cursor.setDate(cursor.getDate() + 1)
+  }
+
+  return (
+    <div className="space-y-3 border-t border-border/70 px-4 py-4">
+      <div className="flex flex-wrap gap-1.5">
+        <SummenChip label="Bezahlt" ist={plan.summe.bezahlt} soll={ziel.bezahlt} />
+        <SummenChip label="Sonntag" ist={plan.summe.so} soll={ziel.sunday} accent />
+        <SummenChip label="Nacht 40 %" ist={plan.summe.n40} soll={ziel.n40} />
+        <SummenChip label="Nacht 25 %" ist={plan.summe.n25} soll={ziel.n25} />
+        <span className="inline-flex items-center rounded-full border border-border px-2.5 py-1 text-[0.7rem] text-textMuted">
+          {byDate.size} Schichten
+        </span>
+      </div>
+
+      {plan.warnings.map((w) => (
+        <p key={w} className="rounded-lg bg-amber-400/10 px-3 py-2 text-xs leading-relaxed text-amber-200">{w}</p>
+      ))}
+
+      <div className="space-y-2">
+        {[...gruppen.values()].map((dates) => {
+          const gearbeitet = dates.flatMap((iso) => {
+            const t = byDate.get(iso)
+            return t ? [t] : []
+          })
+          const frei = dates.filter((iso) => !byDate.has(iso))
+          const von = isoTeile(dates[0])
+          const bis = isoTeile(dates[dates.length - 1])
+          return (
+            <div key={dates[0]} className="rounded-xl border border-border/80 bg-bg/50 px-3 py-2.5">
+              <div className="mb-1 flex items-baseline justify-between gap-3">
+                <div className="text-[0.68rem] font-semibold uppercase tracking-wider text-textMuted">
+                  {von.d}. {MONAT_KURZ[von.m - 1]} – {bis.d}. {MONAT_KURZ[bis.m - 1]}
+                </div>
+                <div className={`text-[0.68rem] ${frei.length > 2 ? 'font-medium text-amber-300' : 'text-textMuted'}`}>
+                  {frei.length === 0 ? 'keine freien Tage' : frei.length === 1 ? '1 Tag frei' : `${frei.length} Tage frei`}
+                </div>
+              </div>
+
+              {gearbeitet.map((t) => {
+                const nacht = t.n25 > 0 || t.n40 > 0
+                const so = t.so > 0
+                return (
+                  <div key={t.date} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-t border-border/40 py-1.5 first:border-t-0">
+                    <div className={`min-w-[10.5rem] text-sm ${so ? 'font-medium text-accent' : 'text-text'}`}>{tagSatz(t.date)}</div>
+                    <div className="text-sm tabular-nums text-text">
+                      {t.start}–{t.ende}
+                      {t.overnight && <span className="ml-1.5 text-[0.65rem] uppercase tracking-wide text-textMuted">Folgetag</span>}
+                    </div>
+                    <div className="text-xs tabular-nums text-textMuted">
+                      {n2(t.bezahlt)} Std{t.pause > 0 ? ` · ${t.pause} min Pause` : ''}
+                    </div>
+                    <div className="ml-auto flex flex-wrap gap-1">
+                      {so && <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[0.65rem] font-medium text-accent">Sonntag</span>}
+                      {nacht && <span className="rounded-full bg-surfaceAlt px-2 py-0.5 text-[0.65rem] font-medium text-text">Nacht</span>}
+                      {t.ruhe != null && t.ruhe < 11 && (
+                        <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[0.65rem] font-medium text-danger">Ruhe {n2(t.ruhe)} h</span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+
+              {frei.length > 0 && (
+                <p className={`${gearbeitet.length > 0 ? 'mt-1 border-t border-border/40 pt-1.5' : ''} text-xs leading-relaxed text-textMuted`}>
+                  Frei: {frei.map(tagSatz).join(' · ')}
+                </p>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function SummenChip({ label, ist, soll, accent }: { label: string; ist: number; soll: number; accent?: boolean }) {
+  const off = Math.abs(ist - soll) > 0.3
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[0.7rem] tabular-nums ${
+      off ? 'border-amber-400/40 bg-amber-400/10 text-amber-200' : accent ? 'border-accent/30 bg-accent/10 text-accent' : 'border-border text-text'
+    }`}>
+      <span className={off || accent ? '' : 'text-textMuted'}>{label}</span>
+      {off ? `${n2(ist)} von ${n2(soll)}` : n2(ist)} Std
+    </span>
   )
 }
 

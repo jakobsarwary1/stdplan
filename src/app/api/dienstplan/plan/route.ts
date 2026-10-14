@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
-import { verteileExakt, type ExactShift } from '@/lib/planning/exact'
-import { berechneManuell, type DayInput } from '@/lib/planning/manual'
+import { type ExactShift } from '@/lib/planning/exact'
+import { berechneManuell, erstellePlan, type DayInput } from '@/lib/planning/manual'
 import { computeShiftHours } from '@/lib/planning/wage'
 import { minToClock } from '@/lib/planning/format'
 
@@ -58,9 +58,14 @@ export async function POST(request: Request) {
                 breakMinutes: t.pause, breaks: t.breaks, netHours: t.netto,
               }))
           } else {
-            const res = verteileExakt(year, month, { bezahlt: ziel.bezahlt, sunday: ziel.sunday, n25: ziel.n25, n40: ziel.n40 })
-            shifts = res.shifts
+            const res = erstellePlan(year, month, ziel)
             warning = res.warnings.length ? res.warnings.join(' · ') : null
+            shifts = res.tage
+              .filter((t) => t.startMin != null && t.endMin != null && t.bezahlt > 0)
+              .map((t) => ({
+                date: t.date, startMin: t.startMin!, endMin: t.endMin!,
+                breakMinutes: t.pause, breaks: t.breaks, netHours: t.netto,
+              }))
           }
         } catch (e) { warning = (e as Error).message }
 
