@@ -1,8 +1,12 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { berechneManuell, schlageVor, type ManualResult } from '@/lib/planning/manual'
 
 type Driver = { id: string; name: string; employeeNumber: string; rate: number }
+
+/** Ein vom Nutzer gesetzter Tag. Von/Bis ist das Fenster, nicht die fertige Schicht. */
+type DayDraft = { date: string; aktiv: boolean; von: string; bis: string; bezahlt: string }
 
 /** Eingabewerte je Fahrer für den Monat. Alles optional – leer = 0 / kein Text. */
 type Entry = {
@@ -14,6 +18,7 @@ type Entry = {
   krank: string
   brutto: string
   abmelden: string
+  tage?: DayDraft[]
 }
 
 const MONATE = [
@@ -35,7 +40,25 @@ const eur = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2,
 type PlanShift = { date: string; von: string; bis: string; pause: number; netto: number; bezahlt: number; ruhe: number | null; n25: number; n40: number; so: number }
 type PlanSum = { netto: number; bezahlt: number; n25: number; n40: number; so: number; minRuhe: number | null; ruheVerletzt: boolean }
 type PlanZiel = { bezahlt: number; sunday: number; n25: number; n40: number }
-type PlanDriver = { name: string; employeeNumber: string | null; ziel: PlanZiel; tage: number; paidSum: number; warning: string | null; summe: PlanSum; shifts: PlanShift[] }
+type PlanDriver = { name: string; employeeNumber: string | null; ziel: PlanZiel; manuell?: boolean; tage: number; paidSum: number; warning: string | null; summe: PlanSum; shifts: PlanShift[] }
+
+function monthIso(year: number, month: number): string[] {
+  const out: string[] = []
+  const d = new Date(year, month - 1, 1)
+  while (d.getMonth() === month - 1) {
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
+    d.setDate(d.getDate() + 1)
+  }
+  return out
+}
+
+function fmtStd(n: number): string {
+  return String(Math.round(n * 100) / 100).replace('.', ',')
+}
+
+function leererTag(date: string): DayDraft {
+  return { date, aktiv: false, von: '', bis: '', bezahlt: '' }
+}
 const istSonntag = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d).getDay() === 0 }
 
 const n2 = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -60,6 +83,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
   const [planBusy, setPlanBusy] = useState(false)
   const [plan, setPlan] = useState<PlanDriver[] | null>(null)
   const [planAktiv, setPlanAktiv] = useState<string>('')
+  const [vorschlagHinweis, setVorschlagHinweis] = useState<Record<string, string>>({})
 
   const storageKey = `stdplan:v1:${year}-${String(month).padStart(2, '0')}`
 
@@ -82,6 +106,43 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
   const set = (id: string, feld: keyof Entry, wert: string) =>
     setData((d) => ({ ...d, [id]: { ...d[id], [feld]: wert } }))
 
+  const tagAendern = (id: string, date: string, patch: Partial<DayDraft>) =>
+    setData((d) => {
+      const e = d[id] ?? leer(0)
+      const by = new Map((e.tage ?? []).map((t) => [t.date, t]))
+      const next = { ...(by.get(date) ?? leererTag(date)), ...patch }
+      if (patch.aktiv === undefined && (num(next.bezahlt) > 0 || next.von || next.bis)) next.aktiv = true
+      by.set(date, next)
+      const tage = monthIso(year, month).map((dt) => by.get(dt) ?? leererTag(dt))
+      return { ...d, [id]: { ...e, tage } }
+    })
+
+  const tageLeeren = (id: string) => {
+    setData((d) => ({ ...d, [id]: { ...d[id], tage: [] } }))
+    setVorschlagHinweis((h) => ({ ...h, [id]: '' }))
+  }
+
+  const vorschlagEinsetzen = (id: string) => {
+    const e = data[id] ?? leer(0)
+    const res = schlageVor(year, month, {
+      bezahlt: num(e.total), sunday: num(e.sunday), n25: num(e.night25), n40: num(e.night40),
+    })
+    const by = new Map(res.tage.map((t) => [t.date, t]))
+    const tage = monthIso(year, month).map((date) => {
+      const hit = by.get(date)
+      return hit
+        ? { date, aktiv: true, von: hit.von, bis: hit.bis, bezahlt: fmtStd(hit.bezahlt) }
+        : leererTag(date)
+    })
+    setData((d) => ({ ...d, [id]: { ...(d[id] ?? leer(0)), tage } }))
+    setOpen((o) => ({ ...o, [id]: true }))
+    setVorschlagHinweis((h) => ({ ...h, [id]: res.warnings.join(' ') }))
+  }
+
+  const tageFuerApi = (e: Entry) => (e.tage ?? [])
+    .filter((t) => t.aktiv && num(t.bezahlt) > 0)
+    .map((t) => ({ date: t.date, von: t.von, bis: t.bis, bezahlt: num(t.bezahlt) }))
+
   const monthLabel = `${MONATE[month - 1]} ${year}`
 
   const berechnet = useMemo(() => drivers.map((d, i) => {
@@ -91,10 +152,19 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
     const sunday = num(e.sunday)
     const n25 = num(e.night25)
     const n40 = num(e.night40)
-    const gesamt = total * rate + sunday * rate * 0.5 + n25 * rate * 0.25 + n40 * rate * 0.4
+    const aktive = (e.tage ?? []).filter((t) => t.aktiv && num(t.bezahlt) > 0)
+    const calc: ManualResult | null = aktive.length
+      ? berechneManuell(aktive.map((t) => ({ date: t.date, aktiv: true, von: t.von, bis: t.bis, bezahlt: num(t.bezahlt) })))
+      : null
+    const manuell = aktive.length > 0
+    const basis = calc && calc.summe.bezahlt > 0 ? calc.summe.bezahlt : total
+    const soStd = calc && calc.summe.bezahlt > 0 ? calc.summe.so : sunday
+    const n25Std = calc && calc.summe.bezahlt > 0 ? calc.summe.n25 : n25
+    const n40Std = calc && calc.summe.bezahlt > 0 ? calc.summe.n40 : n40
+    const gesamt = basis * rate + soStd * rate * 0.5 + n25Std * rate * 0.25 + n40Std * rate * 0.4
     const zuschlag = sunday > 0 || n25 > 0 || n40 > 0
     const vermerk = !!(e.krank || e.brutto || e.abmelden)
-    return { sn: i + 1, d, e, rate, total, gesamt, gefuellt: total > 0, zuschlag, vermerk }
+    return { sn: i + 1, d, e, rate, total, gesamt, gefuellt: total > 0 || manuell, manuell, calc, zuschlag, vermerk }
   }), [drivers, data])
 
   const sichtbar = useMemo(() => {
@@ -114,7 +184,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       const rows = berechnet.map((r) => ({
         sn: r.sn, name: r.d.name, employeeNumber: r.d.employeeNumber, rate: r.rate,
         total: num(r.e.total), sunday: num(r.e.sunday), night25: num(r.e.night25), night40: num(r.e.night40),
-        krank: r.e.krank, brutto: r.e.brutto, abmelden: r.e.abmelden,
+        krank: r.e.krank, brutto: r.e.brutto, abmelden: r.e.abmelden, tage: tageFuerApi(r.e),
       }))
       const res = await fetch('/api/dienstplan/xlsx', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -141,6 +211,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
       const rows = berechnet.filter((r) => r.gefuellt).map((r) => ({
         name: r.d.name, employeeNumber: r.d.employeeNumber, rate: r.rate,
         total: num(r.e.total), sunday: num(r.e.sunday), night25: num(r.e.night25), night40: num(r.e.night40),
+        tage: tageFuerApi(r.e),
       }))
       const res = await fetch('/api/dienstplan/plan', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -173,8 +244,9 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Dienstplan erstellen</h1>
           <p className="mt-1 max-w-xl text-sm leading-relaxed text-textMuted">
-            Je Fahrer die bezahlten Stunden (und optional Zuschläge) eintragen – daraus entsteht ein
-            tageweiser Stundenzettel als Excel mit Formeln. Eingaben werden automatisch im Browser gespeichert.
+            Je Fahrer die bezahlten Stunden eintragen. Unter Details kannst du die Tage, das
+            Von–Bis-Fenster und die Bezahlt-Stunden selbst setzen – Start, Pause, Ende und Zuschläge
+            rechnet das System. Der Vorschlag ist optional und überschreibbar.
           </p>
         </div>
         <button onClick={() => planen()} disabled={planBusy || ausgefuellt === 0}
@@ -255,7 +327,9 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
               <div>
                 <h3 className="font-semibold text-text">Planungs-Vorschau</h3>
                 <p className="text-xs text-textMuted">
-                  Automatisch verteilte Schichten für {monthLabel} – nur Vorschau, nichts wird gespeichert (ohne Fahrzeuge).
+                  {aktiv?.manuell
+                    ? `Aus den eingetragenen Tagen für ${monthLabel} – nur Vorschau, nichts wird gespeichert.`
+                    : `Automatisch verteilte Schichten für ${monthLabel} – nur Vorschau, nichts wird gespeichert (ohne Fahrzeuge).`}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -450,7 +524,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                         className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-3 py-2 text-xs font-medium text-textMuted transition-colors hover:border-accent hover:text-text"
                         aria-expanded={auf}>
                         Details
-                        {(r.zuschlag || r.vermerk) && !auf && <span className="h-1.5 w-1.5 rounded-full bg-accent" title="Enthält Angaben" />}
+                        {(r.zuschlag || r.vermerk || r.manuell) && !auf && <span className="h-1.5 w-1.5 rounded-full bg-accent" title="Enthält Angaben" />}
                         <span className={`transition-transform duration-300 ${auf ? 'rotate-180' : ''}`}>⌄</span>
                       </button>
                     </div>
@@ -477,6 +551,103 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                               <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
                                 placeholder="0" value={r.e.night40} onChange={(e) => set(r.d.id, 'night40', e.target.value)} /></Unit>
                             </Field>
+                          </div>
+                        </section>
+                        <section>
+                          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                            <h4 className="text-[0.68rem] font-semibold uppercase tracking-wider text-textMuted">
+                              Tage, Fenster, Bezahlt-Stunden
+                            </h4>
+                            <div className="flex items-center gap-2">
+                              <button type="button" onClick={() => vorschlagEinsetzen(r.d.id)} disabled={r.total <= 0}
+                                className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-textMuted transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+                                title="Füllt die Tage aus den Monatsstunden. Sonntag, dann Nacht, dann der Rest. Danach überschreibbar.">
+                                Vorschlag einsetzen
+                              </button>
+                              {r.manuell && (
+                                <button type="button" onClick={() => tageLeeren(r.d.id)}
+                                  className="rounded-lg px-2 py-1 text-xs text-textMuted hover:text-text">
+                                  Tage zurücksetzen
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          <p className="mb-2 text-xs leading-relaxed text-textMuted">
+                            Du setzt die Tage, das Von–Bis-Fenster und die Bezahlt-Stunden. Das System rechnet Start, Pause, Ende, Netto, Nacht 25/40 %, Sonntag 50 % und die Ruhe zur Vorschicht.
+                            Ohne gesetzte Tage bleibt die bisherige automatische Verteilung.
+                          </p>
+                          {vorschlagHinweis[r.d.id] && (
+                            <p className="mb-2 rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-300">{vorschlagHinweis[r.d.id]}</p>
+                          )}
+                          {r.calc && (
+                            <p className="mb-2 text-xs tabular-nums text-textMuted">
+                              Summe bezahlt {n2(r.calc.summe.bezahlt)} Std
+                              {r.total > 0 && <> · Ziel {n2(r.total)}</>}
+                              {' '}· Netto {n2(r.calc.summe.netto)} · N25 {n2(r.calc.summe.n25)} · N40 {n2(r.calc.summe.n40)} · So {n2(r.calc.summe.so)}
+                              {r.calc.summe.minRuhe != null && <> · kürzeste Ruhe {n2(r.calc.summe.minRuhe)} h</>}
+                            </p>
+                          )}
+                          <div className="max-h-96 overflow-auto rounded-xl border border-border">
+                            <table className="w-full min-w-[62rem] text-xs">
+                              <thead className="sticky top-0 bg-surface text-left text-[0.62rem] uppercase tracking-wide text-textMuted">
+                                <tr>
+                                  <th className="px-2 py-1.5 font-medium">Tag</th>
+                                  <th className="px-2 py-1.5 font-medium">Aktiv</th>
+                                  <th className="px-2 py-1.5 font-medium">Von</th>
+                                  <th className="px-2 py-1.5 font-medium">Bis</th>
+                                  <th className="px-2 py-1.5 text-right font-medium">Bezahlt</th>
+                                  <th className="px-2 py-1.5 font-medium">Start</th>
+                                  <th className="px-2 py-1.5 text-right font-medium">Pause</th>
+                                  <th className="px-2 py-1.5 font-medium">Ende</th>
+                                  <th className="px-2 py-1.5 text-right font-medium">Netto</th>
+                                  <th className="px-2 py-1.5 text-right font-medium">Ruhe</th>
+                                  <th className="px-2 py-1.5 text-right font-medium">N 25%</th>
+                                  <th className="px-2 py-1.5 text-right font-medium">N 40%</th>
+                                  <th className="px-2 py-1.5 text-right font-medium">So 50%</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {monthIso(year, month).map((date) => {
+                                  const entwurf = (r.e.tage ?? []).find((t) => t.date === date) ?? leererTag(date)
+                                  const erg = r.calc?.tage.find((t) => t.date === date)
+                                  const so = istSonntag(date)
+                                  return (
+                                    <tr key={date} className={`border-t border-border/50 ${so ? 'bg-accent/[0.06]' : ''}`} title={erg?.warnung ?? undefined}>
+                                      <td className={`whitespace-nowrap px-2 py-1 ${so ? 'font-medium text-accent' : ''}`}>{dLabel(date)}</td>
+                                      <td className="px-2 py-1">
+                                        <input type="checkbox" checked={entwurf.aktiv} className="h-3.5 w-3.5 accent-accent"
+                                          onChange={(e) => tagAendern(r.d.id, date, { aktiv: e.target.checked })} />
+                                      </td>
+                                      <td className="px-2 py-1">
+                                        <input type="time" step={60} value={entwurf.von} className="inp px-1 py-1 text-xs"
+                                          onChange={(e) => tagAendern(r.d.id, date, { von: e.target.value })} />
+                                      </td>
+                                      <td className="px-2 py-1">
+                                        <input type="time" step={60} value={entwurf.bis} className="inp px-1 py-1 text-xs"
+                                          onChange={(e) => tagAendern(r.d.id, date, { bis: e.target.value })} />
+                                      </td>
+                                      <td className="px-2 py-1">
+                                        <input inputMode="decimal" value={entwurf.bezahlt} placeholder="0"
+                                          className="inp w-16 px-1 py-1 text-right text-xs tabular-nums"
+                                          onChange={(e) => tagAendern(r.d.id, date, { bezahlt: e.target.value })} />
+                                      </td>
+                                      <td className="whitespace-nowrap px-2 py-1 tabular-nums">{erg?.start ?? '–'}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums text-textMuted">{erg?.aktiv ? `${erg.pause}′` : '–'}</td>
+                                      <td className={`whitespace-nowrap px-2 py-1 tabular-nums ${erg?.warnung ? 'text-amber-300' : ''}`}>
+                                        {erg?.ende ? `${erg.ende}${erg.overnight ? '+1' : ''}` : '–'}
+                                      </td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{erg?.aktiv ? n2(erg.netto) : '–'}</td>
+                                      <td className={`px-2 py-1 text-right tabular-nums ${erg?.ruhe != null && erg.ruhe < 11 ? 'font-semibold text-danger' : 'text-textMuted'}`}>
+                                        {erg?.ruhe == null ? '–' : n2(erg.ruhe)}
+                                      </td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{erg?.n25 ? n2(erg.n25) : '–'}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{erg?.n40 ? n2(erg.n40) : '–'}</td>
+                                      <td className="px-2 py-1 text-right tabular-nums">{erg?.so ? n2(erg.so) : '–'}</td>
+                                    </tr>
+                                  )
+                                })}
+                              </tbody>
+                            </table>
                           </div>
                         </section>
                         <section>
@@ -514,9 +685,10 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
 
       {/* Kompakte Fußnote */}
       <p className="text-xs leading-relaxed text-textMuted/80">
-        Beim Erzeugen entsteht pro Fahrer ein tageweiser Monats-Stundenzettel als <strong className="text-textMuted">Excel mit Formeln</strong>:
-        die gelben Felder (Von/Bis/Pause) sind editierbar, Netto, Zuschläge (§ 3b: Nacht 25/40 %, Sonntag 50 %) und Lohn rechnen
-        sich automatisch neu. „Lohn (ca.)" hier ist eine Schnellschätzung. Stundenlohn je Zeile editierbar (dauerhaft im Fahrer-Datensatz).
+        Beim Erzeugen entsteht pro Fahrer ein tageweiser Monats-Stundenzettel als <strong className="text-textMuted">Excel mit Formeln</strong>.
+        Gesetzte Tage gehen mit der gerechneten Start- und Endzeit hinein; ohne Tage verteilt die bisherige Planung die Monatsstunden.
+        In Excel bleiben Von/Bis/Pause gelb und editierbar, Zuschläge (§ 3b: Nacht 25/40 %, Sonntag 50 %) und Lohn rechnen sich neu.
+        „Lohn (ca.)" hier ist eine Schnellschätzung.
       </p>
     </div>
   )

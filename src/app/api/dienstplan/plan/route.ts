@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
-import { verteileExakt } from '@/lib/planning/exact'
+import { verteileExakt, type ExactShift } from '@/lib/planning/exact'
+import { berechneManuell, type DayInput } from '@/lib/planning/manual'
 import { computeShiftHours } from '@/lib/planning/wage'
 import { minToClock } from '@/lib/planning/format'
 
@@ -10,6 +11,8 @@ const MIN_REST_HOURS = 11 // § 5 ArbZG
 // die vorhandene Engine auf und gibt die generierten Tages-Schichten zurück.
 // Es wird NICHTS gespeichert – reine Vorschau.
 
+type TagEingabe = { date: string; von: string; bis: string; bezahlt: number }
+
 type Row = {
   name: string
   employeeNumber?: string | null
@@ -18,6 +21,8 @@ type Row = {
   sunday: number
   night25: number
   night40: number
+  /** Gesetzte Tage ersetzen die automatische Verteilung. */
+  tage?: TagEingabe[] | null
 }
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
@@ -32,16 +37,31 @@ export async function POST(request: Request) {
     if (!Array.isArray(rows)) return NextResponse.json({ error: 'Keine Fahrerzeilen.' }, { status: 400 })
 
     const drivers = rows
-      .filter((r) => (Number(r.total) || 0) > 0)
+      .filter((r) => (Number(r.total) || 0) > 0 || (Array.isArray(r.tage) && r.tage.some((t) => (Number(t.bezahlt) || 0) > 0)))
       .map((r) => {
         const total = Number(r.total) || 0
         const ziel = { bezahlt: round2(total), sunday: round2(Number(r.sunday) || 0), n25: round2(Number(r.night25) || 0), n40: round2(Number(r.night40) || 0) }
-        let shifts: ReturnType<typeof verteileExakt>['shifts'] = []
+        const manuell = Array.isArray(r.tage) && r.tage.some((t) => (Number(t.bezahlt) || 0) > 0)
+        let shifts: ExactShift[] = []
         let warning: string | null = null
         try {
-          const res = verteileExakt(year, month, { bezahlt: ziel.bezahlt, sunday: ziel.sunday, n25: ziel.n25, n40: ziel.n40 })
-          shifts = res.shifts
-          warning = res.warnings.length ? res.warnings.join(' · ') : null
+          if (manuell) {
+            const eingabe: DayInput[] = (r.tage ?? []).map((t) => ({
+              date: t.date, aktiv: true, von: t.von, bis: t.bis, bezahlt: Number(t.bezahlt) || 0,
+            }))
+            const res = berechneManuell(eingabe)
+            warning = res.warnings.length ? res.warnings.join(' · ') : null
+            shifts = res.tage
+              .filter((t) => t.startMin != null && t.endMin != null && t.bezahlt > 0)
+              .map((t) => ({
+                date: t.date, startMin: t.startMin!, endMin: t.endMin!,
+                breakMinutes: t.pause, breaks: t.breaks, netHours: t.netto,
+              }))
+          } else {
+            const res = verteileExakt(year, month, { bezahlt: ziel.bezahlt, sunday: ziel.sunday, n25: ziel.n25, n40: ziel.n40 })
+            shifts = res.shifts
+            warning = res.warnings.length ? res.warnings.join(' · ') : null
+          }
         } catch (e) { warning = (e as Error).message }
 
         const sorted = shifts.slice().sort((a, b) => a.date.localeCompare(b.date) || a.startMin - b.startMin)
@@ -57,7 +77,7 @@ export async function POST(request: Request) {
           return {
             date: s.date,
             von: minToClock(s.startMin),
-            bis: minToClock(s.endMin),
+            bis: minToClock(s.endMin) + (s.endMin >= 1440 ? '+1' : ''),
             pause: s.breakMinutes,
             netto: round2(s.netHours),
             bezahlt: round2((s.endMin - s.startMin) / 60),
@@ -76,7 +96,7 @@ export async function POST(request: Request) {
           n25: sum((x) => x.n25), n40: sum((x) => x.n40), so: sum((x) => x.so),
           minRuhe, ruheVerletzt: minRuhe != null && minRuhe < MIN_REST_HOURS,
         }
-        return { name: r.name, employeeNumber: r.employeeNumber ?? null, ziel, tage: rowsOut.length, paidSum: summe.bezahlt, warning, summe, shifts: rowsOut }
+        return { name: r.name, employeeNumber: r.employeeNumber ?? null, ziel, manuell, tage: rowsOut.length, paidSum: summe.bezahlt, warning, summe, shifts: rowsOut }
       })
 
     return NextResponse.json({ drivers })

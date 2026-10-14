@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import ExcelJS from 'exceljs'
 import { getCurrentUser } from '@/lib/auth'
 import { verteileExakt, type ExactShift } from '@/lib/planning/exact'
+import { berechneManuell, type DayInput } from '@/lib/planning/manual'
 import { computeShiftHours, sumShiftHours, computeWage } from '@/lib/planning/wage'
 
 /** Eingabezeile aus der Monatstabelle (ein Fahrer). */
@@ -16,6 +17,8 @@ type DriverInput = {
   krank?: string | null
   brutto?: string | null
   abmelden?: string | null
+  /** Gesetzte Tage ersetzen die automatische Verteilung. Von/Bis ist hier das Fenster. */
+  tage?: { date: string; von: string; bis: string; bezahlt: number }[] | null
 }
 
 type XlsxRow = {
@@ -134,17 +137,36 @@ function buildPlan(drivers: DriverInput[], year: number, month: number): { rows:
 
   for (const dr of drivers) {
     const total = Number(dr.total) || 0
-    if (total <= 0) continue // ohne Stunden kein Block
+    const manuelleTage = (dr.tage ?? []).filter((t) => (Number(t.bezahlt) || 0) > 0 && t.date)
+    if (total <= 0 && manuelleTage.length === 0) continue // ohne Stunden kein Block
     const rate = Number(dr.rate) || 0
     const name = dr.name
     const emp = dr.employeeNumber ?? null
 
     let shifts: ExactShift[] = []
+    const hinweis = new Map<string, string>()
     try {
-      shifts = verteileExakt(year, month, {
-        bezahlt: total, sunday: Number(dr.sunday) || 0,
-        n25: Number(dr.night25) || 0, n40: Number(dr.night40) || 0,
-      }).shifts
+      if (manuelleTage.length > 0) {
+        // Von/Bis der Eingabe ist das Fenster. In die Excel-Spalten Von/Bis
+        // kommen danach die gerechneten Uhrzeiten Start und Ende.
+        const eingabe: DayInput[] = manuelleTage.map((t) => ({
+          date: t.date, aktiv: true, von: t.von, bis: t.bis, bezahlt: Number(t.bezahlt) || 0,
+        }))
+        const res = berechneManuell(eingabe)
+        for (const t of res.tage) {
+          if (t.warnung) hinweis.set(t.date, t.warnung)
+          if (t.startMin == null || t.endMin == null || t.bezahlt <= 0) continue
+          shifts.push({
+            date: t.date, startMin: t.startMin, endMin: t.endMin,
+            breakMinutes: t.pause, breaks: t.breaks, netHours: t.netto,
+          })
+        }
+      } else {
+        shifts = verteileExakt(year, month, {
+          bezahlt: total, sunday: Number(dr.sunday) || 0,
+          n25: Number(dr.night25) || 0, n40: Number(dr.night40) || 0,
+        }).shifts
+      }
     } catch { shifts = [] }
 
     const byDate = new Map(shifts.map((s) => [s.date, s]))
@@ -159,6 +181,7 @@ function buildPlan(drivers: DriverInput[], year: number, month: number): { rows:
         breakOffsetMin: s.breaks[0]?.start ?? 0, breakMinutes: s.breakMinutes, commuteMinutes: 0,
         netHours: paidHours, paidHours, totalHours: paidHours, vehiclePlate: '',
         night25: h.night25, night40: h.night40, sunday50: h.sunday50, holiday125: h.holiday125, isFree: false,
+        freeLabel: hinweis.get(iso) ?? null,
       })
     }
 
