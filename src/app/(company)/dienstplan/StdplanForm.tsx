@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { erstellePlan, type ManualResult } from '@/lib/planning/manual'
+import UberCsvPlan from './UberCsvPlan'
 
 type Driver = { id: string; name: string; employeeNumber: string; rate: number }
 
@@ -202,8 +203,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Dienstplan erstellen</h1>
           <p className="mt-1 max-w-xl text-sm leading-relaxed text-textMuted">
-            Trag je Fahrer nur die Stunden des Monats ein. Das System legt die Tage fest
-            — höchstens zwei frei je Woche — und setzt Start, Pause und Ende.
+            Aus der Uber-Fahrtliste wird je Fahrer der Monat gesetzt. Darunter bleibt die Planung aus den Monatsstunden.
           </p>
         </div>
         <button onClick={() => planen()} disabled={planBusy || ausgefuellt === 0}
@@ -214,6 +214,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
             : <><span aria-hidden>🗓</span> Stundenzettel-Vorschau erstellen</>}
         </button>
       </div>
+
+      <UberCsvPlan />
 
       {/* Klebende Toolbar-Karte */}
       <div className="sticky top-3 z-10 rounded-2xl border border-border bg-surface/95 p-3 shadow-xl shadow-black/20 backdrop-blur sm:p-4">
