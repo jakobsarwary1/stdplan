@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
 import { workbookForPlans } from '@/lib/planning/uberExcel'
 import { buildPlansFromCsv, monthLabelDE, timesheetView } from '@/lib/planning/uberPlan'
+import { buildCsvForPlans } from '@/lib/planning/uberCsv'
 
 export const dynamic = 'force-dynamic'
 
@@ -34,6 +35,18 @@ export async function POST(request: Request) {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'Content-Disposition': `attachment; filename="Stundenzettel_${month}.xlsx"`,
+      },
+    })
+  }
+
+  // Eine CSV, alle Fahrer als getrennte Tabellen.
+  if (body.format === 'csv') {
+    const { csv, monthLabel } = buildCsvForPlans(plans)
+    const month = monthLabel.replace(/\s+/g, '_')
+    return new NextResponse(csv, {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="Stundenzettel_${month}_alle-Fahrer.csv"`,
       },
     })
   }

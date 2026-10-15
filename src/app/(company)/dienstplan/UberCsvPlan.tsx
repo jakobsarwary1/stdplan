@@ -92,6 +92,34 @@ export default function UberCsvPlan() {
     }
   }
 
+  async function csvDownload() {
+    if (!csv) return
+    setBusy(true)
+    setFehler(null)
+    try {
+      const res = await fetch('/api/dienstplan/aus-csv', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csv, format: 'csv' }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j?.error || 'CSV ließ sich nicht erzeugen.')
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `Stundenzettel_${(month || 'Monat').replace(/\s+/g, '_')}_alle-Fahrer.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setFehler((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const fahrer = drivers?.find((d) => d.name === aktiv) ?? drivers?.[0]
 
   return (
@@ -136,7 +164,10 @@ export default function UberCsvPlan() {
                 {d.name}
               </button>
             ))}
-            <button type="button" onClick={() => void xlsx()} disabled={busy} className="ml-auto rounded-lg border border-border px-3 py-1.5 text-sm font-medium">
+            <button type="button" onClick={() => void csvDownload()} disabled={busy} className="ml-auto rounded-lg border border-border px-3 py-1.5 text-sm font-medium">
+              CSV (alle Fahrer)
+            </button>
+            <button type="button" onClick={() => void xlsx()} disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium">
               Excel herunterladen
             </button>
           </div>
