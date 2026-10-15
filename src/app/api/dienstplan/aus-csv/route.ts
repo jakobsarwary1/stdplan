@@ -3,6 +3,7 @@ import { getCurrentUser } from '@/lib/auth'
 import { workbookForPlans } from '@/lib/planning/uberExcel'
 import { buildPlansFromCsv, monthLabelDE, timesheetView } from '@/lib/planning/uberPlan'
 import { buildCsvForPlans } from '@/lib/planning/uberCsv'
+import { buildWorkbookPerDriver } from '@/lib/planning/uberMappe'
 
 export const dynamic = 'force-dynamic'
 
@@ -35,6 +36,19 @@ export async function POST(request: Request) {
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'Content-Disposition': `attachment; filename="Stundenzettel_${month}.xlsx"`,
+      },
+    })
+  }
+
+  // Eine Arbeitsmappe, je Fahrer ein eigenes Tabellenblatt (getrennte Tabellen).
+  if (body.format === 'mappe') {
+    const wb = await buildWorkbookPerDriver(plans)
+    const buffer = await wb.xlsx.writeBuffer()
+    const month = plans[0].month ? monthLabelDE(plans[0].month).replace(/\s+/g, '_') : 'Monat'
+    return new NextResponse(Buffer.from(buffer), {
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="Stundenzettel_${month}_je-Fahrer.xlsx"`,
       },
     })
   }

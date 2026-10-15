@@ -81,14 +81,33 @@ function fullDay(a: number, b: number, sunday: boolean, holidaySerials: Set<numb
  * Dasselbe Blatt wie der Monats-Stundenzettel: Dienstplan mit Von/Bis,
  * Pausenminuten, Formelspalten und Monatszusammenfassung je Fahrer.
  */
-export async function buildStundenzettelWorkbook(input: {
+export type StundenzettelInput = {
   rows: StundenzettelRow[]
   summaries: StundenzettelSummary[]
   monthLabel?: string
   companyName?: string
   title?: string
   holidayDates?: string[]
-}): Promise<ExcelJS.Workbook> {
+  sheetName?: string
+}
+
+export async function buildStundenzettelWorkbook(input: StundenzettelInput): Promise<ExcelJS.Workbook> {
+  const workbook = new ExcelJS.Workbook()
+  workbook.creator = 'FleetOS'
+  workbook.created = new Date()
+  workbook.calcProperties.fullCalcOnLoad = true
+  await addStundenzettelSheet(workbook, input)
+  return workbook
+}
+
+/**
+ * Fügt einem Workbook EIN Dienstplan-Blatt im Standard-Design hinzu
+ * (für Arbeitsmappen mit mehreren Blättern, z. B. ein Blatt je Fahrer).
+ */
+export async function addStundenzettelSheet(
+  workbook: ExcelJS.Workbook,
+  input: StundenzettelInput,
+): Promise<ExcelJS.Worksheet> {
   const { rows, summaries } = input
   const title = input.title || 'Stundenzettel'
   const companyName = input.companyName
@@ -118,12 +137,7 @@ export async function buildStundenzettelWorkbook(input: {
   const nCols = HEADERS.length
   const L = (c: number) => colLetter(c)
 
-  const workbook = new ExcelJS.Workbook()
-  workbook.creator = 'FleetOS'
-  workbook.created = new Date()
-  workbook.calcProperties.fullCalcOnLoad = true
-
-  const sheet = workbook.addWorksheet('Dienstplan', {
+  const sheet = workbook.addWorksheet(input.sheetName || 'Dienstplan', {
     pageSetup: {
       paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
       horizontalCentered: true,
@@ -426,5 +440,5 @@ export async function buildStundenzettelWorkbook(input: {
     deleteColumns: false, deleteRows: false, sort: false, autoFilter: false, pivotTables: false,
   })
 
-  return workbook
+  return sheet
 }
