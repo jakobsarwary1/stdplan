@@ -308,6 +308,28 @@ export async function addStundenzettelSheet(
   sheet.getColumn(COLS.pBeginn).hidden = true
   sheet.getColumn(COLS.pEnde).hidden = true
 
+  // Sonntage rot kennzeichnen. Bewusst als bedingte Formatierung (nicht fest
+  // eingefärbt): die Regel prüft den Wochentag der Datumsspalte, bleibt also
+  // auch dann korrekt, wenn im heruntergeladenen Blatt ein Datum geändert wird.
+  if (firstDataRow > 0 && lastDataRow >= firstDataRow) {
+    sheet.addConditionalFormatting({
+      ref: `${L(COLS.fahrer)}${firstDataRow}:${L(COLS.hinweis)}${lastDataRow}`,
+      rules: [
+        {
+          type: 'expression',
+          priority: 1,
+          // WEEKDAY(..;2): Montag=1 … Sonntag=7. $B fixiert die Datumsspalte,
+          // die Zeile bleibt relativ, damit jede Zeile ihren eigenen Tag prüft.
+          formulae: [`WEEKDAY($${L(COLS.datum)}${firstDataRow},2)=7`],
+          style: {
+            font: { color: { argb: 'FFCC0000' }, bold: true },
+            fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: 'FFFDE8E8' } },
+          },
+        },
+      ],
+    })
+  }
+
   if (summaries && summaries.length > 0 && lastDataRow >= firstDataRow) {
     const colRange = (c: number) => `$${L(c)}$${firstDataRow}:$${L(c)}$${lastDataRow}`
     const fahrerRange = `$${L(COLS.fahrer)}$${firstDataRow}:$${L(COLS.fahrer)}$${lastDataRow}`
