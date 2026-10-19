@@ -13,10 +13,18 @@
 // Ab da identisch zu Uber: dieselbe planDriver()-Logik (Pausen, Ruhezeiten,
 // Ruhetag je Woche) und dieselben Excel-/CSV-Ausgaben, inkl. roter Sonntage.
 
-import { planDriver, type DriverPlan, type Trip } from './uberPlan'
+import { planDriverByGaps, type DriverPlan, type Trip } from './uberPlan'
 
 /** Nenn-Dauer je Fahrt in Minuten – nur fürs Ende der letzten Fahrt relevant. */
 export const FAHRT_MIN = 15
+
+/**
+ * Ab welcher Lücke (Stunden) zwischen zwei Fahrten eine NEUE Schicht beginnt.
+ * Kleinere Lücken gelten als Pause innerhalb derselben Schicht. So wird ein Tag
+ * mit Früh- UND Spätschicht korrekt in zwei Schichten geteilt (erste→letzte
+ * Fahrt je Schicht), statt die mittleren Fahrten zu verwerfen.
+ */
+export const SCHICHT_GAP_H = 3
 
 /** CSV mit Semikolon-Trenner lesen (Fahrlygo). Quotes/Zeilenumbrüche beachtet. */
 function parseCsvSemicolon(text: string): string[][] {
@@ -95,7 +103,7 @@ export function readTripsFromFahrlygoCsv(csvTexts: string[]): Map<string, Trip[]
 export function buildPlansFromFahrlygoCsv(csvTexts: string[]): DriverPlan[] {
   const drivers = readTripsFromFahrlygoCsv(csvTexts)
   return [...drivers.entries()]
-    .map(([name, trips]) => planDriver(name, trips))
+    .map(([name, trips]) => planDriverByGaps(name, trips, SCHICHT_GAP_H))
     .filter((p) => p.days.some((d) => d.kind === 'schicht'))
     .sort((a, b) => b.paidH - a.paidH || a.name.localeCompare(b.name, 'de'))
 }

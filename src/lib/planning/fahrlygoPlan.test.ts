@@ -26,3 +26,18 @@ test('buildPlansFromFahrlygoCsv gruppiert je Fahrer und überspringt Stornos', (
   const tag = plans[0].days.find((d) => d.date === '2026-01-05')
   assert.ok(tag && tag.kind === 'schicht', 'Max hat am 05.01. eine Schicht')
 })
+
+test('große Lücke am selben Tag ergibt ZWEI Schichten (nichts verworfen)', () => {
+  const csv = [
+    'Datum;Fahrer;Kunde;Abholadresse;Zieladresse;Status;Zahlung;Preis (EUR);Rate (EUR/km)',
+    '12.01.2026 06:30;A B;k;"x";"y";;;5,00;', // Frühschicht
+    '12.01.2026 08:40;A B;k;"x";"y";;;5,00;',
+    '12.01.2026 17:00;A B;k;"x";"y";;;5,00;', // Spätschicht (Lücke ~8 h)
+    '12.01.2026 20:10;A B;k;"x";"y";;;5,00;',
+  ].join('\n')
+  const p = buildPlansFromFahrlygoCsv([csv])[0]
+  const tag = p.days.find((d) => d.date === '2026-01-12')
+  assert.ok(tag, 'Tag vorhanden')
+  assert.equal(tag!.shifts.length, 2, 'zwei Schichten am selben Tag')
+  assert.equal(tag!.hinweis, '', 'keine Fahrt als „nicht im Plan" verworfen')
+})

@@ -444,11 +444,7 @@ function majorityMonth(trips: Trip[]): string {
   return [...count.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
 }
 
-export function planDriver(name: string, trips: Trip[]): DriverPlan {
-  const month = majorityMonth(trips)
-  const inMonth = month ? trips.filter((t) => dateKey(t.startMs).startsWith(month)) : trips
-  const placed = placeShifts(inMonth)
-  const chains = placed.chains
+function assemblePlan(name: string, month: string, chains: Trip[][], skipped: Trip[]): DriverPlan {
   const shifts: PlanShift[] = []
   let prevEnd: number | null = null
   for (const chain of chains) {
@@ -460,7 +456,7 @@ export function planDriver(name: string, trips: Trip[]): DriverPlan {
   }
 
   const skippedByDate = new Map<string, Trip[]>()
-  for (const t of placed.skipped) {
+  for (const t of skipped) {
     const iso = dateKey(t.startMs)
     const list = skippedByDate.get(iso)
     if (list) list.push(t)
@@ -555,6 +551,40 @@ export function planDriver(name: string, trips: Trip[]): DriverPlan {
     violations,
     weekNotes,
   }
+}
+
+export function planDriver(name: string, trips: Trip[]): DriverPlan {
+  const month = majorityMonth(trips)
+  const inMonth = month ? trips.filter((t) => dateKey(t.startMs).startsWith(month)) : trips
+  const placed = placeShifts(inMonth)
+  return assemblePlan(name, month, placed.chains, placed.skipped)
+}
+
+/**
+ * Wie planDriver, aber die Schichten entstehen rein über große Lücken: jede
+ * Fahrten-Gruppe (getrennt durch eine Lücke größer als gapThresholdH Stunden)
+ * wird EINE eigene Schicht – von der ersten bis zur letzten Fahrt der Gruppe.
+ * Es werden KEINE Fahrten als „nicht im Plan" verworfen. Passend für Fahrlygo,
+ * wo ein Fahrer am selben Tag mehrere Schichten fährt (z. B. früh und abends).
+ */
+export function planDriverByGaps(name: string, trips: Trip[], gapThresholdH: number): DriverPlan {
+  const month = majorityMonth(trips)
+  const inMonth = month ? trips.filter((t) => dateKey(t.startMs).startsWith(month)) : trips
+  const sorted = inMonth
+    .filter((t) => t.endMs > t.startMs)
+    .slice()
+    .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs)
+  const chains: Trip[][] = []
+  let cur: Trip[] = []
+  let curEnd = 0
+  for (const t of sorted) {
+    if (cur.length === 0) { cur = [t]; curEnd = t.endMs; continue }
+    const gapH = (t.startMs - curEnd) / H
+    if (gapH > gapThresholdH) { chains.push(cur); cur = [t]; curEnd = t.endMs }
+    else { cur.push(t); if (t.endMs > curEnd) curEnd = t.endMs }
+  }
+  if (cur.length) chains.push(cur)
+  return assemblePlan(name, month, chains, [])
 }
 
 function parseCsv(text: string): string[][] {
