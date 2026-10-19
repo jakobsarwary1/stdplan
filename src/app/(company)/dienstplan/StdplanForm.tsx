@@ -203,7 +203,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Dienstplan erstellen</h1>
           <p className="mt-1 max-w-xl text-sm leading-relaxed text-textMuted">
-            Aus der Uber-Fahrtliste wird je Fahrer der Monat gesetzt. Darunter bleibt die Planung aus den Monatsstunden.
+            Aus der Uber- oder Fahrlygo-Fahrtliste wird je Fahrer der Monat gesetzt. Darunter bleibt die Planung aus den Monatsstunden.
           </p>
         </div>
         <button onClick={() => planen()} disabled={planBusy || ausgefuellt === 0}

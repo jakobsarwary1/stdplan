@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
 import { workbookForPlans } from '@/lib/planning/uberExcel'
 import { buildPlansFromCsv, monthLabelDE, timesheetView } from '@/lib/planning/uberPlan'
+import { buildPlansFromFahrlygoCsv, looksLikeFahrlygo } from '@/lib/planning/fahrlygoPlan'
 import { buildCsvForPlans } from '@/lib/planning/uberCsv'
 import { buildWorkbookPerDriver } from '@/lib/planning/uberMappe'
 
@@ -23,9 +24,10 @@ export async function POST(request: Request) {
   if (!csv.trim()) return NextResponse.json({ error: 'Die CSV ist leer.' }, { status: 400 })
   if (csv.length > MAX_CSV) return NextResponse.json({ error: 'Die CSV ist zu groß.' }, { status: 400 })
 
-  const plans = buildPlansFromCsv([csv])
+  // Anbieter am CSV-Kopf erkennen: Fahrlygo (Datum;Fahrer;…) oder Uber (trip_activity).
+  const plans = looksLikeFahrlygo(csv) ? buildPlansFromFahrlygoCsv([csv]) : buildPlansFromCsv([csv])
   if (!plans.length) {
-    return NextResponse.json({ error: 'Keine abgeschlossenen Fahrten gefunden. Ist das eine Uber-Fahrtliste?' }, { status: 400 })
+    return NextResponse.json({ error: 'Keine Fahrten gefunden. Ist das eine Uber- oder Fahrlygo-Fahrtliste?' }, { status: 400 })
   }
 
   if (body.format === 'xlsx') {
