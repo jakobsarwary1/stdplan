@@ -154,9 +154,10 @@ export default function UberCsvPlan() {
     <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold">Monatsplan aus der Uber-Fahrtliste</h2>
+          <h2 className="text-base font-semibold">Monatsplan aus der Uber- oder Fahrlygo-Fahrtliste</h2>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-textMuted">
-            CSV „trip_activity“ hier ablegen. Daraus entsteht der Stundenzettel wie gewohnt:
+            CSV hier ablegen – Uber („trip_activity") oder Fahrlygo („rides-archive"), der Anbieter wird
+            automatisch erkannt. Daraus entsteht der Stundenzettel wie gewohnt:
             je Fahrer der ganze Monat mit Von, Bis, Pause in Minuten, bezahlten Stunden und Zuschlägen.
             Eine Schicht endet nach höchstens 10 Stunden, die nächste beginnt frühestens nach 11 Stunden.
           </p>
