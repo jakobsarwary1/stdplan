@@ -624,8 +624,58 @@ function col(header: string[], ...names: string[]): number {
   return -1
 }
 
+/** Name vereinheitlichen – NUR für einen sicheren, EXAKTEN Dublettenschlüssel
+ *  (Kleinschreibung, Umlaute/Akzente weg, Leerraum normiert). Keine Fuzzy-
+ *  Logik: „Syuleyman Sali Nasuf" und „SyuleymanDUP NasufDUP" bleiben getrennt. */
+export function normName(s: string): string {
+  return (s || '')
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+/**
+ * Mögliche – aber NICHT sicher gleiche – Doppel-Fahrer finden (nur Warnung,
+ * kein automatisches Zusammenführen). Verdacht, wenn Vor- und Nachname-Anfang
+ * stark übereinstimmen (z. B. „Nasuf" ↔ „NasufDUP"), die Namen aber nicht exakt
+ * gleich sind. Bewusst konservativ, damit echte verschiedene Fahrer („Ahmad …"
+ * vs „Mohammad …") nicht fälschlich als Dublette gemeldet werden.
+ */
+export function findeDoppelVerdacht(names: string[]): string[] {
+  const prefixLen = (a: string, b: string): number => {
+    let k = 0
+    while (k < a.length && k < b.length && a[k] === b[k]) k++
+    return k
+  }
+  const items = names.map((n) => ({ n, t: normName(n).split(' ').filter(Boolean) }))
+  const warn: string[] = []
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const a = items[i], b = items[j]
+      if (a.t.length === 0 || b.t.length === 0) continue
+      if (normName(a.n) === normName(b.n)) continue // exakt gleich → wird ohnehin gemergt
+      const first = prefixLen(a.t[0], b.t[0]) >= 4
+      const last = prefixLen(a.t[a.t.length - 1], b.t[b.t.length - 1]) >= 4
+      if (first && last) {
+        warn.push(`Möglicher Doppel-Fahrer: „${a.n}" und „${b.n}" – zur Sicherheit NICHT automatisch zusammengeführt. Bitte in der Fahrtliste prüfen.`)
+      }
+    }
+  }
+  return warn
+}
+
+/**
+ * Fahrten je Fahrer. Zusammengeführt wird NUR, wenn es sicher derselbe Fahrer
+ * ist: entweder gleiche Fahrer-ID aus der CSV (falls die Liste eine ID-Spalte
+ * hat) oder exakt derselbe (normalisierte) Name. Zwei verschiedene Fahrer mit
+ * gleichem Namen (unterschiedliche ID) bleiben getrennt und werden im
+ * Anzeigenamen unterscheidbar gemacht (" (2)").
+ */
 export function readTripsFromCsv(csvTexts: string[]): Map<string, Trip[]> {
-  const drivers = new Map<string, Trip[]>()
+  // key (ID oder normalisierter Name) → fester Anzeigename + Fahrten
+  const byKey = new Map<string, { name: string; trips: Trip[] }>()
   for (const text of csvTexts) {
     const rows = parseCsv(text)
     if (!rows.length) continue
@@ -636,6 +686,9 @@ export function readTripsFromCsv(csvTexts: string[]): Map<string, Trip[]> {
     const dropoff = col(header, 'Ankunftszeit der Fahrt')
     const start = col(header, 'Startzeit der Fahrt')
     const status = col(header, 'Fahrtstatus')
+    // Eindeutige Fahrer-Kennung, falls die Uber-Liste eine hat (NICHT die
+    // Fahrt-UUID). Ist sie da, ist der Merge hundertprozentig sicher.
+    const fahrerId = col(header, 'UUID des Fahrers', 'Fahrer-UUID', 'Fahrer UUID', 'Driver UUID', 'Fahrer-ID', 'Fahrer ID', 'Fahrernummer')
     if (request < 0 || dropoff < 0) continue
     for (let i = 1; i < rows.length; i++) {
       const r = rows[i]
@@ -645,13 +698,30 @@ export function readTripsFromCsv(csvTexts: string[]): Map<string, Trip[]> {
       const begin = parseWall(r[request] || '') ?? (start >= 0 ? parseWall(r[start] || '') : null)
       if (begin == null || end == null || end <= begin) continue
       const name = `${(r[vor] || '').trim()} ${(r[nach] || '').trim()}`.trim() || 'Unbekannt'
-      const list = drivers.get(name)
+      const id = fahrerId >= 0 ? (r[fahrerId] || '').trim() : ''
+      const key = id || normName(name) || 'unbekannt'
+      const e = byKey.get(key)
       const trip = { startMs: begin, endMs: end }
-      if (list) list.push(trip)
-      else drivers.set(name, [trip])
+      if (e) e.trips.push(trip)
+      else byKey.set(key, { name, trips: [trip] })
     }
   }
-  return drivers
+
+  // In eine Map nach Anzeigename überführen. Kollidieren zwei VERSCHIEDENE
+  // Schlüssel auf denselben Namen (zwei echte Fahrer, gleicher Name), bleiben
+  // sie getrennt – der zweite bekommt „ (2)".
+  const out = new Map<string, Trip[]>()
+  const zaehler = new Map<string, number>()
+  for (const { name, trips } of byKey.values()) {
+    let disp = name
+    if (out.has(disp)) {
+      const n = (zaehler.get(name) ?? 1) + 1
+      zaehler.set(name, n)
+      disp = `${name} (${n})`
+    }
+    out.set(disp, trips)
+  }
+  return out
 }
 
 export function buildPlansFromCsv(csvTexts: string[]): DriverPlan[] {

@@ -13,7 +13,7 @@
 // Ab da identisch zu Uber: dieselbe planDriver()-Logik (Pausen, Ruhezeiten,
 // Ruhetag je Woche) und dieselben Excel-/CSV-Ausgaben, inkl. roter Sonntage.
 
-import { planDriverByGaps, type DriverPlan, type Trip } from './uberPlan'
+import { planDriverByGaps, normName, type DriverPlan, type Trip } from './uberPlan'
 
 /** Nenn-Dauer je Fahrt in Minuten – nur fürs Ende der letzten Fahrt relevant. */
 export const FAHRT_MIN = 15
@@ -71,7 +71,9 @@ export function looksLikeFahrlygo(text: string): boolean {
 
 /** Fahrten je Fahrer aus einer oder mehreren Fahrlygo-CSVs. */
 export function readTripsFromFahrlygoCsv(csvTexts: string[]): Map<string, Trip[]> {
-  const drivers = new Map<string, Trip[]>()
+  // Nach normalisiertem Namen gruppieren (Fahrlygo hat keine Fahrer-ID) –
+  // exakt, nie fuzzy: nur schreibweisengleiche Namen werden zusammengeführt.
+  const byKey = new Map<string, { name: string; trips: Trip[] }>()
   for (const text of csvTexts) {
     const rows = parseCsvSemicolon(text)
     if (!rows.length) continue
@@ -91,12 +93,15 @@ export function readTripsFromFahrlygoCsv(csvTexts: string[]): Map<string, Trip[]
       const ts = parseFahrlygoDatum(r[datumI] || '')
       if (ts == null) continue
       const trip: Trip = { startMs: ts, endMs: ts + FAHRT_MIN * 60000 }
-      const list = drivers.get(name)
-      if (list) list.push(trip)
-      else drivers.set(name, [trip])
+      const key = normName(name) || 'unbekannt'
+      const e = byKey.get(key)
+      if (e) e.trips.push(trip)
+      else byKey.set(key, { name, trips: [trip] })
     }
   }
-  return drivers
+  const out = new Map<string, Trip[]>()
+  for (const { name, trips } of byKey.values()) out.set(name, trips)
+  return out
 }
 
 /** Monats-Pläne je Fahrer aus Fahrlygo-CSVs – wie buildPlansFromCsv für Uber. */

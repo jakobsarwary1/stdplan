@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
 import { workbookForPlans } from '@/lib/planning/uberExcel'
-import { buildPlansFromCsv, monthLabelDE, timesheetView, type DriverPlan } from '@/lib/planning/uberPlan'
+import { buildPlansFromCsv, monthLabelDE, timesheetView, findeDoppelVerdacht, type DriverPlan } from '@/lib/planning/uberPlan'
 import { buildPlansFromFahrlygoCsv, looksLikeFahrlygo } from '@/lib/planning/fahrlygoPlan'
 import { buildCsvForPlans } from '@/lib/planning/uberCsv'
 import { buildWorkbookPerDriver } from '@/lib/planning/uberMappe'
@@ -89,6 +89,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     month: plans[0].month,
     monthLabel: plans[0].month ? monthLabelDE(plans[0].month) : '',
+    hinweise: findeDoppelVerdacht(plans.map((p) => p.name)),
     drivers: plans.map((p) => ({
       name: p.name,
       paidH: p.paidH,

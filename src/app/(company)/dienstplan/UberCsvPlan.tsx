@@ -45,6 +45,7 @@ export default function UberCsvPlan() {
   const [drivers, setDrivers] = useState<Driver[] | null>(null)
   const [aktiv, setAktiv] = useState('')
   const [ziele, setZiele] = useState<Record<string, Ziel>>({})
+  const [hinweise, setHinweise] = useState<string[]>([])
 
   /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
   function zieleBody(): Record<string, { gesamt: number; sonntag: number }> {
@@ -76,6 +77,7 @@ export default function UberCsvPlan() {
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Neuberechnung fehlgeschlagen.')
       setDrivers((j.drivers as Driver[]) ?? [])
+      setHinweise((j.hinweise as string[]) ?? [])
     } catch (err) {
       setFehler((err as Error).message)
     } finally {
@@ -100,6 +102,7 @@ export default function UberCsvPlan() {
       setMonth(j.monthLabel || j.month || '')
       const list = (j.drivers as Driver[]) ?? []
       setDrivers(list)
+      setHinweise((j.hinweise as string[]) ?? [])
       setAktiv(list[0]?.name ?? '')
     } catch (err) {
       setDrivers(null)
@@ -224,6 +227,15 @@ export default function UberCsvPlan() {
       </div>
       {datei && <p className="mt-2 text-xs text-textMuted">{datei}</p>}
       {fehler && <p className="mt-3 text-sm text-danger">{fehler}</p>}
+
+      {hinweise.length > 0 && (
+        <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-400/10 p-3 text-sm text-amber-200">
+          <div className="mb-1 font-medium">⚠ Mögliche Doppel-Fahrer</div>
+          <ul className="space-y-1 text-xs">
+            {hinweise.map((h) => <li key={h}>{h}</li>)}
+          </ul>
+        </div>
+      )}
 
       {drivers && fahrer && (
         <div className="mt-4 space-y-3">

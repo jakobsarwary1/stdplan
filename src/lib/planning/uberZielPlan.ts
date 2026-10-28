@@ -19,6 +19,7 @@
 import { dateKey, weekdayIndex, type DriverPlan, type PlanDay, type PlanShift } from './uberPlan'
 
 const MAX_NET_MIN = 8 * 60
+const MAX_PAUSE_MIN = 90 // 1,5 h – betriebliche Obergrenze (wie im Uber-Pfad)
 const H = 3600000
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
@@ -30,11 +31,22 @@ export type ZielVorgabe = {
   sonntag: number
 }
 
-/** Pflichtpause (Minuten) für eine Netto-Arbeitszeit nach § 4 ArbZG. */
-function pausenMin(netMin: number): number {
+/** Gesetzliches Minimum (Minuten) für eine Netto-Arbeitszeit nach § 4 ArbZG. */
+function gesetzMin(netMin: number): number {
   if (netMin > 9 * 60) return 45
   if (netMin > 6 * 60) return 30
   return 0
+}
+
+/**
+ * Pausenlänge: die ECHTE Lücke des Tages, aber mindestens das gesetzliche
+ * Minimum und höchstens 1,5 h. Nur die Länge zählt (die genaue Uhrzeit der
+ * Pause legen wir nicht fest). Im Ziel-Modus ändert die Pause den LOHN nicht –
+ * die bezahlte Zeit (Netto) steht ja fest –, nur das Von–Bis-Fenster.
+ */
+function pausenMin(netMin: number, echteLueckeMin: number): number {
+  const minimum = gesetzMin(netMin)
+  return Math.min(MAX_PAUSE_MIN, Math.max(minimum, Math.round(echteLueckeMin)))
 }
 
 /**
@@ -89,8 +101,8 @@ export function skaliere(reals: number[], zielMin: number, maxMin = MAX_NET_MIN)
 }
 
 /** Baut aus Tag + echter Startzeit (ms) + Netto-Minuten eine Schicht. */
-function baueSchicht(startMs: number, netMin: number, restH: number | null): PlanShift {
-  const pMin = pausenMin(netMin)
+function baueSchicht(startMs: number, netMin: number, echteLueckeMin: number, restH: number | null): PlanShift {
+  const pMin = pausenMin(netMin, echteLueckeMin)
   const spanMin = netMin + pMin
   const endMs = startMs + spanMin * 60000
   const s = new Date(startMs)
@@ -173,8 +185,9 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
       return { ...tag, kind: 'frei', shifts: [], hinweis: 'durch Zielvorgabe nicht belegt', ausgelassen: '' }
     }
     const startMs = Math.min(...tag.shifts.map((s) => s.startMs))
+    const realPause = Math.max(0, ...tag.shifts.map((s) => s.pauseH)) * 60
     const restH = prevEndMs != null ? (startMs - prevEndMs) / H : null
-    const shift = baueSchicht(startMs, netMin, restH)
+    const shift = baueSchicht(startMs, netMin, realPause, restH)
     prevEndMs = shift.endMs
     paidH += shift.paidH
     nettoH += shift.nettoH
