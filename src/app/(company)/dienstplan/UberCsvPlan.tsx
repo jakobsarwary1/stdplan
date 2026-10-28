@@ -18,6 +18,7 @@ type Row = {
 type Driver = {
   name: string
   paidH: number
+  nettoH: number
   workDays: number
   freeDays: number
   ruheTage: number
@@ -204,7 +205,7 @@ export default function UberCsvPlan() {
             </button>
           </div>
           <p className="text-sm text-textMuted">
-            {n2(fahrer.paidH)} bezahlte Stunden · {fahrer.workDays} Arbeitstage · {fahrer.freeDays} frei
+            {n2(fahrer.nettoH)} bezahlte Stunden (Arbeitszeit ohne Pause) · {n2(fahrer.paidH)} brutto · {fahrer.workDays} Arbeitstage · {fahrer.freeDays} frei
             {fahrer.ruheTage > 0 && ` · ${fahrer.ruheTage} als Ruhetag gesetzt`}
             {fahrer.violations > 0 && ` · ${fahrer.violations} Hinweise`}
           </p>

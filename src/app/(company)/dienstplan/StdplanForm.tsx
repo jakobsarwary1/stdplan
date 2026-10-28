@@ -118,7 +118,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
     const plan: ManualResult | null = total > 0
       ? erstellePlan(year, month, { bezahlt: total, sunday, n25, n40 })
       : null
-    const basis = plan ? plan.summe.bezahlt : 0
+    const basis = plan ? plan.summe.netto : 0 // Lohn auf die bezahlte Arbeitszeit (Spanne minus Pause)
     const soStd = plan ? plan.summe.so : 0
     const n25Std = plan ? plan.summe.n25 : 0
     const n40Std = plan ? plan.summe.n40 : 0
@@ -332,7 +332,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                     )}
                   </div>
                   <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-                    <ZielIst label="Gesamt (bezahlt)" ziel={aktiv.ziel.bezahlt} ist={aktiv.summe.bezahlt} />
+                    <ZielIst label="Gesamt (brutto)" ziel={aktiv.ziel.bezahlt} ist={aktiv.summe.bezahlt} />
                     <ZielIst label="Sonntag 50 %" ziel={aktiv.ziel.sunday} ist={aktiv.summe.so} />
                     <ZielIst label="Nacht 40 %" ziel={aktiv.ziel.n40} ist={aktiv.summe.n40} />
                     <ZielIst label="Nacht 25 %" ziel={aktiv.ziel.n25} ist={aktiv.summe.n25} />
@@ -350,8 +350,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                         <th className="py-1 pr-4 font-medium">Datum</th>
                         <th className="py-1 pr-4 font-medium">Von–Bis</th>
                         <th className="py-1 pr-3 text-right font-medium">Pause</th>
+                        <th className="py-1 pr-3 text-right font-medium">Brutto</th>
                         <th className="py-1 pr-3 text-right font-semibold text-text">Bezahlt</th>
-                        <th className="py-1 pr-3 text-right font-medium">Netto</th>
                         <th className="py-1 pr-3 text-right font-medium">Ruhe</th>
                         <th className="py-1 pr-3 text-right font-medium">N 25%</th>
                         <th className="py-1 pr-3 text-right font-medium">N 40%</th>
@@ -370,9 +370,9 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                               {nacht && <span className="mr-1" title="Schicht mit Nachtzuschlag">🌙</span>}{s.von}–{s.bis}
                             </td>
                             <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{s.pause}′</td>
-                            <td className={`py-1.5 pr-3 text-right font-medium tabular-nums ${kurz ? 'text-amber-300' : 'text-text'}`}
+                            <td className={`py-1.5 pr-3 text-right tabular-nums ${kurz ? 'text-amber-300' : 'text-textMuted'}`}
                               title={kurz ? 'Kurze Schicht (< 4 h)' : undefined}>{n2(s.bezahlt)}</td>
-                            <td className="py-1.5 pr-3 text-right tabular-nums text-textMuted">{n2(s.netto)}</td>
+                            <td className="py-1.5 pr-3 text-right font-medium tabular-nums text-text">{n2(s.netto)}</td>
                             <td className={`py-1.5 pr-3 text-right tabular-nums ${s.ruhe != null && s.ruhe < 11 ? 'font-semibold text-danger' : 'text-textMuted'}`}
                               title={s.ruhe != null && s.ruhe < 11 ? 'Ruhezeit unter 11 h (§ 5 ArbZG)' : undefined}>
                               {s.ruhe == null ? '–' : n2(s.ruhe)}
@@ -387,8 +387,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                     <tfoot>
                       <tr className="border-t border-border font-semibold">
                         <td className="py-2 pr-4" colSpan={3}>Summe</td>
-                        <td className="py-2 pr-3 text-right tabular-nums text-text">{n2(aktiv.summe.bezahlt)}</td>
-                        <td className="py-2 pr-3 text-right tabular-nums text-textMuted">{n2(aktiv.summe.netto)}</td>
+                        <td className="py-2 pr-3 text-right tabular-nums text-textMuted">{n2(aktiv.summe.bezahlt)}</td>
+                        <td className="py-2 pr-3 text-right tabular-nums text-text">{n2(aktiv.summe.netto)}</td>
                         <td className="py-2 pr-3 text-right tabular-nums text-textMuted">
                           {aktiv.summe.minRuhe == null ? '–' : <span className={aktiv.summe.ruheVerletzt ? 'text-danger' : ''}>min {n2(aktiv.summe.minRuhe)}</span>}
                         </td>
@@ -403,8 +403,8 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
             )}
 
             <div className="border-t border-border px-4 py-2 text-xs leading-relaxed text-textMuted">
-              <strong className="text-text">Bezahlt</strong> = „Gesamt Std" (Beginn→Ende inkl. bezahlter Pause, Lohnbasis) ·
-              <strong className="text-text"> Netto</strong> = ohne Pause · Ruhe = zur Vorschicht (≥ 11 h, § 5 ArbZG, sonst rot) ·
+              <strong className="text-text">Brutto</strong> = Beginn→Ende (Anwesenheit, Pause inklusive) ·
+              <strong className="text-text"> Bezahlt</strong> = Brutto minus Pause (Lohnbasis, Pause unbezahlt) · Ruhe = zur Vorschicht (≥ 11 h, § 5 ArbZG, sonst rot) ·
               N 25 % (04–06 &amp; 20–24) · N 40 % (00–04, steuerfrei) · So 50 % (§ 3b EStG).
               <span className="text-accent"> Sonntage farbig</span>, 🌙 = Nachtzuschlag, kurze Schichten (&lt; 4 h) orange.
               Oben „Excel herunterladen" lädt denselben Plan mit editierbaren Formeln.
@@ -483,7 +483,7 @@ export default function StdplanForm({ drivers, companyName }: { drivers: Driver[
                       <Unit suffix="€"><input className="inp pr-6 text-right tabular-nums" inputMode="decimal"
                         value={r.e.rate} onChange={(e) => set(r.d.id, 'rate', e.target.value)} /></Unit>
                     </Field>
-                    <Field label="Gesamt Std" tip="Bezahlte Stunden des Monats, Pause inklusive. Das System verteilt sie auf die Tage.">
+                    <Field label="Gesamt Std" tip="Brutto-/Anwesenheitsstunden des Monats (Beginn→Ende, Pause inklusive). Das System verteilt sie auf die Tage; bezahlt wird die Arbeitszeit = Brutto minus Pause.">
                       <Unit suffix="Std"><input className="inp pr-9 text-right tabular-nums" inputMode="decimal"
                         placeholder="0" value={r.e.total} onChange={(e) => set(r.d.id, 'total', e.target.value)} /></Unit>
                     </Field>
@@ -574,7 +574,8 @@ function WochenPlan({ year, month, plan, ziel }: {
   return (
     <div className="space-y-3 border-t border-border/70 px-4 py-4">
       <div className="flex flex-wrap gap-1.5">
-        <SummenChip label="Bezahlt" ist={plan.summe.bezahlt} soll={ziel.bezahlt} />
+        <SummenChip label="Brutto" ist={plan.summe.bezahlt} soll={ziel.bezahlt} />
+        <SummenChip label="Bezahlt" ist={plan.summe.netto} soll={plan.summe.netto} />
         <SummenChip label="Sonntag" ist={plan.summe.so} soll={ziel.sunday} accent />
         <SummenChip label="Nacht 40 %" ist={plan.summe.n40} soll={ziel.n40} />
         <SummenChip label="Nacht 25 %" ist={plan.summe.n25} soll={ziel.n25} />

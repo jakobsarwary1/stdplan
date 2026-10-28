@@ -3,13 +3,14 @@
 // (computeSurcharges/computeExtendedStats) und als gespiegelte Excel-Formeln –
 // das driftete auseinander. Ab jetzt ist DIESE Datei die einzige Quelle.
 //
-// Geschäftsregel (Jakob, 14.09.2026):
-//   • Bezahlte Stunden = Beginn→Ende (die volle Schichtspanne). Die Pause ist
-//     BEZAHLT und bleibt drin; der Arbeitsweg ist NIE bezahlt und zählt NIE in
-//     die Stundensumme (er dient nur der Ruhezeit-/Spesenbetrachtung).
-//   • Zuschläge nach § 3b EStG laufen dagegen NUR auf die tatsächliche
-//     ARBEITSZEIT ohne Pause – die Pause ist keine Arbeitszeit und bekommt
-//     keinen (steuerfreien) Zuschlag.
+// Geschäftsregel (Jakob, 28.10.2026 – ersetzt die frühere Regel):
+//   • BRUTTO/Anwesenheit = Beginn→Ende (die volle Schichtspanne, Pause drin).
+//   • BEZAHLTE Arbeitszeit = Brutto MINUS Pause. Die Pause ist NICHT bezahlt.
+//     Macht man die Pause länger, sinkt die bezahlte Arbeitszeit entsprechend.
+//     Der Arbeitsweg zählt NIE mit (weder zur Anwesenheit noch zum Lohn).
+//   • Grundlohn = bezahlte Arbeitszeit (+ Krankenstunden) × Stundenlohn.
+//   • Zuschläge nach § 3b EStG laufen auf dieselbe Arbeitszeit ohne Pause
+//     (die Pause ist keine Arbeitszeit und bekommt keinen Zuschlag).
 //   • Krankenstunden (Entgeltfortzahlung § 3 EntgFG) zählen zum Grundlohn,
 //     aber ohne Zuschläge.
 //
@@ -25,9 +26,9 @@ export type WageShiftInput = {
 }
 
 export type ShiftHours = {
-  /** Schichtspanne Beginn→Ende – Pause bezahlt, Weg raus. Basis des Grundlohns. */
+  /** Brutto/Anwesenheit = Schichtspanne Beginn→Ende (Pause drin, Weg raus). */
   paidHours: number
-  /** Spanne minus Pause = reine Arbeitszeit. Basis der § 3b-Zuschläge. */
+  /** Spanne minus Pause = bezahlte Arbeitszeit. Basis für Grundlohn UND § 3b-Zuschläge. */
   workedHours: number
   breakHours: number
   night25: number // Arbeitszeit in 04–06 und 20–24 Uhr
@@ -102,10 +103,10 @@ export function computeShiftHours(shift: WageShiftInput, holidayDates: Set<strin
 }
 
 export type MonthlyHours = {
-  paidHours: number // Σ Schichtspannen (bezahlt, Pause drin, Weg raus)
-  workedHours: number // Σ reine Arbeitszeit
+  paidHours: number // Σ Schichtspannen = Brutto/Anwesenheit (Pause drin, Weg raus)
+  workedHours: number // Σ bezahlte Arbeitszeit (Spanne minus Pause) – Lohnbasis
   sickHours: number // Entgeltfortzahlung § 3 EntgFG
-  totalPaidHours: number // paidHours + sickHours – die bezahlte Gesamtstundenzahl
+  totalPaidHours: number // bezahlte Arbeitszeit + Krankenstunden – die abgerechnete Gesamtstundenzahl
   night25: number
   night40: number
   sunday50: number
@@ -128,7 +129,8 @@ export function sumShiftHours(
     acc.sunday50 += h.sunday50
     acc.holiday125 += h.holiday125
   })
-  return { ...acc, sickHours, totalPaidHours: acc.paidHours + sickHours }
+  // Abgerechnet wird die ARBEITSZEIT (Spanne minus Pause), nicht die Anwesenheit.
+  return { ...acc, sickHours, totalPaidHours: acc.workedHours + sickHours }
 }
 
 /** Gesetzliche Zuschlagsprozentsätze nach § 3b EStG (als Aufschlag auf den Stundenlohn). */
@@ -136,7 +138,7 @@ export const SURCHARGE_FACTORS = { night25: 0.25, night40: 0.4, sunday50: 0.5, h
 
 export type WageBreakdown = MonthlyHours & {
   hourlyRate: number | null
-  /** (paidHours + sickHours) × Stundenlohn */
+  /** (bezahlte Arbeitszeit + Krankenstunden) × Stundenlohn */
   grundlohn: number | null
   night25Amount: number | null
   night40Amount: number | null

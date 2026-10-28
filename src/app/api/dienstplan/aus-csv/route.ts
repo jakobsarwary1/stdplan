@@ -73,6 +73,7 @@ export async function POST(request: Request) {
     drivers: plans.map((p) => ({
       name: p.name,
       paidH: p.paidH,
+      nettoH: p.nettoH,
       workDays: p.workDays,
       freeDays: p.freeDays,
       ruheTage: p.ruheTage,

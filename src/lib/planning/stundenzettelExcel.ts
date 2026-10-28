@@ -116,15 +116,15 @@ export async function addStundenzettelSheet(
   const holidaySerialSet = new Set<number>(holidaySerials)
 
   const COLS = {
-    fahrer: 1, datum: 2, von: 3, bis: 4, beginn: 5, ende: 6, pause: 7, weg: 8,
-    netto: 9, ruhe: 10, n25: 11, n40: 12, so50: 13, fe125: 14,
-    hinweis: 15, pOffset: 16, pBeginn: 17, pEnde: 18,
+    fahrer: 1, datum: 2, von: 3, bis: 4, beginn: 5, ende: 6, pause: 7,
+    netto: 8, ruhe: 9, n25: 10, n40: 11, so50: 12, fe125: 13,
+    hinweis: 14, pOffset: 15, pBeginn: 16, pEnde: 17,
   }
   const HEADERS: [number, string, number][] = [
     [COLS.fahrer, 'Fahrer', 14], [COLS.datum, 'Datum', 14],
     [COLS.von, 'Von', 8], [COLS.bis, 'Bis', 8],
     [COLS.beginn, 'Beginn', 16], [COLS.ende, 'Ende', 16],
-    [COLS.pause, 'Pause', 12], [COLS.weg, 'Weg (Min.)', 8],
+    [COLS.pause, 'Pause', 12],
     [COLS.netto, 'Bezahlt (Std.)', 10],
     [COLS.ruhe, 'Ruhezeit (Std.)', 10],
     [COLS.n25, 'Nacht 25%', 8], [COLS.n40, 'Nacht 40%', 8],
@@ -212,11 +212,6 @@ export async function addStundenzettelSheet(
     cP.numFmt = '0.##" h"'
     cP.fill = inputFill
     cP.protection = unlocked
-    const cW = cell(COLS.weg)
-    cW.value = frei ? null : r.commuteMinutes
-    cW.numFmt = '0'
-    cW.fill = inputFill
-    cW.protection = unlocked
     const cO = cell(COLS.pOffset)
     cO.value = frei ? 0 : r.breakOffsetMin
     cO.numFmt = '0'
@@ -254,8 +249,10 @@ export async function addStundenzettelSheet(
     cPE.value = { formula: wennGefuellt(R, `${pbRef}+${pRef}/24`), result: frei ? '' : peSerial }
     cPE.numFmt = DT
 
+    // Bezahlte Arbeitszeit = Spanne (Ende−Beginn) MINUS Pause. Die Pause-Zelle
+    // (pRef) steht in Stunden. Längere Pause → weniger bezahlte Zeit (automatisch).
     const cN = cell(COLS.netto)
-    cN.value = { formula: wennGefuellt(R, `(${eRef}-${bRef})*24`), result: frei ? '' : r.paidHours }
+    cN.value = { formula: wennGefuellt(R, `(${eRef}-${bRef})*24-${pRef}`), result: frei ? '' : Math.max(0, r.paidHours - r.breakMinutes / 60) }
     cN.numFmt = '0.00'
 
     const cR = cell(COLS.ruhe)
@@ -443,7 +440,7 @@ export async function addStundenzettelSheet(
 
   sheet.addRow([])
   const note = sheet.addRow([
-    'Gelbe Felder (Von, Bis, Pause, Weg) sind editierbar - alle übrigen Spalten (Beginn/Ende, Bezahlt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Uhrzeiten werden in Von/Bis eingetragen (z. B. 05:00); Beginn/Ende ergeben sich daraus als Datum + Uhrzeit. Endet die Schicht rechnerisch vor ihrem Beginn (z. B. 21:00 bis 05:00), zählt das Ende automatisch auf den Folgetag. Auch an freien Tagen sind alle Formeln vorhanden: Zeiten eintragen genügt. Bezahlt = (Ende−Beginn)×24 – die Pause ist bezahlt (kein Abzug), der Arbeitsweg (Weg) zählt nie mit. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils reine Arbeitszeit ohne Pause (die Pause ist keine Arbeitszeit und bekommt keinen Zuschlag). Die Zuschlagsstunden überschneiden sich (eine Sonntagnacht-Stunde zählt z. B. bei Nacht UND Sonntag) und ergeben in Summe bewusst mehr als die reine Arbeitszeit; im Grundlohn wird jede bezahlte Stunde nur EINMAL (100%) gezählt, die Zuschläge sind reine prozentuale Aufschläge. Lohn gesamt = (Bezahlt + Krank) × Stundenlohn plus alle vier Zuschläge; die Nachtzuschläge sind steuerfrei, werden aber ausgezahlt und zählen deshalb mit. — Zum Schutz vor versehentlichen Fehlern ist das Blatt gesperrt: NUR die gelben Felder lassen sich bearbeiten. Der Schutz kann bei Bedarf über „Überprüfen › Blattschutz aufheben" (ohne Passwort) entfernt werden.',
+    'Gelbe Felder (Von, Bis, Pause) sind editierbar - alle übrigen Spalten (Beginn/Ende, Bezahlt, Ruhezeit, Zuschläge) und die Zusammenfassung sind Formeln und berechnen sich beim Ändern automatisch neu. Uhrzeiten werden in Von/Bis eingetragen (z. B. 05:00); Beginn/Ende ergeben sich daraus als Datum + Uhrzeit. Endet die Schicht rechnerisch vor ihrem Beginn (z. B. 21:00 bis 05:00), zählt das Ende automatisch auf den Folgetag. Auch an freien Tagen sind alle Formeln vorhanden: Zeiten eintragen genügt. Bezahlt = (Ende−Beginn)×24 − Pause – die Pause ist NICHT bezahlt: wird die Pause länger, sinkt die bezahlte Arbeitszeit automatisch. Ruhezeit = (Beginn − Ende der vorherigen Schicht)×24 (gesetzliches Minimum i. d. R. 11 Std., § 5 ArbZG). Zuschläge nach § 3b EStG: Nacht 25% (04-06 & 20-24 Uhr), Nacht 40% steuerfrei (00-04 Uhr), Sonntag 50%, Feiertag 125% - jeweils dieselbe Arbeitszeit ohne Pause. Die Zuschlagsstunden überschneiden sich (eine Sonntagnacht-Stunde zählt z. B. bei Nacht UND Sonntag) und ergeben in Summe bewusst mehr als die Arbeitszeit; im Grundlohn wird jede bezahlte Stunde nur EINMAL (100%) gezählt, die Zuschläge sind reine prozentuale Aufschläge. Lohn gesamt = (Bezahlt + Krank) × Stundenlohn plus alle vier Zuschläge; die Nachtzuschläge sind steuerfrei, werden aber ausgezahlt und zählen deshalb mit. — Zum Schutz vor versehentlichen Fehlern ist das Blatt gesperrt: NUR die gelben Felder lassen sich bearbeiten. Der Schutz kann bei Bedarf über „Überprüfen › Blattschutz aufheben" (ohne Passwort) entfernt werden.',
   ])
   note.font = { italic: true, size: 9, color: { argb: 'FF666666' } }
   sheet.mergeCells(note.number, 1, note.number, nCols)

@@ -33,7 +33,7 @@ export function planToSummary(plan: DriverPlan): StundenzettelSummary {
   const wage = computeWage(hours, null)
   return {
     driverName: plan.name,
-    paidHours: hours.paidHours,
+    paidHours: hours.workedHours, // „Bezahlt" = Arbeitszeit (Spanne minus Pause)
     sickHours: 0,
     night25: hours.night25,
     night40: hours.night40,

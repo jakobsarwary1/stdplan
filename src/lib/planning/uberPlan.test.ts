@@ -126,7 +126,8 @@ test('Jeder Kalendertag ist eine Zeile von Di 01.09 bis Mi 30.09', () => {
   assert.equal(first.tag, 'Di 01.09')
   assert.equal(first.start, '08:00')
   assert.equal(first.ende, '16:00')
-  assert.equal(first.stunden, 8)
+  // Bezahlte Arbeitszeit = Spanne 8 h minus 0,5 h Pflichtpause (Pause unbezahlt).
+  assert.equal(first.stunden, 7.5)
   const doppelt = dayRow(plan.days.find((d) => d.date === '2026-09-08')!)
   assert.equal(doppelt.tag, 'Di 08.09')
   assert.equal(doppelt.start, '08:00 / 23:00')

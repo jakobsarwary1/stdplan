@@ -159,7 +159,8 @@ function buildPlan(drivers: DriverInput[], year: number, month: number): { rows:
     const monthly = sumShiftHours(shifts.map((s) => ({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.breaks })), new Set(), 0)
     const w = computeWage(monthly, rate)
     summaries.push({
-      driverName: name, paidHours: monthly.paidHours, sickHours: 0,
+      // „Bezahlt" = bezahlte Arbeitszeit (Spanne minus Pause), nicht die Anwesenheit.
+      driverName: name, paidHours: monthly.workedHours, sickHours: 0,
       night25: monthly.night25, night40: monthly.night40, sunday50: monthly.sunday50, holiday125: monthly.holiday125,
       hourlyRate: rate, night25Amount: w.night25Amount, night40Amount: w.night40Amount,
       sunday50Amount: w.sunday50Amount, holiday125Amount: w.holiday125Amount, grossWage: w.brutto,

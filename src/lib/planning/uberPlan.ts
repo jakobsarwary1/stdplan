@@ -60,7 +60,10 @@ export type DriverPlan = {
   name: string
   month: string
   days: PlanDay[]
+  /** Brutto/Anwesenheit = Σ Schichtspannen (Pause drin). */
   paidH: number
+  /** Bezahlte Arbeitszeit = Σ (Spanne minus Pause). Lohnbasis. */
+  nettoH: number
   workDays: number
   freeDays: number
   ruheTage: number
@@ -138,7 +141,8 @@ export function dayRow(day: PlanDay): DayLine {
     start,
     ende,
     pause,
-    stunden: round2(day.shifts.reduce((sum, s) => sum + s.paidH, 0)),
+    // „Stunden" = bezahlte Arbeitszeit (Spanne minus Pause); die Pause ist unbezahlt.
+    stunden: round2(day.shifts.reduce((sum, s) => sum + s.nettoH, 0)),
     hinweis,
   }
 }
@@ -275,7 +279,8 @@ export function timesheetView(plan: DriverPlan): TimesheetView[] {
     return {
       tag, von: hm(line.startMin), bis: hm(line.endMin),
       pauseMin: line.breakMinutes,
-      bezahlt: round2(line.paidHours),
+      // Bezahlt = Spanne minus Pause (Pause unbezahlt).
+      bezahlt: round2(Math.max(0, line.paidHours - line.breakMinutes / 60)),
       ruhe: line.ruheH == null ? null : round2(line.ruheH),
       nacht25: round2(line.night25),
       nacht40: round2(line.night40),
@@ -528,6 +533,7 @@ function assemblePlan(name: string, month: string, chains: Trip[][], skipped: Tr
   })
 
   let paidH = 0
+  let nettoH = 0
   let workDays = 0
   let violations = 0
   for (const day of days) {
@@ -536,6 +542,7 @@ function assemblePlan(name: string, month: string, chains: Trip[][], skipped: Tr
     workDays++
     for (const s of day.shifts) {
       paidH += s.paidH
+      nettoH += s.nettoH
       if (s.hinweis) violations++
     }
   }
@@ -545,6 +552,7 @@ function assemblePlan(name: string, month: string, chains: Trip[][], skipped: Tr
     month,
     days,
     paidH: round2(paidH),
+    nettoH: round2(nettoH),
     workDays,
     freeDays: days.filter((d) => d.kind !== 'schicht').length,
     ruheTage: dropped.size,

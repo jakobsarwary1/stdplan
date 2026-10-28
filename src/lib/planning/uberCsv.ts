@@ -32,7 +32,7 @@ export function buildCsvForPlans(plans: DriverPlan[]): { csv: string; monthLabel
       const d = dayRow(day)
       z.push(row(d.tag, d.start, d.ende, d.pause, d.stunden, d.hinweis))
     }
-    z.push(row('Summe', '', '', '', round2(p.paidH), `${p.workDays} Arbeitstage · ${p.freeDays} frei · ${p.ruheTage} Ruhetag`))
+    z.push(row('Summe', '', '', '', round2(p.nettoH), `${p.workDays} Arbeitstage · ${p.freeDays} frei · ${p.ruheTage} Ruhetag`))
     return z.join('\r\n')
   })
 
