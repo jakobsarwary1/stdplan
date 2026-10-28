@@ -55,6 +55,24 @@ test('planAnZiel: Monat trifft Gesamt und Sonntag exakt, echte Tage bleiben', ()
   assert.ok(arbeit.every((d) => d.shifts[0].nettoH <= 8 + 1e-9))
 })
 
+test('planAnZiel: Sonntag größer als möglich → Gesamt bleibt exakt, Rest auf Werktage', () => {
+  // Nur 2 Sonntage gefahren (04., 11.) → max 16 h Sonntag; Ziel Sonntag 24 h.
+  const trips: Trip[] = [
+    trip('2026-01-04', '08:00', '2026-01-04', '18:00'), // So
+    trip('2026-01-11', '08:00', '2026-01-11', '18:00'), // So
+    trip('2026-01-05', '08:00', '2026-01-05', '18:00'),
+    trip('2026-01-06', '08:00', '2026-01-06', '18:00'),
+    trip('2026-01-07', '08:00', '2026-01-07', '18:00'),
+    trip('2026-01-08', '08:00', '2026-01-08', '18:00'),
+    trip('2026-01-09', '08:00', '2026-01-09', '18:00'),
+  ]
+  const ziel = planAnZiel(planDriver('Y', trips), { gesamt: 40, sonntag: 24 })
+  // Gesamt EXAKT getroffen, Sonntag bei max 16 gedeckelt, Warnung vorhanden.
+  assert.equal(Math.round(netSumme(ziel) * 100) / 100, 40)
+  assert.ok(sonntagNetto(ziel) <= 16 + 1e-9)
+  assert.ok(ziel.weekNotes.some((w) => /Sonntag/.test(w)))
+})
+
 test('planAnZiel: kleiner Monat verteilt dünn, ohne die Summe zu sprengen', () => {
   const trips: Trip[] = [
     trip('2026-01-05', '08:00', '2026-01-05', '18:00'),

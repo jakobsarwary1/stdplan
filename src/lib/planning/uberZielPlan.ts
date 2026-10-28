@@ -162,12 +162,20 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
   const sonntage = anker.filter((a) => a.sonntag)
   const werktage = anker.filter((a) => !a.sonntag)
 
+  // 1) Sonntag so weit wie möglich auf die ECHTEN Sonntage legen.
   const so = skaliere(sonntage.map((a) => a.realNet), sonntagMin)
-  if (so.fehlt > 1) warnungen.push(`Sonntag: ${round2(so.fehlt / 60)} h passen nicht auf die ${sonntage.length} echten Sonntage (max. 8 h/Tag).`)
-  if (sonntagMin > 0 && sonntage.length === 0) warnungen.push('Sonntagsstunden vorgegeben, aber der Fahrer ist an keinem Sonntag gefahren.')
+  const sonntagPlatziert = so.vals.reduce((a, b) => a + b, 0)
+  if (sonntagMin > 0 && sonntage.length === 0) {
+    warnungen.push(`Sonntag ${ziel.sonntag} h vorgegeben, aber der Fahrer ist an keinem Sonntag gefahren – die Stunden liegen auf Werktagen, Gesamt bleibt exakt.`)
+  } else if (so.fehlt > 1) {
+    warnungen.push(`Sonntag: nur ${round2(sonntagPlatziert / 60)} von ${ziel.sonntag} h möglich (${sonntage.length} Sonntag(e) gefahren, max. 8 h/Tag) – der Rest liegt auf Werktagen, Gesamt bleibt exakt.`)
+  }
 
-  const rest = skaliere(werktage.map((a) => a.realNet), Math.max(0, gesamtMin - sonntagMin))
-  if (rest.fehlt > 1) warnungen.push(`${round2(rest.fehlt / 60)} h passen nicht auf die ${werktage.length} echten Werktage (max. 8 h/Tag).`)
+  // 2) Werktage füllen den REST zum Gesamtziel auf (also inkl. des Sonntag-
+  //    Fehlbetrags). So trifft die Monatssumme in jedem Fall exakt das Gesamt.
+  const werktagZiel = Math.max(0, gesamtMin - sonntagPlatziert)
+  const rest = skaliere(werktage.map((a) => a.realNet), werktagZiel)
+  if (rest.fehlt > 1) warnungen.push(`${round2(rest.fehlt / 60)} h passen nicht auf die ${werktage.length} echten Werktage (max. 8 h/Tag) – Gesamt wird nicht ganz erreicht.`)
 
   const netById = new Map<string, number>()
   sonntage.forEach((a, i) => netById.set(a.tag.date, so.vals[i]))
