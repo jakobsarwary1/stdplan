@@ -468,9 +468,107 @@ export function planExakt(name: string, month: string, ziel: ZielVorgabe): Drive
   // das Netto-Gesamt exakt einstellen, ohne die Zuschläge anzutasten.
   feinAbgleichZuschlag(dp, { sonntag: son, nacht25: n25, nacht40: n40, feiertag: fe }, feSet)
   feinAbgleichNetto(dp, Math.round(ziel.gesamt * 60), feSet)
+  // Ruhezeit (§ 5) und 6-Tage-Grenze (§ 11) erzwingen – nur durch Verschieben
+  // ganzer Schichten auf andere Tage GLEICHER Klasse (Werktag↔Werktag,
+  // Sonntag↔Sonntag, Feiertag↔Feiertag). Uhrzeit und Netto bleiben gleich,
+  // daher bleiben ALLE Zuschlagssummen exakt erhalten.
+  erzwingeRuheUndSerie(dp, feSet)
   // Feiertage mitgeben, damit Vorschau/Excel die 125 %-Stunden gleich zuordnen.
   if (feSet.size > 0) dp.feiertage = [...feSet]
   return dp
+}
+
+const RUHE_MS = 11 * 3600000
+
+/** Absolutes Start-/Endezeitfenster einer Schicht an ihrem Tag (ms). */
+function absFenster(date: string, s: PlanShift): { start: number; end: number } {
+  const base = Date.parse(`${date}T00:00:00Z`)
+  return { start: base + s.startMin * 60000, end: base + s.endMin * 60000 }
+}
+
+/**
+ * „Kosten" eines Plans für die Legalität: Anzahl Ruhe-Verstöße (< 11 h zwischen
+ * zeitlich benachbarten Schichten) stark gewichtet, plus Tage über der 6-Tage-
+ * Grenze. 0 = voll gesetzeskonform.
+ */
+function legalKosten(dp: DriverPlan): number {
+  const tage = dp.days.filter((d) => d.kind === 'schicht' && d.shifts.length)
+  const fenster = tage.map((d) => absFenster(d.date, d.shifts[0])).sort((a, b) => a.start - b.start)
+  let ruhe = 0
+  for (let i = 1; i < fenster.length; i++) {
+    if (fenster[i].start - fenster[i - 1].end < RUHE_MS - 1000) ruhe++
+  }
+  // längster Lauf aufeinanderfolgender Kalendertage mit Schicht
+  const belegt = new Set(tage.map((d) => d.date))
+  let lauf = 0, maxLauf = 0
+  for (const d of dp.days) { if (belegt.has(d.date)) { lauf++; maxLauf = Math.max(maxLauf, lauf) } else lauf = 0 }
+  return ruhe * 100 + Math.max(0, maxLauf - 6) * 10
+}
+
+/**
+ * Erzwingt § 5 (11 h Ruhe) und § 11 (höchstens 6 Arbeitstage am Stück), indem
+ * ganze Schichten auf freie Tage DERSELBEN Klasse verschoben werden. Da Uhrzeit
+ * und Netto unverändert bleiben und die Tagklasse (Werktag/Sonntag/Feiertag)
+ * gleich bleibt, ändern sich Gesamt und ALLE Zuschläge nicht. Lokale Suche:
+ * jeweils der Zug, der die Legal-Kosten am stärksten senkt, bis 0 oder nichts
+ * mehr hilft.
+ */
+function erzwingeRuheUndSerie(dp: DriverPlan, feSet: Set<string>): void {
+  const istSo = (d: string) => weekdayIndex(d) === 0
+  const klasse = (d: string): 'so' | 'fe' | 'wd' => (istSo(d) ? 'so' : feSet.has(d) ? 'fe' : 'wd')
+
+  // Schicht von Tag A nach Tag B umhängen (B muss frei sein). Uhrzeit bleibt,
+  // nur das Datum (und die abgeleiteten ms/date-Felder) wandern mit.
+  const verschiebe = (from: PlanDay, to: PlanDay) => {
+    const s = from.shifts[0]
+    const base = Date.parse(`${to.date}T00:00:00Z`)
+    const neu: PlanShift = { ...s, date: to.date, startMs: base + s.startMin * 60000, endMs: base + s.endMin * 60000 }
+    to.kind = 'schicht'; to.shifts = [neu]; to.hinweis = from.hinweis
+    from.kind = 'frei'; from.shifts = []; from.hinweis = ''
+  }
+
+  for (let iter = 0; iter < 400; iter++) {
+    const kosten = legalKosten(dp)
+    if (kosten === 0) break
+    const belegt = dp.days.filter((d) => d.kind === 'schicht' && d.shifts.length)
+    const freiProKlasse = (cls: string) => dp.days.filter((d) => d.kind !== 'schicht' && klasse(d.date) === cls)
+    let best: { from: PlanDay; to: PlanDay; kosten: number } | null = null
+    for (const from of belegt) {
+      const cls = klasse(from.date)
+      for (const to of freiProKlasse(cls)) {
+        // probeweise verschieben, Kosten messen, zurück.
+        const sFrom = from.shifts[0], hFrom = from.hinweis
+        verschiebe(from, to)
+        const k = legalKosten(dp)
+        // rückgängig
+        const base = Date.parse(`${from.date}T00:00:00Z`)
+        from.kind = 'schicht'; from.shifts = [{ ...to.shifts[0], date: from.date, startMs: base + sFrom.startMin * 60000, endMs: base + sFrom.endMin * 60000 }]; from.hinweis = hFrom
+        to.kind = 'frei'; to.shifts = []; to.hinweis = ''
+        if (k < (best?.kosten ?? kosten)) best = { from, to, kosten: k }
+      }
+    }
+    if (!best) break // lokales Minimum – kein verbessernder Zug
+    verschiebe(best.from, best.to)
+  }
+
+  // Ruhezeit-Felder und Hinweise nach dem Umhängen neu setzen (Datumsreihenfolge).
+  const sortiert = dp.days.filter((d) => d.kind === 'schicht' && d.shifts.length).sort((a, b) => a.date.localeCompare(b.date))
+  let prevEnd: number | null = null
+  for (const d of sortiert) {
+    const s = d.shifts[0]
+    const f = absFenster(d.date, s)
+    const restH = prevEnd != null ? (f.start - prevEnd) / H : null
+    const notes = (s.hinweis || '').split(' · ').filter((x) => x && !/Ruhezeit/.test(x))
+    if (restH != null && restH + 1e-6 < 11) notes.push(`Ruhezeit ${restH.toFixed(2).replace('.', ',')} h, unter 11 h`)
+    s.restH = restH == null ? null : round2(restH)
+    s.hinweis = notes.join(' · ')
+    d.hinweis = s.hinweis
+    prevEnd = f.end
+  }
+  const kostRest = legalKosten(dp)
+  if (kostRest > 0) {
+    dp.weekNotes = ['Hinweis: 11-h-Ruhe/6-Tage-Grenze ließ sich nicht an allen Tagen einhalten, ohne die Zielzahlen zu verändern.', ...dp.weekNotes]
+  }
 }
 
 /** Pure Beitragsstunden (Minuten) einer Schicht an einem Datum: welche Zuschläge. */

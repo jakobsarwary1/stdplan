@@ -33,6 +33,33 @@ test('planExakt: trifft Gesamt, Sonntag UND Nacht 40 exakt (freie Zeiten)', () =
   }
 })
 
+test('planExakt: § 5 (11 h Ruhe) und § 11 (max 6 Tage) erzwungen – Zahlen bleiben exakt', () => {
+  // Fälle, die vor dem Erzwingen Ruhe < 11 h bzw. 7 Tage am Stück hatten.
+  const faelle: [number, number, number, number][] = [
+    [105, 22, 37.25, 28.75], // Nasiri (Ruhe war 8,75)
+    [110, 19, 46.25, 30.75], // Said (Ruhe war 8)
+    [90, 11, 27.75, 15.5], // Sharifi (7 Tage am Stück)
+    [160, 0, 0, 0], // Volllast
+  ]
+  for (const [g, so, n25, n40] of faelle) {
+    const plan = planExakt('Test', '2026-08', { gesamt: g, sonntag: so, nacht25: n25, nacht40: n40 })
+    const sh = plan.days.filter((d) => d.kind === 'schicht').flatMap((d) => d.shifts).sort((a, b) => a.startMs - b.startMs)
+    // Ruhe ≥ 11 h
+    let minRest = Infinity
+    for (let i = 1; i < sh.length; i++) minRest = Math.min(minRest, (sh[i].startMs - sh[i - 1].endMs) / 3600000)
+    if (sh.length > 1) assert.ok(minRest >= 11 - 0.02, `Ruhe ${minRest} h < 11`)
+    // höchstens 6 Tage am Stück
+    const belegt = new Set(sh.map((s) => s.date))
+    let run = 0, maxRun = 0
+    for (const d of plan.days.map((x) => x.date)) { if (belegt.has(d)) { run++; maxRun = Math.max(maxRun, run) } else run = 0 }
+    assert.ok(maxRun <= 6, `${maxRun} Tage am Stück`)
+    // Zahlen weiter exakt
+    let net = 0, soIst = 0, n25Ist = 0, n40Ist = 0
+    for (const s of sh) { const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.pauseAt }); net += s.nettoH; soIst += h.sunday50; n25Ist += h.night25; n40Ist += h.night40 }
+    assert.ok(Math.abs(net - g) <= 0.1 && Math.abs(soIst - so) <= 0.1 && Math.abs(n25Ist - n25) <= 0.1 && Math.abs(n40Ist - n40) <= 0.1, `Zahlen nicht mehr exakt: ${net}/${soIst}/${n25Ist}/${n40Ist}`)
+  }
+})
+
 test('planExakt: trifft Gesamt, Sonntag, Nacht 25 UND Nacht 40 exakt (reale Aug-Werte)', () => {
   // Echte Lohnabrechnungszahlen August 2026 – die härtesten Kombinationen.
   const faelle: [number, number, number, number][] = [
