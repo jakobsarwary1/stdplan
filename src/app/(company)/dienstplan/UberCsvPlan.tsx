@@ -29,6 +29,12 @@ type Driver = {
 
 const n2 = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const pauseH = (min: number) => `${(min / 60).toLocaleString('de-DE', { maximumFractionDigits: 2 })} h`
+const num = (s: string): number => {
+  const n = parseFloat((s || '').replace(',', '.').replace(/[^0-9.\-]/g, ''))
+  return Number.isFinite(n) ? n : 0
+}
+
+type Ziel = { gesamt: string; sonntag: string }
 
 export default function UberCsvPlan() {
   const [csv, setCsv] = useState<string | null>(null)
@@ -38,6 +44,44 @@ export default function UberCsvPlan() {
   const [month, setMonth] = useState('')
   const [drivers, setDrivers] = useState<Driver[] | null>(null)
   const [aktiv, setAktiv] = useState('')
+  const [ziele, setZiele] = useState<Record<string, Ziel>>({})
+
+  /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
+  function zieleBody(): Record<string, { gesamt: number; sonntag: number }> {
+    const out: Record<string, { gesamt: number; sonntag: number }> = {}
+    for (const [name, z] of Object.entries(ziele)) {
+      const g = num(z.gesamt)
+      if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag) }
+    }
+    return out
+  }
+
+  const setZiel = (name: string, feld: keyof Ziel, wert: string) =>
+    setZiele((z) => {
+      const cur: Ziel = z[name] ?? { gesamt: '', sonntag: '' }
+      return { ...z, [name]: { ...cur, [feld]: wert } }
+    })
+
+  /** Vorschau mit den aktuellen Zielvorgaben neu berechnen (ohne Datei-Reupload). */
+  async function neuBerechnen() {
+    if (!csv) return
+    setBusy(true)
+    setFehler(null)
+    try {
+      const res = await fetch('/api/dienstplan/aus-csv', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csv, ziele: zieleBody() }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j?.error || 'Neuberechnung fehlgeschlagen.')
+      setDrivers((j.drivers as Driver[]) ?? [])
+    } catch (err) {
+      setFehler((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function laden(file: File) {
     setBusy(true)
@@ -47,7 +91,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv: text }),
+        body: JSON.stringify({ csv: text, ziele: zieleBody() }),
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Die Datei ließ sich nicht auswerten.')
@@ -73,7 +117,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'xlsx' }),
+        body: JSON.stringify({ csv, format: 'xlsx', ziele: zieleBody() }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -101,7 +145,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'csv' }),
+        body: JSON.stringify({ csv, format: 'csv', ziele: zieleBody() }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -129,7 +173,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'mappe' }),
+        body: JSON.stringify({ csv, format: 'mappe', ziele: zieleBody() }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -209,6 +253,39 @@ export default function UberCsvPlan() {
             {fahrer.ruheTage > 0 && ` · ${fahrer.ruheTage} als Ruhetag gesetzt`}
             {fahrer.violations > 0 && ` · ${fahrer.violations} Hinweise`}
           </p>
+
+          {/* Zielvorgaben aus der Lohnabrechnung: echte Tage/Zeiten bleiben,
+              nur die Längen werden auf exakt diese Monatsstunden gebracht. */}
+          <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-bg/40 p-3">
+            <div className="text-xs text-textMuted">
+              <div className="mb-1 font-medium text-text">Monatsvorgabe (Lohnabrechnung)</div>
+              <div>Bezahlte Stunden ohne Pause. Leer = echte Uber-Stunden.</div>
+            </div>
+            <label className="flex flex-col gap-1 text-xs text-textMuted">
+              Gesamt (Std.)
+              <input inputMode="decimal" placeholder={n2(fahrer.nettoH)}
+                value={ziele[fahrer.name]?.gesamt ?? ''}
+                onChange={(e) => setZiel(fahrer.name, 'gesamt', e.target.value)}
+                className="w-24 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-right text-sm tabular-nums outline-none focus:border-accent" />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-textMuted">
+              davon Sonntag
+              <input inputMode="decimal" placeholder="0"
+                value={ziele[fahrer.name]?.sonntag ?? ''}
+                onChange={(e) => setZiel(fahrer.name, 'sonntag', e.target.value)}
+                className="w-24 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-right text-sm tabular-nums outline-none focus:border-accent" />
+            </label>
+            <button type="button" onClick={() => void neuBerechnen()} disabled={busy}
+              className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50">
+              {busy ? 'Rechne…' : 'Übernehmen'}
+            </button>
+            {num(ziele[fahrer.name]?.gesamt ?? '') > 0 && (
+              <span className="text-xs text-textMuted">
+                Ziel {n2(num(ziele[fahrer.name]!.gesamt))} h · aktuell <span className="font-medium text-text">{n2(fahrer.nettoH)} h</span>
+                {Math.abs(fahrer.nettoH - num(ziele[fahrer.name]!.gesamt)) < 0.02 ? ' ✓ exakt' : ' — „Übernehmen" klicken'}
+              </span>
+            )}
+          </div>
           {fahrer.weekNotes.length > 0 && (
             <ul className="space-y-1 text-xs text-textMuted">
               {fahrer.weekNotes.map((n) => <li key={n}>{n}</li>)}
