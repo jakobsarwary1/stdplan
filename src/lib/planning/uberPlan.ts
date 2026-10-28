@@ -196,18 +196,28 @@ export type TimesheetView = {
   hinweis: string
 }
 
-/** Wie im Stundenzettel: Uhrzeit auf die Viertelstunde, volle Schicht 8,5 h, Pause mittig. */
+/**
+ * Schicht für den Stundenzettel – EXAKT wie geplant.
+ *
+ * Früher wurden hier die Zeiten „schön gemacht" (auf die Viertelstunde gerundet,
+ * jede Schicht ≥ 6 h auf 8,5 h gestreckt). Das hat die vom Ziel-/Exakt-Planer
+ * genau gesetzten Stunden und Zuschlagsfenster wieder verschoben – der Export
+ * wich dann von den Lohnabrechnungszahlen ab. Jetzt werden Beginn, Ende und die
+ * geplante Pause (inkl. ihrer Lage) UNVERÄNDERT übernommen, damit der Export
+ * minutengenau die geplanten Stunden und Zuschläge trägt.
+ */
 function payrollShift(s: PlanShift): { startMin: number; endMin: number; breakMinutes: number; breakOffsetMin: number } {
-  const snap = (min: number) => Math.round(min / 15) * 15
-  const rawSpan = s.endMin - s.startMin
-  const startMin = snap(s.startMin)
-  const full = rawSpan >= 6 * 60
-  const endMin = full ? startMin + 8.5 * 60 : Math.max(startMin + 15, snap(s.endMin))
-  let pauseH = full ? Math.min(MAX_PAUSE_H, Math.max(0.5, s.pauseH)) : 0
-  pauseH = Math.round(pauseH * 4) / 4
-  let breakMinutes = Math.round(pauseH * 60)
-  if (breakMinutes >= endMin - startMin) breakMinutes = 0
-  const breakOffsetMin = breakMinutes > 0 ? Math.round((endMin - startMin - breakMinutes) / 2) : 0
+  const startMin = Math.round(s.startMin)
+  const endMin = Math.round(s.endMin)
+  const span = endMin - startMin
+  let breakMinutes = Math.max(0, Math.round((s.pauseH ?? 0) * 60))
+  if (breakMinutes >= span) breakMinutes = 0
+  // Pausenlage möglichst exakt aus dem Plan übernehmen, sonst mittig.
+  let breakOffsetMin = 0
+  if (breakMinutes > 0) {
+    const geplant = s.pauseAt && s.pauseAt.length ? Math.round(s.pauseAt[0].start) : null
+    breakOffsetMin = geplant != null ? Math.max(0, Math.min(geplant, span - breakMinutes)) : Math.round((span - breakMinutes) / 2)
+  }
   return { startMin, endMin, breakMinutes, breakOffsetMin }
 }
 

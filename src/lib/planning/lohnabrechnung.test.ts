@@ -70,3 +70,11 @@ test('findeFahrer: ordnet reihenfolge-unabhängig zu, hält gleiche Nachnamen ge
   assert.equal(findeFahrer('Sara Muster', fahrer), 'Sara Muster')
   assert.equal(findeFahrer('Niemand Hier', fahrer), null)
 })
+
+test('findeFahrer: kleine Schreibvariante matcht, echte Namensvettern NICHT', () => {
+  // „Habibiullah" (Abrechnung) ≈ „Habibullah" (CSV): ein Buchstabe Unterschied.
+  assert.equal(findeFahrer('Habibiullah Begisi', ['Habibullah Begisi', 'Omar Khan']), 'Habibullah Begisi')
+  // Said vs. Sara (Distanz 2 bei 4 Zeichen) darf NIE fuzzy zusammenfallen:
+  assert.equal(findeFahrer('Said Muster', ['Sara Muster']), null)
+  assert.equal(findeFahrer('Sara Muster', ['Said Muster']), null)
+})

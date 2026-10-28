@@ -1,8 +1,24 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { planDriver, type Trip } from './uberPlan'
+import { planDriver, timesheetHours, type Trip } from './uberPlan'
 import { planAnZiel, skaliere, planExakt } from './uberZielPlan'
 import { computeShiftHours } from './wage'
+
+test('planExakt → EXPORT (timesheetHours) trifft die Zahlen exakt (kein Nachrunden im Export)', () => {
+  // Schützt davor, dass der Stundenzettel-Export die exakt geplanten Zeiten
+  // wieder verschiebt (früherer payrollShift-Bug: 8,5-h-Streckung/Viertelstunde).
+  const faelle: [number, number, number, number][] = [
+    [108, 8, 38.5, 25.5], [110, 19, 46.25, 30.75], [84.5, 17.75, 45.5, 21.25], [58, 0, 0.25, 0],
+  ]
+  for (const [g, so, n25, n40] of faelle) {
+    const plan = planExakt('Test', '2026-08', { gesamt: g, sonntag: so, nacht25: n25, nacht40: n40 })
+    const h = timesheetHours(plan)
+    assert.ok(Math.abs(h.workedHours - g) <= 0.1, `Gesamt ${h.workedHours}/${g}`)
+    assert.ok(Math.abs(h.sunday50 - so) <= 0.1, `Sonntag ${h.sunday50}/${so}`)
+    assert.ok(Math.abs(h.night25 - n25) <= 0.1, `Nacht25 ${h.night25}/${n25}`)
+    assert.ok(Math.abs(h.night40 - n40) <= 0.1, `Nacht40 ${h.night40}/${n40}`)
+  }
+})
 
 test('planExakt: trifft Gesamt, Sonntag UND Nacht 40 exakt (freie Zeiten)', () => {
   for (const [g, so, n40] of [[120, 32, 32], [100, 32, 32], [130, 32, 0], [75, 8, 0]] as [number, number, number][]) {

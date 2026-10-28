@@ -142,11 +142,13 @@ test('Jeder Kalendertag ist eine Zeile von Di 01.09 bis Mi 30.09', () => {
   assert.equal(frei.hinweis, '')
   const zeilen = timesheetLines(plan)
   const erste = zeilen.find((z) => z.isoDate === '2026-09-01' && !z.isFree)
+  // Export zeigt die ECHTE Schicht (08:00–16:00, Pause 30 min) – kein Nachrunden
+  // und keine 8,5-h-Streckung mehr.
   assert.equal(erste?.startMin, 8 * 60)
-  assert.equal(erste?.endMin, 8 * 60 + 8.5 * 60)
+  assert.equal(erste?.endMin, 16 * 60)
   assert.equal(erste?.breakMinutes, 30)
-  assert.equal(erste?.paidHours, 8.5)
-  assert.equal(erste?.breakOffsetMin, Math.round((8.5 * 60 - 30) / 2))
+  assert.equal(erste?.paidHours, 8)
+  assert.equal(erste?.breakOffsetMin, Math.round((8 * 60 - 30) / 2))
   const doppeltZeilen = zeilen.filter((z) => z.isoDate === '2026-09-08' && !z.isFree)
   assert.equal(doppeltZeilen.length, 2)
   assert.equal(doppeltZeilen[1].ruheH, 11)

@@ -60,25 +60,35 @@ export async function POST(request: Request) {
       let fahrer = findeFahrer(parsed.name, driverNames)
       if (!fahrer) fahrer = findeFahrer(nameAusDateiname(filename), driverNames)
       const warnungen = [...parsed.warnungen]
-      if (!fahrer) warnungen.push('Kein passender Fahrer in der CSV gefunden – bitte manuell zuordnen.')
+      if (!fahrer && parsed.gesamt > 0) {
+        warnungen.push('Nicht in der CSV gefahren – wird als eigener Stundenzettel angelegt.')
+      } else if (!fahrer) {
+        warnungen.push('Kein passender Fahrer in der CSV und keine Grundstunden – übersprungen.')
+      }
       ergebnisse.push({ ...parsed, filename, fahrer, warnungen })
     } catch {
       ergebnisse.push({ ...leer(), filename, fahrer: null, warnungen: ['PDF ließ sich nicht lesen.'] })
     }
   }
 
-  // Zielwerte je zugeordnetem Fahrer (nur Fahrer mit Grundstunden > 0).
+  // Zielwerte je Fahrer mit Grundstunden > 0. Zugeordnete Fahrer unter ihrem
+  // CSV-Namen; nicht zugeordnete (Lohn ohne CSV-Fahrten) unter ihrem Abrechnungs-
+  // namen – der Exakt-Planer legt dafür einen eigenen Stundenzettel an.
   const ziele: Record<string, { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }> = {}
   for (const e of ergebnisse) {
-    if (e.fahrer && e.gesamt > 0) {
-      ziele[e.fahrer] = { gesamt: e.gesamt, sonntag: e.sonntag, nacht25: e.nacht25, nacht40: e.nacht40, feiertag: e.feiertag }
-    }
+    if (e.gesamt <= 0) continue
+    const key = e.fahrer || e.name || nameAusDateiname(e.filename)
+    if (!key) continue
+    ziele[key] = { gesamt: e.gesamt, sonntag: e.sonntag, nacht25: e.nacht25, nacht40: e.nacht40, feiertag: e.feiertag }
   }
 
   return NextResponse.json({
     ziele,
     ergebnisse: ergebnisse.map((e) => ({
-      filename: e.filename, name: e.name, fahrer: e.fahrer, month: e.month,
+      filename: e.filename, name: e.name,
+      fahrer: e.fahrer || (e.gesamt > 0 ? (e.name || nameAusDateiname(e.filename)) : null),
+      nichtInCsv: !e.fahrer && e.gesamt > 0,
+      month: e.month,
       gesamt: e.gesamt, sonntag: e.sonntag, nacht25: e.nacht25, nacht40: e.nacht40,
       feiertag: e.feiertag, krank: e.krank, urlaub: e.urlaub, warnungen: e.warnungen,
     })),

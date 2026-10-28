@@ -152,11 +152,54 @@ export function nameKey(name: string): string {
     .split(/\s+/).filter(Boolean).sort().join(' ')
 }
 
+/** Levenshtein-Distanz (für kleine Schreibvarianten wie „Habibiullah"/„Habibullah"). */
+function lev(a: string, b: string): number {
+  const m = a.length, n = b.length
+  if (!m) return n
+  if (!n) return m
+  let prev = Array.from({ length: n + 1 }, (_, j) => j)
+  for (let i = 1; i <= m; i++) {
+    const cur = [i]
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+    }
+    prev = cur
+  }
+  return prev[n]
+}
+
+/**
+ * Zwei Namensteile „gleich genug": exakt, oder kleine Schreibvariante. Schwelle
+ * konservativ – 1 bei kurzen Teilen, 2 erst ab 8 Zeichen. So gilt „Habibiullah"
+ * ≈ „Habibullah" (Distanz 1), aber „Said" ≠ „Sara" (Distanz 2 bei 4 Zeichen).
+ */
+function teilAehnlich(a: string, b: string): boolean {
+  if (a === b) return true
+  const thr = Math.max(a.length, b.length) >= 8 ? 2 : 1
+  const d = lev(a, b)
+  return d <= thr && d < Math.max(a.length, b.length)
+}
+
+/** Lassen sich alle Teile von A je einem eindeutigen Teil von B „ähnlich" zuordnen? */
+function namenAehnlich(a: string, b: string): boolean {
+  const ta = a.split(' '), tb = b.split(' ')
+  if (ta.length !== tb.length) return false // nur gleiche Teilezahl (sicher)
+  const frei = tb.slice()
+  for (const x of ta) {
+    const idx = frei.findIndex((y) => teilAehnlich(x, y))
+    if (idx < 0) return false
+    frei.splice(idx, 1)
+  }
+  return true
+}
+
 /**
  * Ordnet den Namen einer Abrechnung einem der vorhandenen Fahrernamen zu.
- * Erst exakte Mengen-Gleichheit der Namensteile, sonst Teilmengen-Treffer
- * (alle Teile des einen kommen im anderen vor). Nur ein EINDEUTIGER Treffer
- * zählt – bei Mehrdeutigkeit kein Treffer (lieber manuell).
+ * 1) exakte Mengen-Gleichheit der Namensteile, 2) Teilmengen-Treffer (ein Name
+ * ist im anderen enthalten), 3) kleine Schreibvarianten (gleiche Teilezahl,
+ * jeder Teil ähnlich). Jeweils nur bei EINDEUTIGEM Treffer – sonst kein Treffer
+ * (lieber manuell), damit nie zwei verschiedene Fahrer verwechselt werden.
  */
 export function findeFahrer(name: string, fahrer: string[]): string | null {
   const key = nameKey(name)
@@ -171,5 +214,8 @@ export function findeFahrer(name: string, fahrer: string[]): string | null {
     const b = [...ft].every((t) => teile.has(t))
     return a || b
   })
-  return teil.length === 1 ? teil[0] : null
+  if (teil.length === 1) return teil[0]
+  if (teil.length > 1) return null
+  const fuzzy = fahrer.filter((f) => namenAehnlich(key, nameKey(f)))
+  return fuzzy.length === 1 ? fuzzy[0] : null
 }

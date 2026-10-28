@@ -28,22 +28,36 @@ function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined,
     if (!feCache.has(month)) feCache.set(month, feiertageImMonat(month, bundesland))
     return feCache.get(month)!
   }
-  return plans.map((p) => {
-    const z = ziele[p.name]
-    const g = Number(z?.gesamt) || 0
-    if (g <= 0) return p
+  const zielFuer = (name: string, month: string, z: Ziel) => {
     const fe = Number(z?.feiertag) || 0
-    const ziel = {
-      gesamt: g,
+    return {
+      gesamt: Number(z?.gesamt) || 0,
       sonntag: Number(z?.sonntag) || 0,
       nacht25: Number(z?.nacht25) || 0,
       nacht40: Number(z?.nacht40) || 0,
       feiertag: fe,
-      // Feiertage nur anhängen, wenn der Nutzer Feiertagsstunden eingegeben hat.
-      feiertage: fe > 0 ? feiertage(p.month) : [],
+      // Feiertage nur anhängen, wenn tatsächlich Feiertagsstunden vorgegeben sind.
+      feiertage: fe > 0 ? feiertage(month) : [],
     }
+  }
+  const out = plans.map((p) => {
+    const z = ziele[p.name]
+    const g = Number(z?.gesamt) || 0
+    if (g <= 0) return p
+    const ziel = zielFuer(p.name, p.month, z)
     return exakt ? planExakt(p.name, p.month, ziel) : planAnZiel(p, ziel)
   })
+  // Lohn-Fahrer, die NICHT in der CSV vorkommen: im Exakt-Modus einen eigenen
+  // Stundenzettel anlegen (freie Zeiten – es braucht nur Name + Monat).
+  if (exakt) {
+    const monat = plans[0]?.month ?? ''
+    const vorhanden = new Set(plans.map((p) => p.name))
+    for (const [name, z] of Object.entries(ziele)) {
+      if (vorhanden.has(name) || (Number(z?.gesamt) || 0) <= 0 || !monat) continue
+      out.push(planExakt(name, monat, zielFuer(name, monat, z)))
+    }
+  }
+  return out
 }
 
 export const dynamic = 'force-dynamic'
