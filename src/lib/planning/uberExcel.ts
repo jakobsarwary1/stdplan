@@ -57,11 +57,13 @@ export async function workbookForPlans(plans: DriverPlan[]) {
   const rows = plans.flatMap(planToRows)
   const summaries = plans.map(planToSummary)
   const month = plans[0]?.month ?? ''
+  const holidayDates = [...new Set(plans.flatMap((p) => p.feiertage ?? []))].sort()
   return buildStundenzettelWorkbook({
     rows,
     summaries,
     title: 'Stundenzettel',
     companyName: 'FirmaFly',
     monthLabel: month ? monthLabelDE(month) : '',
+    holidayDates,
   })
 }

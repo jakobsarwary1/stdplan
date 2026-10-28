@@ -17,6 +17,56 @@ test('planExakt: trifft Gesamt, Sonntag UND Nacht 40 exakt (freie Zeiten)', () =
   }
 })
 
+test('planExakt: trifft Gesamt, Sonntag, Nacht 25 UND Nacht 40 exakt (reale Aug-Werte)', () => {
+  // Echte Lohnabrechnungszahlen August 2026 – die härtesten Kombinationen.
+  const faelle: [number, number, number, number][] = [
+    [108, 8, 38.5, 25.5], // Nori
+    [105, 22, 37.25, 28.75], // Nasiri (zuvor Nacht 40 um 0,75 h daneben)
+    [110, 19, 46.25, 30.75], // Said
+    [84.5, 17.75, 45.5, 21.25], // Sarwary
+    [90, 11, 27.75, 15.5], // Sharifi
+    [58, 0, 0.25, 0], // Sheenwari
+  ]
+  for (const [g, so, n25, n40] of faelle) {
+    const r = planExakt('Test', '2026-08', { gesamt: g, sonntag: so, nacht25: n25, nacht40: n40 })
+    const sh = r.days.filter((d) => d.kind === 'schicht').flatMap((d) => d.shifts)
+    let net = 0, soIst = 0, n25Ist = 0, n40Ist = 0, maxNet = 0
+    for (const s of sh) {
+      const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.pauseAt })
+      net += s.nettoH; soIst += h.sunday50; n25Ist += h.night25; n40Ist += h.night40; maxNet = Math.max(maxNet, s.nettoH)
+    }
+    assert.ok(Math.abs(net - g) <= 0.1, `Gesamt ${net} / ${g}`)
+    assert.ok(Math.abs(soIst - so) <= 0.1, `Sonntag ${soIst} / ${so}`)
+    assert.ok(Math.abs(n25Ist - n25) <= 0.1, `Nacht25 ${n25Ist} / ${n25}`)
+    assert.ok(Math.abs(n40Ist - n40) <= 0.1, `Nacht40 ${n40Ist} / ${n40}`)
+    assert.ok(maxNet <= 8 + 1e-6, `maxNet ${maxNet} > 8`)
+  }
+})
+
+test('planExakt: trifft auch Feiertag (125 %) exakt, neben Sonntag/Nacht', () => {
+  const feTage = ['2026-08-14', '2026-08-17']
+  const feSet = new Set(feTage)
+  const faelle: { g: number; so: number; n25: number; n40: number; fe: number }[] = [
+    { g: 120, so: 16, n25: 20, n40: 12, fe: 16 },
+    { g: 60, so: 0, n25: 0, n40: 0, fe: 8 },
+    { g: 100, so: 20, n25: 24, n40: 16, fe: 16 },
+  ]
+  for (const z of faelle) {
+    const r = planExakt('Test', '2026-08', { gesamt: z.g, sonntag: z.so, nacht25: z.n25, nacht40: z.n40, feiertag: z.fe, feiertage: feTage })
+    const sh = r.days.filter((d) => d.kind === 'schicht').flatMap((d) => d.shifts)
+    let net = 0, soIst = 0, n25Ist = 0, n40Ist = 0, feIst = 0
+    for (const s of sh) {
+      const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.pauseAt }, feSet)
+      net += s.nettoH; soIst += h.sunday50; n25Ist += h.night25; n40Ist += h.night40; feIst += h.holiday125
+    }
+    assert.ok(Math.abs(net - z.g) <= 0.1, `Gesamt ${net} / ${z.g}`)
+    assert.ok(Math.abs(soIst - z.so) <= 0.1, `Sonntag ${soIst} / ${z.so}`)
+    assert.ok(Math.abs(n25Ist - z.n25) <= 0.1, `Nacht25 ${n25Ist} / ${z.n25}`)
+    assert.ok(Math.abs(n40Ist - z.n40) <= 0.1, `Nacht40 ${n40Ist} / ${z.n40}`)
+    assert.ok(Math.abs(feIst - z.fe) <= 0.1, `Feiertag ${feIst} / ${z.fe}`)
+  }
+})
+
 function at(iso: string, hm: string): number {
   const [y, m, d] = iso.split('-').map(Number)
   const [hh, mm] = hm.split(':').map(Number)

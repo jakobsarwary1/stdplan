@@ -43,6 +43,7 @@ export async function buildWorkbookPerDriver(plans: DriverPlan[]): Promise<Excel
       companyName: plan.name,
       monthLabel: monat,
       sheetName: sheetName(plan.name, used),
+      holidayDates: plan.feiertage ?? [],
     })
   }
 

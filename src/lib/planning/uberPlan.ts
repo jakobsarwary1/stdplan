@@ -69,6 +69,8 @@ export type DriverPlan = {
   ruheTage: number
   violations: number
   weekNotes: string[]
+  /** Gesetzliche Feiertage des Monats als "YYYY-MM-DD" (für die 125 %-Zuordnung). */
+  feiertage?: string[]
 }
 
 const WOCHENTAG = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
@@ -225,6 +227,7 @@ function restHours(prev: { iso: string; endMin: number }, iso: string, startMin:
 
 export function timesheetLines(plan: DriverPlan): TimesheetLine[] {
   const lines: TimesheetLine[] = []
+  const feSet = new Set(plan.feiertage ?? [])
   let prev: { iso: string; endMin: number } | null = null
   for (const day of plan.days) {
     if (day.kind !== 'schicht' || day.shifts.length === 0) {
@@ -239,7 +242,7 @@ export function timesheetLines(plan: DriverPlan): TimesheetLine[] {
     day.shifts.forEach((s, i) => {
       const pay = payrollShift(s)
       const breaks = pay.breakMinutes > 0 ? [{ start: pay.breakOffsetMin, end: pay.breakOffsetMin + pay.breakMinutes }] : []
-      const hours = computeShiftHours({ date: s.date, startMin: pay.startMin, endMin: pay.endMin, breaks })
+      const hours = computeShiftHours({ date: s.date, startMin: pay.startMin, endMin: pay.endMin, breaks }, feSet)
       const ruheH = prev ? restHours(prev, s.date, pay.startMin) : null
       const extra = i === day.shifts.length - 1 ? day.ausgelassen : ''
       lines.push({
@@ -263,7 +266,7 @@ export function timesheetHours(plan: DriverPlan): MonthlyHours {
     endMin: line.endMin,
     breaks: line.breakMinutes > 0 ? [{ start: line.breakOffsetMin, end: line.breakOffsetMin + line.breakMinutes }] : [],
   }))
-  return sumShiftHours(shifts)
+  return sumShiftHours(shifts, new Set(plan.feiertage ?? []))
 }
 
 export function timesheetView(plan: DriverPlan): TimesheetView[] {

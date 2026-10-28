@@ -419,6 +419,7 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
     workDays,
     freeDays: neueTage.filter((d) => d.kind !== 'schicht').length,
     weekNotes,
+    feiertage: (ziel.feiertage ?? []).length ? ziel.feiertage : plan.feiertage,
   }
 }
 
@@ -438,18 +439,129 @@ export function planExakt(name: string, month: string, ziel: ZielVorgabe): Drive
   const son = Math.max(0, ziel.sonntag || 0)
   const n25 = Math.max(0, ziel.nacht25 || 0)
   const n40 = Math.max(0, ziel.nacht40 || 0)
+  const fe = Math.max(0, ziel.feiertag || 0)
+  const feSet = new Set(ziel.feiertage ?? [])
 
-  let bezahlt = Math.max(0, ziel.gesamt)
+  // Der Kern (erstellePlan) kennt die Feiertage NICHT – er plant die übrigen
+  // Zuschläge (Sonntag/Nacht) für den Netto-Rest ohne die Feiertagsstunden.
+  const kernGesamt = Math.max(0, ziel.gesamt - fe)
+  let bezahlt = kernGesamt
   let mr: ManualResult = erstellePlan(jahr, monat1, { bezahlt, sunday: son, n25, n40 })
   for (let i = 0; i < 10; i++) {
-    const diff = ziel.gesamt - mr.summe.netto
+    const diff = kernGesamt - mr.summe.netto
     if (Math.abs(diff) < 0.05) break
     bezahlt = Math.max(0, bezahlt + diff)
     mr = erstellePlan(jahr, monat1, { bezahlt, sunday: son, n25, n40 })
   }
   const dp = manualAlsDriverPlan(name, month, mr)
-  feinAbgleichNetto(dp, Math.round(ziel.gesamt * 60))
+
+  // Feiertage als freie Leinwand: Schichten, die der Kern zufällig auf einen
+  // Feiertag gelegt hat, werden freigegeben (ihr Beitrag wird unten exakt neu
+  // aufgebaut). So entstehen keine ungewollten Feiertagsstunden.
+  if (feSet.size > 0) {
+    for (const day of dp.days) {
+      if (day.kind === 'schicht' && feSet.has(day.date)) { day.kind = 'frei'; day.shifts = []; day.hinweis = '' }
+    }
+  }
+
+  // Zuschläge exakt nachziehen (Sonntag / Nacht 25 / Nacht 40 / Feiertag), dann
+  // das Netto-Gesamt exakt einstellen, ohne die Zuschläge anzutasten.
+  feinAbgleichZuschlag(dp, { sonntag: son, nacht25: n25, nacht40: n40, feiertag: fe }, feSet)
+  feinAbgleichNetto(dp, Math.round(ziel.gesamt * 60), feSet)
+  // Feiertage mitgeben, damit Vorschau/Excel die 125 %-Stunden gleich zuordnen.
+  if (feSet.size > 0) dp.feiertage = [...feSet]
   return dp
+}
+
+/** Pure Beitragsstunden (Minuten) einer Schicht an einem Datum: welche Zuschläge. */
+type ZusM = { so: number; n25: number; n40: number; fe: number }
+function zusDesTages(s: PlanShift, feSet: Set<string>): ZusM {
+  const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.pauseAt }, feSet)
+  return { so: h.sunday50 * 60, n25: h.night25 * 60, n40: h.night40 * 60, fe: h.holiday125 * 60 }
+}
+
+/**
+ * Setzt eine reine Beitrags-Schicht (ein einzelner Zuschlagstyp) mit `netMin`
+ * Netto-Minuten auf einen freien Tag. Zeitfenster nach Typ:
+ *   • n40  → endet 04:00 (Arbeit nur 00–04 Uhr)
+ *   • n25  → 20:00 + netMin (Arbeit nur 20–24 Uhr)
+ *   • so   → 08:00 (ganzer Sonntag zählt 50 %)
+ *   • fe   → 08:00 an einem Feiertag (ganzer Feiertag zählt 125 %)
+ * Gibt true zurück, wenn der Block gesetzt wurde.
+ */
+function setzeBlock(day: PlanDay, typ: 'so' | 'n25' | 'n40' | 'fe', netMin: number): boolean {
+  if (netMin <= 0) return false
+  const tag0 = Date.parse(`${day.date}T00:00:00Z`)
+  let startMin: number
+  if (typ === 'n40') startMin = Math.max(0, 240 - netMin) // endet 04:00
+  else if (typ === 'n25') startMin = 20 * 60 // 20:00
+  else startMin = 8 * 60 // Sonntag / Feiertag: Tagschicht 08:00
+  const shift = baueSchicht(tag0 + startMin * 60000, netMin, 0, null)
+  day.kind = 'schicht'
+  day.shifts = [shift]
+  day.hinweis = ''
+  return true
+}
+
+/**
+ * Zieht unter-erfüllte Zuschläge exakt nach. Der Kern-Planer erzeugt nie mehr
+ * als die Zielmenge (kein Überziehen), daher sind nur Fehlmengen zu decken.
+ * Jede Fehlmenge wird als reiner Block auf freie Tage gelegt – n40 ≤ 225 min
+ * je Tag (Start ≥ 00:15, nie 00:00), n25 ≤ 240, Sonntag/Feiertag ≤ 480 Netto.
+ */
+function feinAbgleichZuschlag(dp: DriverPlan, ziel: { sonntag: number; nacht25: number; nacht40: number; feiertag: number }, feSet: Set<string>): void {
+  const summe = (): ZusM => {
+    const a: ZusM = { so: 0, n25: 0, n40: 0, fe: 0 }
+    for (const d of dp.days) for (const s of d.shifts) { const z = zusDesTages(s, feSet); a.so += z.so; a.n25 += z.n25; a.n40 += z.n40; a.fe += z.fe }
+    return a
+  }
+  const frei = () => dp.days.filter((d) => d.kind !== 'schicht')
+  const istSo = (d: string) => weekdayIndex(d) === 0
+  const nachbarBelegt = (idx: number) =>
+    (idx > 0 && dp.days[idx - 1].kind === 'schicht') || (idx + 1 < dp.days.length && dp.days[idx + 1].kind === 'schicht')
+
+  // Freie Tage bevorzugt ohne belegten Nachbarn (schont die 11-h-Ruhe).
+  const waehleFreie = (pred: (d: PlanDay) => boolean): PlanDay[] => {
+    const idx = new Map(dp.days.map((d, i) => [d.date, i]))
+    const kand = frei().filter(pred)
+    return kand.sort((a, b) => (nachbarBelegt(idx.get(a.date)!) ? 1 : 0) - (nachbarBelegt(idx.get(b.date)!) ? 1 : 0) || a.date.localeCompare(b.date))
+  }
+
+  // Feiertag zuerst: nur auf Feiertags-Daten (die sind oben freigegeben worden).
+  let defFe = Math.round(ziel.feiertag * 60) - Math.round(summe().fe)
+  for (const day of waehleFreie((d) => feSet.has(d.date) && !istSo(d.date))) {
+    if (defFe <= 0) break
+    const m = Math.min(MAX_NET_MIN, defFe)
+    if (setzeBlock(day, 'fe', m)) defFe -= m
+  }
+  // Nacht 40 %: reine 00–04-Blöcke, ≤ 225 min/Tag.
+  let def40 = Math.round(ziel.nacht40 * 60) - Math.round(summe().n40)
+  for (const day of waehleFreie((d) => !istSo(d.date) && !feSet.has(d.date))) {
+    if (def40 <= 0) break
+    const m = Math.min(225, def40)
+    if (setzeBlock(day, 'n40', m)) def40 -= m
+  }
+  // Nacht 25 %: reine 20–24-Blöcke, ≤ 240 min/Tag.
+  let def25 = Math.round(ziel.nacht25 * 60) - Math.round(summe().n25)
+  for (const day of waehleFreie((d) => !istSo(d.date) && !feSet.has(d.date))) {
+    if (def25 <= 0) break
+    const m = Math.min(240, def25)
+    if (setzeBlock(day, 'n25', m)) def25 -= m
+  }
+  // Sonntag: reine Tagschichten auf freie Sonntage, ≤ 480 Netto/Tag.
+  let defSo = Math.round(ziel.sonntag * 60) - Math.round(summe().so)
+  for (const day of waehleFreie((d) => istSo(d.date) && !feSet.has(d.date))) {
+    if (defSo <= 0) break
+    const m = Math.min(MAX_NET_MIN, defSo)
+    if (setzeBlock(day, 'so', m)) defSo -= m
+  }
+
+  const warn: string[] = []
+  if (defFe > 1) warn.push(`Feiertag: ${round2(defFe / 60)} h konnten nicht gesetzt werden (keine freien Feiertage mehr).`)
+  if (def40 > 1) warn.push(`Nacht 40 %: ${round2(def40 / 60)} h konnten nicht gesetzt werden (keine freien Werktage mehr).`)
+  if (def25 > 1) warn.push(`Nacht 25 %: ${round2(def25 / 60)} h konnten nicht gesetzt werden (keine freien Werktage mehr).`)
+  if (defSo > 1) warn.push(`Sonntag: ${round2(defSo / 60)} h konnten nicht gesetzt werden (keine freien Sonntage mehr).`)
+  if (warn.length) dp.weekNotes = [...warn, ...dp.weekNotes]
 }
 
 /**
@@ -457,15 +569,22 @@ export function planExakt(name: string, month: string, ziel: ZielVorgabe): Drive
  * (reine Tages-)Schichten werden in der Länge angepasst. Reicht die vorhandene
  * Kapazität nicht, werden zusätzliche neutrale Werktage angesetzt.
  */
-function feinAbgleichNetto(dp: DriverPlan, zielMin: number): void {
+function feinAbgleichNetto(dp: DriverPlan, zielMin: number, feSet: Set<string> = new Set()): void {
   const istNeutral = (s: PlanShift): boolean => {
-    const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.pauseAt })
+    const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.pauseAt }, feSet)
     return h.sunday50 < 0.01 && h.night25 < 0.01 && h.night40 < 0.01 && h.holiday125 < 0.01
   }
   const netMin = () => Math.round(dp.days.reduce((a, d) => a + d.shifts.reduce((x, s) => x + s.nettoH, 0), 0) * 60)
   let diff = zielMin - netMin()
 
-  // 1) vorhandene neutrale Tages-Schichten anpassen (08:00-Fenster bleibt neutral).
+  // Reine Tagschicht (08:00) der gewünschten Netto-Länge. 08:00 + höchstens
+  // 8 h Netto + Pause endet spätestens 16:30 – also nie in 04–06, 20–24 oder
+  // 00–04, womit die Schicht garantiert ZUSCHLAGSFREI bleibt.
+  const neutralerTag = (date: string, netM: number): PlanShift =>
+    baueSchicht(Date.parse(`${date}T08:00:00Z`), netM, 0, null)
+
+  // 1) vorhandene neutrale Tages-Schichten anpassen. Immer über neutralerTag,
+  //    damit eine wachsende Schicht nicht in ein Zuschlagsfenster rutscht.
   for (const day of dp.days) {
     if (Math.abs(diff) < 1) break
     if (day.kind !== 'schicht' || day.shifts.length !== 1) continue
@@ -476,18 +595,18 @@ function feinAbgleichNetto(dp: DriverPlan, zielMin: number): void {
     if (neu === cur) continue
     diff -= neu - cur
     if (neu <= 0) { day.kind = 'frei'; day.shifts = []; day.hinweis = '' }
-    else day.shifts = [baueSchicht(s.startMs, neu, Math.round(s.pauseH * 60), s.restH)]
+    else day.shifts = [neutralerTag(day.date, neu)]
   }
-  // 2) fehlt noch etwas, neutrale Werktage (10:00) auf freien Tagen ergänzen.
+  // 2) fehlt noch etwas, neutrale Werktage auf freien Tagen ergänzen.
   if (diff > 1) {
     for (const day of dp.days) {
       if (diff < 1) break
       if (day.kind === 'schicht') continue
       if (weekdayIndex(day.date) === 0) continue // Sonntag neutral vermeiden
+      if (feSet.has(day.date)) continue // Feiertag nicht neutral belegen (würde 125 % erzeugen)
       const add = Math.min(MAX_NET_MIN, diff)
-      const startMs = Date.parse(`${day.date}T10:00:00Z`)
       day.kind = 'schicht'
-      day.shifts = [baueSchicht(startMs, add, 30, null)]
+      day.shifts = [neutralerTag(day.date, add)]
       day.hinweis = ''
       diff -= add
     }
@@ -505,14 +624,33 @@ function feinAbgleichNetto(dp: DriverPlan, zielMin: number): void {
   dp.freeDays = dp.days.filter((d) => d.kind !== 'schicht').length
 }
 
+/** Alle Kalendertage eines Monats "YYYY-MM" als ISO-Datum. */
+function tageImMonat(month: string): string[] {
+  const m = /^(\d{4})-(\d{2})$/.exec(month || '')
+  if (!m) return []
+  const out: string[] = []
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, 1))
+  while (d.getUTCMonth() === Number(m[2]) - 1) {
+    out.push(d.toISOString().slice(0, 10))
+    d.setUTCDate(d.getUTCDate() + 1)
+  }
+  return out
+}
+
 function manualAlsDriverPlan(name: string, month: string, mr: ManualResult): DriverPlan {
   let paidH = 0
   let nettoH = 0
   let workDays = 0
-  const days: PlanDay[] = mr.tage.map((t) => {
-    const weekday = weekdayIndex(t.date)
-    if (!t.aktiv || t.startMin == null || t.endMin == null || t.bezahlt <= 0) {
-      return { date: t.date, weekday, kind: 'frei', shifts: [], hinweis: '', ausgelassen: '' }
+  // Aktive Tage des Kerns nach Datum; der Rest des Monats bleibt als freier Tag
+  // stehen, damit die Zuschlags- und Netto-Feinabstimmung eine Leinwand hat.
+  const aktiv = new Map(mr.tage.map((t) => [t.date, t]))
+  const alle = tageImMonat(month)
+  const quelle = alle.length ? alle : mr.tage.map((t) => t.date)
+  const days: PlanDay[] = quelle.map((date) => {
+    const weekday = weekdayIndex(date)
+    const t = aktiv.get(date)
+    if (!t || !t.aktiv || t.startMin == null || t.endMin == null || t.bezahlt <= 0) {
+      return { date, weekday, kind: 'frei', shifts: [], hinweis: '', ausgelassen: '' }
     }
     const tag0 = Date.parse(`${t.date}T00:00:00Z`)
     const shift: PlanShift = {

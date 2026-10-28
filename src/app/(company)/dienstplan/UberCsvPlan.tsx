@@ -34,7 +34,7 @@ const num = (s: string): number => {
   return Number.isFinite(n) ? n : 0
 }
 
-type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string }
+type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string; feiertag: string }
 
 export default function UberCsvPlan() {
   const [csv, setCsv] = useState<string | null>(null)
@@ -50,18 +50,18 @@ export default function UberCsvPlan() {
   const [exakt, setExakt] = useState(true)
 
   /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
-  function zieleBody(): Record<string, { gesamt: number; sonntag: number; nacht25: number; nacht40: number }> {
-    const out: Record<string, { gesamt: number; sonntag: number; nacht25: number; nacht40: number }> = {}
+  function zieleBody(): Record<string, { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }> {
+    const out: Record<string, { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }> = {}
     for (const [name, z] of Object.entries(ziele)) {
       const g = num(z.gesamt)
-      if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag), nacht25: num(z.nacht25), nacht40: num(z.nacht40) }
+      if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag), nacht25: num(z.nacht25), nacht40: num(z.nacht40), feiertag: num(z.feiertag) }
     }
     return out
   }
 
   const setZiel = (name: string, feld: keyof Ziel, wert: string) =>
     setZiele((z) => {
-      const cur: Ziel = z[name] ?? { gesamt: '', sonntag: '' }
+      const cur: Ziel = z[name] ?? { gesamt: '', sonntag: '', nacht25: '', nacht40: '', feiertag: '' }
       return { ...z, [name]: { ...cur, [feld]: wert } }
     })
 
@@ -293,7 +293,7 @@ export default function UberCsvPlan() {
                 <div className="mb-1 font-medium text-text">Monatsvorgabe (Lohnabrechnung)</div>
                 <div>Bezahlte Stunden ohne Pause + Zuschläge. Leer = echte Uber-Stunden.</div>
               </div>
-              {([['gesamt', 'Gesamt'], ['sonntag', 'Sonntag'], ['nacht25', 'Nacht 25 %'], ['nacht40', 'Nacht 40 %']] as [keyof Ziel, string][]).map(([feld, label]) => (
+              {([['gesamt', 'Gesamt'], ['sonntag', 'Sonntag'], ['nacht25', 'Nacht 25 %'], ['nacht40', 'Nacht 40 %'], ['feiertag', 'Feiertag']] as [keyof Ziel, string][]).map(([feld, label]) => (
                 <label key={feld} className="flex flex-col gap-1 text-xs text-textMuted">
                   {label}
                   <input inputMode="decimal" placeholder={feld === 'gesamt' ? n2(fahrer.nettoH) : '0'}
