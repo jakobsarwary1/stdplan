@@ -35,6 +35,16 @@ const num = (s: string): number => {
 }
 
 type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string; feiertag: string }
+type ZielZahl = { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }
+type LohnErgebnis = {
+  filename: string
+  name: string
+  fahrer: string | null
+  month: string | null
+  gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number
+  krank: number; urlaub: number
+  warnungen: string[]
+}
 
 export default function UberCsvPlan() {
   const [csv, setCsv] = useState<string | null>(null)
@@ -48,10 +58,11 @@ export default function UberCsvPlan() {
   const [dupePairs, setDupePairs] = useState<string[][]>([])
   const [merges, setMerges] = useState<string[][]>([])
   const [exakt, setExakt] = useState(true)
+  const [lohnInfo, setLohnInfo] = useState<LohnErgebnis[] | null>(null)
 
   /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
-  function zieleBody(): Record<string, { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }> {
-    const out: Record<string, { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }> = {}
+  function zieleBody(): Record<string, ZielZahl> {
+    const out: Record<string, ZielZahl> = {}
     for (const [name, z] of Object.entries(ziele)) {
       const g = num(z.gesamt)
       if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag), nacht25: num(z.nacht25), nacht40: num(z.nacht40), feiertag: num(z.feiertag) }
@@ -66,7 +77,7 @@ export default function UberCsvPlan() {
     })
 
   /** Vorschau mit den aktuellen Zielvorgaben/Merges neu berechnen (ohne Datei-Reupload). */
-  async function neuBerechnen(mergesArg: string[][] = merges) {
+  async function neuBerechnen(mergesArg: string[][] = merges, zieleArg?: Record<string, ZielZahl>) {
     if (!csv) return
     setBusy(true)
     setFehler(null)
@@ -74,7 +85,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, ziele: zieleBody(), merges: mergesArg, exakt }),
+        body: JSON.stringify({ csv, ziele: zieleArg ?? zieleBody(), merges: mergesArg, exakt }),
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Neuberechnung fehlgeschlagen.')
@@ -108,6 +119,54 @@ export default function UberCsvPlan() {
       setAktiv(list[0]?.name ?? '')
     } catch (err) {
       setDrivers(null)
+      setFehler((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Datei → Base64 (ohne data:-Präfix). */
+  function alsBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader()
+      r.onload = () => resolve(String(r.result).split(',')[1] ?? '')
+      r.onerror = () => reject(new Error('Datei nicht lesbar.'))
+      r.readAsDataURL(file)
+    })
+  }
+
+  /** Lohnabrechnungen (PDF) einlesen → Zielwerte je Fahrer automatisch füllen. */
+  async function lohnLaden(files: File[]) {
+    if (!csv || !drivers || files.length === 0) return
+    setBusy(true)
+    setFehler(null)
+    try {
+      const pdfs = await Promise.all(files.map(async (f) => ({ filename: f.name, dataBase64: await alsBase64(f) })))
+      const res = await fetch('/api/dienstplan/lohn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdfs, driverNames: drivers.map((d) => d.name) }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j?.error || 'Die Lohnabrechnungen ließen sich nicht lesen.')
+      const serverZiele = (j.ziele ?? {}) as Record<string, ZielZahl>
+      setLohnInfo((j.ergebnisse as LohnErgebnis[]) ?? [])
+      // Eingabefelder (als Text) für die erkannten Fahrer füllen …
+      setZiele((z) => {
+        const next = { ...z }
+        for (const [name, v] of Object.entries(serverZiele)) {
+          next[name] = {
+            gesamt: String(v.gesamt), sonntag: v.sonntag ? String(v.sonntag) : '',
+            nacht25: v.nacht25 ? String(v.nacht25) : '', nacht40: v.nacht40 ? String(v.nacht40) : '',
+            feiertag: v.feiertag ? String(v.feiertag) : '',
+          }
+        }
+        return next
+      })
+      // … und sofort mit genau diesen Zahlen neu berechnen (Exakt-Modus).
+      const merged: Record<string, ZielZahl> = { ...zieleBody(), ...serverZiele }
+      await neuBerechnen(merges, merged)
+    } catch (err) {
       setFehler((err as Error).message)
     } finally {
       setBusy(false)
@@ -269,7 +328,22 @@ export default function UberCsvPlan() {
                 {d.name}
               </button>
             ))}
-            <button type="button" onClick={() => void mappe()} disabled={busy} className="ml-auto rounded-lg border border-[var(--accent,#c79a3a)] px-3 py-1.5 text-sm font-medium">
+            <label className="ml-auto inline-flex cursor-pointer items-center rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-bg">
+              {busy ? 'Lese…' : 'Lohnabrechnungen (PDF) einlesen'}
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                multiple
+                className="sr-only"
+                disabled={busy}
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? [])
+                  if (files.length) void lohnLaden(files)
+                  e.target.value = ''
+                }}
+              />
+            </label>
+            <button type="button" onClick={() => void mappe()} disabled={busy} className="rounded-lg border border-[var(--accent,#c79a3a)] px-3 py-1.5 text-sm font-medium">
               Arbeitsmappe (je Fahrer ein Blatt)
             </button>
             <button type="button" onClick={() => void csvDownload()} disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium">
@@ -284,6 +358,26 @@ export default function UberCsvPlan() {
             {fahrer.ruheTage > 0 && ` · ${fahrer.ruheTage} als Ruhetag gesetzt`}
             {fahrer.violations > 0 && ` · ${fahrer.violations} Hinweise`}
           </p>
+
+          {lohnInfo && lohnInfo.length > 0 && (
+            <div className="space-y-1 rounded-xl border border-border bg-bg/40 p-3 text-xs">
+              <div className="mb-1 font-medium text-text">Aus Lohnabrechnungen eingelesen ({lohnInfo.length})</div>
+              {lohnInfo.map((e) => (
+                <div key={e.filename} className={`flex flex-wrap items-center gap-x-3 gap-y-0.5 ${e.fahrer ? 'text-textMuted' : 'text-amber-300'}`}>
+                  <span className="font-medium text-text">{e.fahrer ?? `${e.name || e.filename} — kein Fahrer erkannt`}</span>
+                  {e.gesamt > 0 && <span>Gesamt {n2(e.gesamt)}</span>}
+                  {e.sonntag > 0 && <span>So {n2(e.sonntag)}</span>}
+                  {e.nacht25 > 0 && <span>N25 {n2(e.nacht25)}</span>}
+                  {e.nacht40 > 0 && <span>N40 {n2(e.nacht40)}</span>}
+                  {e.feiertag > 0 && <span>Fe {n2(e.feiertag)}</span>}
+                  {e.krank > 0 && <span className="text-textMuted/80">Krank {n2(e.krank)}</span>}
+                  {e.urlaub > 0 && <span className="text-textMuted/80">Urlaub {n2(e.urlaub)}</span>}
+                  {e.warnungen.map((w, i) => <span key={i} className="text-amber-300/90">· {w}</span>)}
+                </div>
+              ))}
+              <div className="pt-1 text-textMuted/80">Krank- und Urlaubsstunden sind kein Teil der geplanten Schichten – sie stehen nur zur Info.</div>
+            </div>
+          )}
 
           {/* Zielvorgaben aus der Lohnabrechnung: Gesamt + Zuschläge. Im Exakt-
               Modus werden sie alle genau getroffen (Uhrzeiten frei gesetzt). */}
