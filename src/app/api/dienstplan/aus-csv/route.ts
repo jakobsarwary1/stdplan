@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
 import { workbookForPlans } from '@/lib/planning/uberExcel'
-import { buildPlansFromCsv, monthLabelDE, timesheetView, findeDoppelVerdacht, type DriverPlan } from '@/lib/planning/uberPlan'
+import { buildPlansFromCsv, monthLabelDE, timesheetView, findeDoppelPaare, type DriverPlan } from '@/lib/planning/uberPlan'
 import { buildPlansFromFahrlygoCsv, looksLikeFahrlygo } from '@/lib/planning/fahrlygoPlan'
 import { buildCsvForPlans } from '@/lib/planning/uberCsv'
 import { buildWorkbookPerDriver } from '@/lib/planning/uberMappe'
@@ -31,7 +31,7 @@ export async function POST(request: Request) {
   const user = await getCurrentUser()
   if (!user || !user.companyId) return NextResponse.json({ error: 'Kein Firmenzugriff.' }, { status: 403 })
 
-  let body: { csv?: string; format?: string; ziele?: Record<string, Ziel> }
+  let body: { csv?: string; format?: string; ziele?: Record<string, Ziel>; merges?: string[][] }
   try {
     body = await request.json()
   } catch {
@@ -42,7 +42,8 @@ export async function POST(request: Request) {
   if (csv.length > MAX_CSV) return NextResponse.json({ error: 'Die CSV ist zu groß.' }, { status: 400 })
 
   // Anbieter am CSV-Kopf erkennen: Fahrlygo (Datum;Fahrer;…) oder Uber (trip_activity).
-  const roh = looksLikeFahrlygo(csv) ? buildPlansFromFahrlygoCsv([csv]) : buildPlansFromCsv([csv])
+  const merges = Array.isArray(body.merges) ? body.merges : []
+  const roh = looksLikeFahrlygo(csv) ? buildPlansFromFahrlygoCsv([csv], merges) : buildPlansFromCsv([csv], merges)
   if (!roh.length) {
     return NextResponse.json({ error: 'Keine Fahrten gefunden. Ist das eine Uber- oder Fahrlygo-Fahrtliste?' }, { status: 400 })
   }
@@ -89,7 +90,7 @@ export async function POST(request: Request) {
   return NextResponse.json({
     month: plans[0].month,
     monthLabel: plans[0].month ? monthLabelDE(plans[0].month) : '',
-    hinweise: findeDoppelVerdacht(plans.map((p) => p.name)),
+    dupePairs: findeDoppelPaare(plans.map((p) => p.name)),
     drivers: plans.map((p) => ({
       name: p.name,
       paidH: p.paidH,

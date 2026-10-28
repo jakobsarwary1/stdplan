@@ -45,7 +45,8 @@ export default function UberCsvPlan() {
   const [drivers, setDrivers] = useState<Driver[] | null>(null)
   const [aktiv, setAktiv] = useState('')
   const [ziele, setZiele] = useState<Record<string, Ziel>>({})
-  const [hinweise, setHinweise] = useState<string[]>([])
+  const [dupePairs, setDupePairs] = useState<string[][]>([])
+  const [merges, setMerges] = useState<string[][]>([])
 
   /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
   function zieleBody(): Record<string, { gesamt: number; sonntag: number }> {
@@ -63,8 +64,8 @@ export default function UberCsvPlan() {
       return { ...z, [name]: { ...cur, [feld]: wert } }
     })
 
-  /** Vorschau mit den aktuellen Zielvorgaben neu berechnen (ohne Datei-Reupload). */
-  async function neuBerechnen() {
+  /** Vorschau mit den aktuellen Zielvorgaben/Merges neu berechnen (ohne Datei-Reupload). */
+  async function neuBerechnen(mergesArg: string[][] = merges) {
     if (!csv) return
     setBusy(true)
     setFehler(null)
@@ -72,12 +73,12 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, ziele: zieleBody() }),
+        body: JSON.stringify({ csv, ziele: zieleBody(), merges: mergesArg }),
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Neuberechnung fehlgeschlagen.')
       setDrivers((j.drivers as Driver[]) ?? [])
-      setHinweise((j.hinweise as string[]) ?? [])
+      setDupePairs((j.dupePairs as string[][]) ?? [])
     } catch (err) {
       setFehler((err as Error).message)
     } finally {
@@ -93,7 +94,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv: text, ziele: zieleBody() }),
+        body: JSON.stringify({ csv: text, ziele: zieleBody(), merges }),
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Die Datei ließ sich nicht auswerten.')
@@ -102,7 +103,7 @@ export default function UberCsvPlan() {
       setMonth(j.monthLabel || j.month || '')
       const list = (j.drivers as Driver[]) ?? []
       setDrivers(list)
-      setHinweise((j.hinweise as string[]) ?? [])
+      setDupePairs((j.dupePairs as string[][]) ?? [])
       setAktiv(list[0]?.name ?? '')
     } catch (err) {
       setDrivers(null)
@@ -120,7 +121,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'xlsx', ziele: zieleBody() }),
+        body: JSON.stringify({ csv, format: 'xlsx', ziele: zieleBody(), merges }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -148,7 +149,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'csv', ziele: zieleBody() }),
+        body: JSON.stringify({ csv, format: 'csv', ziele: zieleBody(), merges }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -176,7 +177,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'mappe', ziele: zieleBody() }),
+        body: JSON.stringify({ csv, format: 'mappe', ziele: zieleBody(), merges }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -228,13 +229,30 @@ export default function UberCsvPlan() {
       {datei && <p className="mt-2 text-xs text-textMuted">{datei}</p>}
       {fehler && <p className="mt-3 text-sm text-danger">{fehler}</p>}
 
-      {hinweise.length > 0 && (
-        <div className="mt-3 rounded-xl border border-amber-400/40 bg-amber-400/10 p-3 text-sm text-amber-200">
-          <div className="mb-1 font-medium">⚠ Mögliche Doppel-Fahrer</div>
-          <ul className="space-y-1 text-xs">
-            {hinweise.map((h) => <li key={h}>{h}</li>)}
-          </ul>
+      {dupePairs.length > 0 && (
+        <div className="mt-3 space-y-2 rounded-xl border border-amber-400/40 bg-amber-400/10 p-3 text-sm text-amber-200">
+          <div className="font-medium">⚠ Mögliche Doppel-Fahrer</div>
+          {dupePairs.map((pair) => (
+            <div key={pair.join('|')} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span>„{pair[0]}" und „{pair[1]}" – nicht automatisch zusammengeführt.</span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => { const neu = [...merges, pair]; setMerges(neu); void neuBerechnen(neu) }}
+                className="rounded-lg border border-amber-400/60 bg-amber-400/20 px-3 py-1 font-medium text-amber-100 hover:bg-amber-400/30 disabled:opacity-50"
+              >
+                Zusammenführen
+              </button>
+            </div>
+          ))}
         </div>
+      )}
+      {merges.length > 0 && (
+        <p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-textMuted">
+          {merges.length} Zusammenführung(en) aktiv.
+          <button type="button" disabled={busy} onClick={() => { setMerges([]); void neuBerechnen([]) }}
+            className="underline hover:text-text">rückgängig</button>
+        </p>
       )}
 
       {drivers && fahrer && (

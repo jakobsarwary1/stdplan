@@ -13,7 +13,7 @@
 // Ab da identisch zu Uber: dieselbe planDriver()-Logik (Pausen, Ruhezeiten,
 // Ruhetag je Woche) und dieselben Excel-/CSV-Ausgaben, inkl. roter Sonntage.
 
-import { planDriverByGaps, normName, type DriverPlan, type Trip } from './uberPlan'
+import { planDriverByGaps, normName, applyMerges, type DriverPlan, type Trip } from './uberPlan'
 
 /** Nenn-Dauer je Fahrt in Minuten – nur fürs Ende der letzten Fahrt relevant. */
 export const FAHRT_MIN = 15
@@ -105,8 +105,8 @@ export function readTripsFromFahrlygoCsv(csvTexts: string[]): Map<string, Trip[]
 }
 
 /** Monats-Pläne je Fahrer aus Fahrlygo-CSVs – wie buildPlansFromCsv für Uber. */
-export function buildPlansFromFahrlygoCsv(csvTexts: string[]): DriverPlan[] {
-  const drivers = readTripsFromFahrlygoCsv(csvTexts)
+export function buildPlansFromFahrlygoCsv(csvTexts: string[], merges: string[][] = []): DriverPlan[] {
+  const drivers = applyMerges(readTripsFromFahrlygoCsv(csvTexts), merges)
   return [...drivers.entries()]
     .map(([name, trips]) => planDriverByGaps(name, trips, SCHICHT_GAP_H))
     .filter((p) => p.days.some((d) => d.kind === 'schicht'))

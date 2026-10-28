@@ -643,14 +643,15 @@ export function normName(s: string): string {
  * gleich sind. Bewusst konservativ, damit echte verschiedene Fahrer („Ahmad …"
  * vs „Mohammad …") nicht fälschlich als Dublette gemeldet werden.
  */
-export function findeDoppelVerdacht(names: string[]): string[] {
+/** Verdachts-Paare als Namenspaare (für den manuellen „Zusammenführen"-Knopf). */
+export function findeDoppelPaare(names: string[]): [string, string][] {
   const prefixLen = (a: string, b: string): number => {
     let k = 0
     while (k < a.length && k < b.length && a[k] === b[k]) k++
     return k
   }
   const items = names.map((n) => ({ n, t: normName(n).split(' ').filter(Boolean) }))
-  const warn: string[] = []
+  const paare: [string, string][] = []
   for (let i = 0; i < items.length; i++) {
     for (let j = i + 1; j < items.length; j++) {
       const a = items[i], b = items[j]
@@ -658,12 +659,32 @@ export function findeDoppelVerdacht(names: string[]): string[] {
       if (normName(a.n) === normName(b.n)) continue // exakt gleich → wird ohnehin gemergt
       const first = prefixLen(a.t[0], b.t[0]) >= 4
       const last = prefixLen(a.t[a.t.length - 1], b.t[b.t.length - 1]) >= 4
-      if (first && last) {
-        warn.push(`Möglicher Doppel-Fahrer: „${a.n}" und „${b.n}" – zur Sicherheit NICHT automatisch zusammengeführt. Bitte in der Fahrtliste prüfen.`)
-      }
+      if (first && last) paare.push([a.n, b.n])
     }
   }
-  return warn
+  return paare
+}
+
+export function findeDoppelVerdacht(names: string[]): string[] {
+  return findeDoppelPaare(names).map(([a, b]) => `Möglicher Doppel-Fahrer: „${a}" und „${b}" – zur Sicherheit NICHT automatisch zusammengeführt. Bitte prüfen oder zusammenführen.`)
+}
+
+/**
+ * Vom Büro bestätigte Zusammenführungen anwenden: jede Gruppe von Fahrernamen
+ * wird zu EINEM Fahrer (die Fahrten werden zusammengelegt, der erste vorhandene
+ * Name bleibt). Nur Namen, die wirklich vorkommen, werden berührt.
+ */
+export function applyMerges(drivers: Map<string, Trip[]>, groups: string[][]): Map<string, Trip[]> {
+  const out = new Map(drivers)
+  for (const group of groups) {
+    const present = group.filter((n) => out.has(n))
+    if (present.length < 2) continue
+    const keep = present[0]
+    const trips = [...(out.get(keep) || [])]
+    for (const n of present.slice(1)) { trips.push(...(out.get(n) || [])); out.delete(n) }
+    out.set(keep, trips)
+  }
+  return out
 }
 
 /**
@@ -724,8 +745,8 @@ export function readTripsFromCsv(csvTexts: string[]): Map<string, Trip[]> {
   return out
 }
 
-export function buildPlansFromCsv(csvTexts: string[]): DriverPlan[] {
-  const drivers = readTripsFromCsv(csvTexts)
+export function buildPlansFromCsv(csvTexts: string[], merges: string[][] = []): DriverPlan[] {
+  const drivers = applyMerges(readTripsFromCsv(csvTexts), merges)
   return [...drivers.entries()]
     .map(([name, trips]) => planDriver(name, trips))
     .filter((p) => p.days.some((d) => d.kind === 'schicht'))
