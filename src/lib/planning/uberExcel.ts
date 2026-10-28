@@ -49,6 +49,7 @@ export function planToSummary(plan: DriverPlan): StundenzettelSummary {
     sunday50Amount: wage.sunday50Amount,
     holiday125Amount: wage.holiday125Amount,
     grossWage: wage.brutto,
+    soll: plan.ziel,
   }
 }
 

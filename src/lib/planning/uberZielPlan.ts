@@ -420,6 +420,10 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
     freeDays: neueTage.filter((d) => d.kind !== 'schicht').length,
     weekNotes,
     feiertage: (ziel.feiertage ?? []).length ? ziel.feiertage : plan.feiertage,
+    ziel: {
+      gesamt: Math.max(0, ziel.gesamt), sonntag: Math.max(0, ziel.sonntag),
+      nacht25: Math.max(0, ziel.nacht25 ?? 0), nacht40: Math.max(0, ziel.nacht40 ?? 0), feiertag: Math.max(0, ziel.feiertag ?? 0),
+    },
   }
 }
 
@@ -475,6 +479,8 @@ export function planExakt(name: string, month: string, ziel: ZielVorgabe): Drive
   erzwingeRuheUndSerie(dp, feSet)
   // Feiertage mitgeben, damit Vorschau/Excel die 125 %-Stunden gleich zuordnen.
   if (feSet.size > 0) dp.feiertage = [...feSet]
+  // Soll-Vorgaben für den Soll/Ist-Abgleich im Export mitführen.
+  dp.ziel = { gesamt: Math.max(0, ziel.gesamt), sonntag: son, nacht25: n25, nacht40: n40, feiertag: fe }
   return dp
 }
 

@@ -33,6 +33,7 @@ const num = (s: string): number => {
   const n = parseFloat((s || '').replace(',', '.').replace(/[^0-9.\-]/g, ''))
   return Number.isFinite(n) ? n : 0
 }
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
 type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string; feiertag: string }
 type ZielZahl = { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }
@@ -40,11 +41,15 @@ type LohnErgebnis = {
   filename: string
   name: string
   fahrer: string | null
+  nichtInCsv?: boolean
   month: string | null
   gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number
   krank: number; urlaub: number
   warnungen: string[]
 }
+
+const IGNORE = '' // Zuordnungswert „ignorieren"
+const EIGEN = '__eigen__' // Zuordnungswert „eigener Stundenzettel (Abrechnungsname)"
 
 export default function UberCsvPlan() {
   const [csv, setCsv] = useState<string | null>(null)
@@ -59,6 +64,10 @@ export default function UberCsvPlan() {
   const [merges, setMerges] = useState<string[][]>([])
   const [exakt, setExakt] = useState(true)
   const [lohnInfo, setLohnInfo] = useState<LohnErgebnis[] | null>(null)
+  // Fahrernamen aus der CSV (für die manuelle Zuordnung – fest ab CSV-Load).
+  const [csvFahrer, setCsvFahrer] = useState<string[]>([])
+  // Zuordnung je Lohnabrechnung (Dateiname → Zielfahrer/EIGEN/IGNORE).
+  const [zuordnung, setZuordnung] = useState<Record<string, string>>({})
 
   /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
   function zieleBody(): Record<string, ZielZahl> {
@@ -115,6 +124,9 @@ export default function UberCsvPlan() {
       setMonth(j.monthLabel || j.month || '')
       const list = (j.drivers as Driver[]) ?? []
       setDrivers(list)
+      setCsvFahrer(list.map((d) => d.name))
+      setLohnInfo(null)
+      setZuordnung({})
       setDupePairs((j.dupePairs as string[][]) ?? [])
       setAktiv(list[0]?.name ?? '')
     } catch (err) {
@@ -135,7 +147,45 @@ export default function UberCsvPlan() {
     })
   }
 
-  /** Lohnabrechnungen (PDF) einlesen → Zielwerte je Fahrer automatisch füllen. */
+  /** Zielfahrer, zu dem eine Abrechnung laut aktueller Zuordnung gehört (oder ''). */
+  function zielFahrer(e: LohnErgebnis, zu: Record<string, string>): string {
+    const wahl = zu[e.filename]
+    if (wahl === IGNORE) return ''
+    if (wahl === EIGEN) return e.name || e.fahrer || ''
+    if (wahl != null) return wahl // konkreter CSV-Fahrer
+    return e.fahrer ?? '' // Default: automatische Zuordnung
+  }
+
+  /** Numerische Ziele aus allen Abrechnungen + Zuordnung (mehrere je Fahrer = Summe). */
+  function zieleAusLohn(info: LohnErgebnis[], zu: Record<string, string>): Record<string, ZielZahl> {
+    const out: Record<string, ZielZahl> = {}
+    for (const e of info) {
+      if (e.gesamt <= 0) continue
+      const ziel = zielFahrer(e, zu)
+      if (!ziel) continue
+      const c = out[ziel] ?? { gesamt: 0, sonntag: 0, nacht25: 0, nacht40: 0, feiertag: 0 }
+      out[ziel] = {
+        gesamt: c.gesamt + e.gesamt, sonntag: c.sonntag + e.sonntag,
+        nacht25: c.nacht25 + e.nacht25, nacht40: c.nacht40 + e.nacht40, feiertag: c.feiertag + e.feiertag,
+      }
+    }
+    return out
+  }
+
+  /** Eingabefelder auf GENAU die Lohn-Ziele setzen (alte Lohn-Ziele fallen weg). */
+  function fuelleZiele(num: Record<string, ZielZahl>) {
+    const next: Record<string, Ziel> = {}
+    for (const [name, v] of Object.entries(num)) {
+      next[name] = {
+        gesamt: String(round2(v.gesamt)), sonntag: v.sonntag ? String(round2(v.sonntag)) : '',
+        nacht25: v.nacht25 ? String(round2(v.nacht25)) : '', nacht40: v.nacht40 ? String(round2(v.nacht40)) : '',
+        feiertag: v.feiertag ? String(round2(v.feiertag)) : '',
+      }
+    }
+    setZiele(next)
+  }
+
+  /** Lohnabrechnungen (PDF) einlesen → automatische Zuordnung + Zielwerte füllen. */
   async function lohnLaden(files: File[]) {
     if (!csv || !drivers || files.length === 0) return
     setBusy(true)
@@ -149,28 +199,33 @@ export default function UberCsvPlan() {
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Die Lohnabrechnungen ließen sich nicht lesen.')
-      const serverZiele = (j.ziele ?? {}) as Record<string, ZielZahl>
-      setLohnInfo((j.ergebnisse as LohnErgebnis[]) ?? [])
-      // Eingabefelder (als Text) für die erkannten Fahrer füllen …
-      setZiele((z) => {
-        const next = { ...z }
-        for (const [name, v] of Object.entries(serverZiele)) {
-          next[name] = {
-            gesamt: String(v.gesamt), sonntag: v.sonntag ? String(v.sonntag) : '',
-            nacht25: v.nacht25 ? String(v.nacht25) : '', nacht40: v.nacht40 ? String(v.nacht40) : '',
-            feiertag: v.feiertag ? String(v.feiertag) : '',
-          }
-        }
-        return next
-      })
-      // … und sofort mit genau diesen Zahlen neu berechnen (Exakt-Modus).
-      const merged: Record<string, ZielZahl> = { ...zieleBody(), ...serverZiele }
-      await neuBerechnen(merges, merged)
+      const info = (j.ergebnisse as LohnErgebnis[]) ?? []
+      // Standard-Zuordnung je Abrechnung: automatisch erkannter Fahrer, sonst
+      // „eigener Stundenzettel" (Lohn ohne CSV-Fahrt) bzw. „ignorieren" (0 h).
+      const zu: Record<string, string> = {}
+      for (const e of info) {
+        zu[e.filename] = e.gesamt <= 0 ? IGNORE : e.nichtInCsv ? EIGEN : (e.fahrer ?? EIGEN)
+      }
+      setLohnInfo(info)
+      setZuordnung(zu)
+      const num = zieleAusLohn(info, zu)
+      fuelleZiele(num)
+      await neuBerechnen(merges, num)
     } catch (err) {
       setFehler((err as Error).message)
     } finally {
       setBusy(false)
     }
+  }
+
+  /** Eine Abrechnung manuell einem Fahrer zuordnen und sofort neu rechnen. */
+  async function setzeZuordnung(filename: string, wert: string) {
+    if (!lohnInfo) return
+    const zu = { ...zuordnung, [filename]: wert }
+    setZuordnung(zu)
+    const num = zieleAusLohn(lohnInfo, zu)
+    fuelleZiele(num)
+    await neuBerechnen(merges, num)
   }
 
   async function xlsx() {
@@ -360,22 +415,45 @@ export default function UberCsvPlan() {
           </p>
 
           {lohnInfo && lohnInfo.length > 0 && (
-            <div className="space-y-1 rounded-xl border border-border bg-bg/40 p-3 text-xs">
-              <div className="mb-1 font-medium text-text">Aus Lohnabrechnungen eingelesen ({lohnInfo.length})</div>
-              {lohnInfo.map((e) => (
-                <div key={e.filename} className={`flex flex-wrap items-center gap-x-3 gap-y-0.5 ${e.fahrer ? 'text-textMuted' : 'text-amber-300'}`}>
-                  <span className="font-medium text-text">{e.fahrer ?? `${e.name || e.filename} — kein Fahrer erkannt`}</span>
-                  {e.gesamt > 0 && <span>Gesamt {n2(e.gesamt)}</span>}
-                  {e.sonntag > 0 && <span>So {n2(e.sonntag)}</span>}
-                  {e.nacht25 > 0 && <span>N25 {n2(e.nacht25)}</span>}
-                  {e.nacht40 > 0 && <span>N40 {n2(e.nacht40)}</span>}
-                  {e.feiertag > 0 && <span>Fe {n2(e.feiertag)}</span>}
-                  {e.krank > 0 && <span className="text-textMuted/80">Krank {n2(e.krank)}</span>}
-                  {e.urlaub > 0 && <span className="text-textMuted/80">Urlaub {n2(e.urlaub)}</span>}
-                  {e.warnungen.map((w, i) => <span key={i} className="text-amber-300/90">· {w}</span>)}
-                </div>
-              ))}
-              <div className="pt-1 text-textMuted/80">Krank- und Urlaubsstunden sind kein Teil der geplanten Schichten – sie stehen nur zur Info.</div>
+            <div className="space-y-1.5 rounded-xl border border-border bg-bg/40 p-3 text-xs">
+              <div className="mb-1 font-medium text-text">Aus Lohnabrechnungen eingelesen ({lohnInfo.length}) · Zuordnung änderbar</div>
+              {lohnInfo.map((e) => {
+                const wahl = zuordnung[e.filename] ?? (e.gesamt <= 0 ? IGNORE : e.nichtInCsv ? EIGEN : (e.fahrer ?? EIGEN))
+                const zugeordnet = wahl !== IGNORE
+                return (
+                  <div key={e.filename} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="text-textMuted/70">{e.name || e.filename}</span>
+                    {e.gesamt > 0 && <span className="text-textMuted">Gesamt {n2(e.gesamt)}</span>}
+                    {e.sonntag > 0 && <span className="text-textMuted">So {n2(e.sonntag)}</span>}
+                    {e.nacht25 > 0 && <span className="text-textMuted">N25 {n2(e.nacht25)}</span>}
+                    {e.nacht40 > 0 && <span className="text-textMuted">N40 {n2(e.nacht40)}</span>}
+                    {e.feiertag > 0 && <span className="text-textMuted">Fe {n2(e.feiertag)}</span>}
+                    {e.krank > 0 && <span className="text-textMuted/70">Krank {n2(e.krank)}</span>}
+                    {e.urlaub > 0 && <span className="text-textMuted/70">Urlaub {n2(e.urlaub)}</span>}
+                    <span className="ml-auto flex items-center gap-1">
+                      <span className={zugeordnet ? 'text-textMuted/70' : 'text-amber-300'}>→</span>
+                      <select
+                        value={wahl}
+                        disabled={busy || e.gesamt <= 0}
+                        onChange={(ev) => void setzeZuordnung(e.filename, ev.target.value)}
+                        className="max-w-[16rem] rounded-lg border border-border bg-bg px-2 py-1 text-xs text-text outline-none focus:border-accent disabled:opacity-50"
+                      >
+                        <option value={IGNORE}>— ignorieren —</option>
+                        {e.gesamt > 0 && <option value={EIGEN}>Eigener Zettel: {e.name || e.filename}</option>}
+                        {csvFahrer.map((f) => (
+                          <option key={f} value={f}>{f}</option>
+                        ))}
+                      </select>
+                    </span>
+                    {e.warnungen.filter((w) => !/eigener Stundenzettel|manuell zuordnen/i.test(w)).map((w, i) => (
+                      <span key={i} className="w-full text-amber-300/80">· {w}</span>
+                    ))}
+                  </div>
+                )
+              })}
+              <div className="pt-1 text-textMuted/80">
+                Nicht erkannte Fahrer rechts zuordnen (z. B. anderer Name in der CSV) oder „Eigener Zettel" lassen. Krank/Urlaub sind nur zur Info, keine geplanten Schichten.
+              </div>
             </div>
           )}
 

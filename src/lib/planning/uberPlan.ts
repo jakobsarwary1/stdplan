@@ -71,6 +71,8 @@ export type DriverPlan = {
   weekNotes: string[]
   /** Gesetzliche Feiertage des Monats als "YYYY-MM-DD" (für die 125 %-Zuordnung). */
   feiertage?: string[]
+  /** Soll-Vorgaben aus der Lohnabrechnung (zum Abgleich im Export), falls gesetzt. */
+  ziel?: { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }
 }
 
 const WOCHENTAG = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']

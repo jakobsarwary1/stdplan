@@ -37,6 +37,8 @@ export type StundenzettelSummary = {
   night40Amount?: number | null
   sunday50Amount?: number | null
   holiday125Amount?: number | null
+  /** Soll-Vorgaben aus der Lohnabrechnung (zum Abgleich), falls vorhanden. */
+  soll?: { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }
 }
 
 function excelSerial(isoDate: string, minutes: number): number {
@@ -407,6 +409,41 @@ export async function addStundenzettelSheet(
       const n40Ref = addStat('Nachtzuschlag 40 % steuerfrei', COLS.n40, s.night40, 0.4, s.night40Amount)
       const soRef = addStat('Sonntagszuschlag 50 %', COLS.so50, s.sunday50, 0.5, s.sunday50Amount)
       const feRef = addStat('Feiertagszuschlag 125 %', COLS.fe125, s.holiday125, 1.25, s.holiday125Amount)
+
+      // Soll/Ist-Abgleich: Vorgabe aus der Lohnabrechnung ↔ Summe im Stundenzettel.
+      if (s.soll) {
+        sheet.addRow([])
+        const abHead = sheet.addRow(['Abgleich: Lohnabrechnung (Soll) ↔ Stundenzettel (Ist)'])
+        abHead.getCell(1).font = { bold: true, size: 10 }
+        sheet.mergeCells(abHead.number, 1, abHead.number, AMT_TO)
+        const capRow = sheet.addRow([])
+        sheet.mergeCells(capRow.number, 1, capRow.number, LABEL_TO)
+        capRow.getCell(STD_COL).value = 'Soll'
+        capRow.getCell(STD_TO).value = 'Ist'
+        capRow.getCell(AMT_COL).value = 'Status'
+        for (const c of [STD_COL, STD_TO, AMT_COL]) capRow.getCell(c).font = { italic: true, size: 9, color: { argb: 'FF666666' } }
+        sheet.mergeCells(capRow.number, AMT_COL, capRow.number, AMT_TO)
+        const abgleich = (label: string, sollVal: number, istRef: string) => {
+          const row = sheet.addRow([label])
+          sheet.mergeCells(row.number, 1, row.number, LABEL_TO)
+          const sollCell = row.getCell(STD_COL)
+          sollCell.value = Math.round(sollVal * 100) / 100
+          sollCell.numFmt = '0.00'
+          const istCell = row.getCell(STD_TO)
+          istCell.value = { formula: `${istRef}`, result: 0 }
+          istCell.numFmt = '0.00'
+          sheet.mergeCells(row.number, AMT_COL, row.number, AMT_TO)
+          const stCell = row.getCell(AMT_COL)
+          stCell.value = { formula: `IF(ABS(${L(STD_TO)}${row.number}-${L(STD_COL)}${row.number})<0.01,"OK - stimmt","PRUEFEN")`, result: '' }
+          stCell.font = { bold: true }
+        }
+        abgleich('Gesamt (Std.)', s.soll.gesamt, nettoRef)
+        if (s.soll.sonntag > 0 || s.sunday50 > 0) abgleich('davon Sonntag', s.soll.sonntag, soRef)
+        if (s.soll.nacht25 > 0 || s.night25 > 0) abgleich('davon Nacht 25 %', s.soll.nacht25, n25Ref)
+        if (s.soll.nacht40 > 0 || s.night40 > 0) abgleich('davon Nacht 40 %', s.soll.nacht40, n40Ref)
+        if (s.soll.feiertag > 0 || s.holiday125 > 0) abgleich('davon Feiertag', s.soll.feiertag, feRef)
+        sheet.addRow([])
+      }
 
       const bruttoRow = sheet.addRow(['Lohn gesamt (brutto, geschätzt)'])
       bruttoRow.getCell(1).font = { bold: true }
