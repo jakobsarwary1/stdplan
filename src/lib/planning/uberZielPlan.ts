@@ -24,12 +24,22 @@ const MAX_PAUSE_MIN = 90 // 1,5 h – betriebliche Obergrenze (wie im Uber-Pfad)
 const H = 3600000
 
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+const sub = (a: { so: number; n25: number; n40: number; fe: number }, b: { so: number; n25: number; n40: number; fe: number }) =>
+  ({ so: a.so - b.so, n25: a.n25 - b.n25, n40: a.n40 - b.n40, fe: a.fe - b.fe })
 
 export type ZielVorgabe = {
   /** Bezahlte Arbeitszeit des Monats OHNE Pause (Stunden). */
   gesamt: number
   /** Davon an Sonntagen (Stunden). */
   sonntag: number
+  /** Davon Nacht 25 % (04–06 & 20–24 Uhr), optional. */
+  nacht25?: number
+  /** Davon Nacht 40 % steuerfrei (00–04 Uhr), optional. */
+  nacht40?: number
+  /** Davon Feiertag (Stunden), optional. Braucht Feiertagsdaten. */
+  feiertag?: number
+  /** Feiertage des Monats als "YYYY-MM-DD" (für die Feiertags-Zuordnung). */
+  feiertage?: string[]
 }
 
 /** Gesetzliches Minimum (Minuten) für eine Netto-Arbeitszeit nach § 4 ArbZG. */
@@ -185,19 +195,22 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
 
   // Tatsächliche Sonntagsminuten eines Datums bei Netto n (via Zuschlagsrechnung,
   // mitternachtsgenau und pausenbereinigt). Memoisiert, weil der Sonntags-
-  // Abgleich sie oft mit denselben Werten abfragt.
-  const soMemo = new Map<string, number>()
-  const sonntagMinOf = (date: string, n: number): number => {
-    if (n <= 0) return 0
+  // Abgleich sie oft mit denselben Werten abfragt. Liefert je Datum+Netto die
+  // Zuschlagsminuten (Sonntag / Nacht 25 / Nacht 40 / Feiertag), mitternachts-
+  // und pausengenau über dieselbe § 3b-Rechnung wie Vorschau und Excel.
+  type Zus = { so: number; n25: number; n40: number; fe: number }
+  const feSet = new Set(ziel.feiertage ?? [])
+  const bMemo = new Map<string, Zus>()
+  const beitrag = (date: string, n: number): Zus => {
+    if (n <= 0) return { so: 0, n25: 0, n40: 0, fe: 0 }
     const key = `${date}|${n}`
-    const c = soMemo.get(key)
-    if (c != null) return c
+    const c = bMemo.get(key)
+    if (c) return c
     const startMs = startOf.get(date) ?? Date.parse(`${date}T10:00:00Z`)
-    const pause = pauseOf.get(date) ?? 30
-    const sh = baueSchicht(startMs, n, pause, null)
-    const h = computeShiftHours({ date: sh.date, startMin: sh.startMin, endMin: sh.endMin, breaks: sh.pauseAt })
-    const v = Math.round(h.sunday50 * 60)
-    soMemo.set(key, v)
+    const sh = baueSchicht(startMs, n, pauseOf.get(date) ?? 30, null)
+    const h = computeShiftHours({ date: sh.date, startMin: sh.startMin, endMin: sh.endMin, breaks: sh.pauseAt }, feSet)
+    const v: Zus = { so: Math.round(h.sunday50 * 60), n25: Math.round(h.night25 * 60), n40: Math.round(h.night40 * 60), fe: Math.round(h.holiday125 * 60) }
+    bMemo.set(key, v)
     return v
   }
 
@@ -213,58 +226,70 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
   echte.forEach((t, i) => netById.set(t.date, grund.vals[i]))
   if (grund.fehlt > 1) warnungen.push(`${round2(grund.fehlt / 60)} h passen nicht auf die ${echte.length} echten Tage (max. 8 h/Tag) – Gesamt wird nicht ganz erreicht.`)
 
-  // ---- SONNTAG (nur bei Vorgabe): tatsächliche Sonntagsstunden (ab 00:00,
-  // Samstagnacht zählt mit) aufs Ziel bringen, durch Umschichten zwischen Tagen
-  // (Gesamt bleibt konstant). Reichen die echten Sonntage nicht, werden
-  // zusätzliche Kalender-Sonntage angesetzt. ----
-  if (sonntagMin > 0) {
-    for (const d of alleSonntage) {
-      if (!startOf.has(d)) { startOf.set(d, Date.parse(`${d}T10:00:00Z`)); pauseOf.set(d, 30) }
-      if (!netById.has(d)) netById.set(d, 0)
-    }
-    const sundayNow = () => [...netById.keys()].reduce((a, d) => a + sonntagMinOf(d, netById.get(d) || 0), 0)
-    for (const step of [15, 5, 1]) {
-      let guard = 0
-      while (guard++ < 8000) {
-        const diff = sonntagMin - sundayNow()
-        if (Math.abs(diff) <= 0.5) break
-        if (diff > 0) {
-          let empf: string | null = null; let best = 0
-          for (const d of netById.keys()) {
-            if ((netById.get(d) || 0) + step > MAX_NET_MIN) continue
-            const g = sonntagMinOf(d, (netById.get(d) || 0) + step) - sonntagMinOf(d, netById.get(d) || 0)
-            if (g > best) { best = g; empf = d }
-          }
-          if (!empf || best <= 0) break
-          let geber: string | null = null; let verlust = Infinity; let gNet = -1
-          for (const d of netById.keys()) {
-            if (d === empf) continue
-            const nd = netById.get(d) || 0
-            if (nd < step) continue
-            const l = sonntagMinOf(d, nd) - sonntagMinOf(d, nd - step)
-            if (l < verlust || (l === verlust && nd > gNet)) { verlust = l; geber = d; gNet = nd }
-          }
-          if (!geber || best - verlust <= 0) break
-          netById.set(empf, (netById.get(empf) || 0) + step)
-          netById.set(geber, (netById.get(geber) || 0) - step)
-        } else {
-          let geber: string | null = null
-          for (const d of netById.keys()) { if (istSo(d) && (netById.get(d) || 0) >= step) { geber = d; break } }
-          let empf: string | null = null; let eNet = Infinity
-          for (const d of netById.keys()) {
-            if (istSo(d)) continue
-            const nd = netById.get(d) || 0
-            if (nd + step > MAX_NET_MIN) continue
-            if (nd < eNet) { eNet = nd; empf = d }
-          }
-          if (!geber || !empf) break
-          netById.set(geber, (netById.get(geber) || 0) - step)
-          netById.set(empf, (netById.get(empf) || 0) + step)
-        }
+  // ---- ZUSCHLÄGE (Sonntag / Nacht 25 % / Nacht 40 % / Feiertag) exakt treffen.
+  // Lokale Suche: Netto wird minutenweise zwischen Tagen VERSCHOBEN (Gesamt
+  // bleibt konstant), bis die Summe der tatsächlichen Zuschlagsstunden den
+  // Zielen am nächsten ist. Mehrere Zuschläge werden gleichzeitig abgewogen
+  // (eine Samstagnacht-Stunde zählt z. B. bei Nacht 40 % UND Sonntag). Nur
+  // Zuschläge mit Vorgabe > 0 werden geregelt; für den Sonntag dürfen zusätzlich
+  // Kalender-Sonntage angesetzt werden, wenn die echten nicht reichen. ----
+  const zielK: Zus = {
+    so: sonntagMin,
+    n25: Math.round(Math.max(0, ziel.nacht25 ?? 0) * 60),
+    n40: Math.round(Math.max(0, ziel.nacht40 ?? 0) * 60),
+    fe: Math.round(Math.max(0, ziel.feiertag ?? 0) * 60),
+  }
+  const aktiv = (['so', 'n25', 'n40', 'fe'] as const).filter((k) => zielK[k] > 0)
+  if (aktiv.length > 0) {
+    if (zielK.so > 0) {
+      for (const d of alleSonntage) {
+        if (!startOf.has(d)) { startOf.set(d, Date.parse(`${d}T10:00:00Z`)); pauseOf.set(d, 30) }
+        if (!netById.has(d)) netById.set(d, 0)
       }
     }
-    const erreicht = sundayNow()
-    if (sonntagMin - erreicht > 30) warnungen.push(`Sonntag: nur ${round2(erreicht / 60)} von ${ziel.sonntag} h erreichbar (durch die vorhandenen Tage/Sonntage begrenzt).`)
+    const summe = (): Zus => {
+      const a: Zus = { so: 0, n25: 0, n40: 0, fe: 0 }
+      for (const d of netById.keys()) { const b = beitrag(d, netById.get(d) || 0); a.so += b.so; a.n25 += b.n25; a.n40 += b.n40; a.fe += b.fe }
+      return a
+    }
+    const fehler = (c: Zus) => aktiv.reduce((s, k) => s + Math.abs(c[k] - zielK[k]), 0)
+    for (const step of [15, 5, 1]) {
+      let guard = 0
+      while (guard++ < 4000) {
+        const c0 = summe()
+        const e0 = fehler(c0)
+        if (e0 <= 1) break
+        const dates = [...netById.keys()]
+        const gain = new Map<string, Zus | null>()
+        const loss = new Map<string, Zus | null>()
+        for (const d of dates) {
+          const nd = netById.get(d) || 0
+          const b0 = beitrag(d, nd)
+          gain.set(d, nd + step <= MAX_NET_MIN ? sub(beitrag(d, nd + step), b0) : null)
+          loss.set(d, nd >= step ? sub(b0, beitrag(d, nd - step)) : null)
+        }
+        let best: [string, string] | null = null
+        let bestErr = e0
+        for (const i of dates) {
+          const gi = gain.get(i); if (!gi) continue
+          for (const j of dates) {
+            if (j === i) continue
+            const lj = loss.get(j); if (!lj) continue
+            let e = 0
+            for (const k of aktiv) e += Math.abs(c0[k] + gi[k] - lj[k] - zielK[k])
+            if (e < bestErr - 0.001) { bestErr = e; best = [i, j] }
+          }
+        }
+        if (!best) break
+        netById.set(best[0], (netById.get(best[0]) || 0) + step)
+        netById.set(best[1], (netById.get(best[1]) || 0) - step)
+      }
+    }
+    const c = summe()
+    const lbl: Record<string, string> = { so: 'Sonntag', n25: 'Nacht 25 %', n40: 'Nacht 40 %', fe: 'Feiertag' }
+    for (const k of aktiv) {
+      if (zielK[k] - c[k] > 30) warnungen.push(`${lbl[k]}: nur ${round2(c[k] / 60)} von ${round2(zielK[k] / 60)} h erreichbar – die echten Fahrzeiten geben nicht mehr her.`)
+    }
     const zusatz = [...netById.keys()].filter((d) => istSo(d) && !echteSoSet.has(d) && (netById.get(d) || 0) > 0)
     if (zusatz.length > 0) warnungen.push(`${zusatz.length} zusätzliche(r) Sonntag(e) angesetzt: ${zusatz.join(', ')}.`)
   }
