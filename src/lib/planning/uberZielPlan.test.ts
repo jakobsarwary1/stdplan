@@ -103,6 +103,39 @@ test('planAnZiel: höchstens 6 Arbeitstage am Stück (§ 11 ArbZG)', () => {
   assert.ok(maxRun <= 6, `längster Block ${maxRun} Tage`)
 })
 
+function minRuhe(plan: P): number {
+  const sh = plan.days.filter((d) => d.kind === 'schicht').flatMap((d) => d.shifts).sort((a, b) => a.startMs - b.startMs)
+  let min = Infinity
+  for (let i = 1; i < sh.length; i++) min = Math.min(min, (sh[i].startMs - sh[i - 1].endMs) / 3600000)
+  return sh.length < 2 ? Infinity : min
+}
+
+test('planAnZiel: 11 h Ruhezeit wird erzwungen (§ 5 ArbZG)', () => {
+  // Zwei echte Tage mit knappem Abstand: Mo 18–19 Uhr, Di 06–07 Uhr (11 h Rest
+  // start→ende). Auf 8 h gestreckt würde die Ruhe unter 11 h fallen → kürzen.
+  const trips: Trip[] = [
+    trip('2026-01-05', '18:00', '2026-01-05', '19:00'),
+    trip('2026-01-06', '06:00', '2026-01-06', '07:00'),
+  ]
+  const ziel = planAnZiel(planDriver('R', trips), { gesamt: 8, sonntag: 0 })
+  assert.ok(minRuhe(ziel) >= 11 - 0.02, `kürzeste Ruhe ${minRuhe(ziel)} h`)
+  assert.ok(netSumme(ziel) <= 8 + 0.02)
+})
+
+test('planAnZiel: gesetzliche Mindestpause (§ 4 ArbZG) wird eingehalten', () => {
+  // Zwei Tage mit je 8 h Netto → je mind. 30 Min Pause.
+  const trips: Trip[] = [
+    trip('2026-01-06', '08:00', '2026-01-06', '18:00'),
+    trip('2026-01-08', '08:00', '2026-01-08', '18:00'),
+  ]
+  const ziel = planAnZiel(planDriver('P', trips), { gesamt: 16, sonntag: 0 })
+  for (const d of ziel.days) {
+    for (const s of d.shifts) {
+      if (s.nettoH > 6) assert.ok(s.pauseH >= 0.5 - 1e-9, `Pause ${s.pauseH} bei ${s.nettoH} h`)
+    }
+  }
+})
+
 test('planAnZiel: kleiner Monat verteilt dünn, ohne die Summe zu sprengen', () => {
   const trips: Trip[] = [
     trip('2026-01-05', '08:00', '2026-01-05', '18:00'),

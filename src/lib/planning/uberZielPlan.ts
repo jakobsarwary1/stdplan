@@ -310,6 +310,61 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
     if (freigegeben > 0) warnungen.push(`${freigegeben} Tag(e) freigegeben für die gesetzliche Obergrenze von 6 Arbeitstagen am Stück (§ 11 ArbZG).`)
   }
 
+  // ---- 11 h RUHEZEIT zwischen Schichten (§ 5 ArbZG) ERZWINGEN. Endet eine
+  // Schicht weniger als 11 h vor dem Beginn der nächsten, wird sie so weit
+  // gekürzt, dass 11 h erreicht sind; die gekürzten Stunden wandern auf andere
+  // belegte Tage mit Platz. Lässt es sich nicht unterbringen, sinkt das Gesamt
+  // entsprechend (mit Warnung) – die Ruhezeit hat Vorrang. ----
+  {
+    const RUHE = 11 * 60 * 60000
+    let verlust = 0
+    let gelöst = false
+    for (let iter = 0; iter < 160; iter++) {
+      const worked = [...netById.keys()].filter((d) => (netById.get(d) || 0) > 0).sort()
+      let prevEnd: number | null = null
+      let prevDate: string | null = null
+      let konflikt: { prev: string; cur: string } | null = null
+      for (const d of worked) {
+        const startMs = startOf.get(d) ?? Date.parse(`${d}T10:00:00Z`)
+        if (prevEnd != null && startMs - prevEnd < RUHE - 1) { konflikt = { prev: prevDate as string, cur: d }; break }
+        const sh = baueSchicht(startMs, netById.get(d) || 0, pauseOf.get(d) ?? 30, null)
+        prevEnd = sh.endMs
+        prevDate = d
+      }
+      if (!konflikt) { gelöst = true; break }
+      const prevStart = startOf.get(konflikt.prev) as number
+      const curStart = startOf.get(konflikt.cur) as number
+      const grenze = curStart - RUHE // die frühere Schicht muss spätestens hier enden
+      let lo = 0
+      let hi = netById.get(konflikt.prev) || 0
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2)
+        const end = baueSchicht(prevStart, mid, pauseOf.get(konflikt.prev) ?? 30, null).endMs
+        if (end <= grenze) lo = mid; else hi = mid - 1
+      }
+      const cut = (netById.get(konflikt.prev) || 0) - lo
+      if (cut <= 0) break // lässt sich nicht weiter kürzen
+      netById.set(konflikt.prev, lo)
+      // gekürzte Stunden umverteilen: andere belegte Tage, wenigste zuerst,
+      // max 8 h; Sonntage mit Ziel möglichst meiden, um sie nicht zu stören.
+      let übrig = cut
+      const empfänger = [...netById.keys()]
+        .filter((d) => d !== konflikt.prev && (netById.get(d) || 0) > 0 && (sonntagMin > 0 ? !istSo(d) : true))
+        .sort((a, b) => (netById.get(a) || 0) - (netById.get(b) || 0))
+      for (const d of empfänger) {
+        if (übrig <= 0) break
+        const nd = netById.get(d) || 0
+        const add = Math.min(MAX_NET_MIN - nd, übrig)
+        if (add <= 0) continue
+        netById.set(d, nd + add)
+        übrig -= add
+      }
+      verlust += übrig
+    }
+    if (verlust > 1) warnungen.push(`${round2(verlust / 60)} h ließen sich wegen der 11-Stunden-Ruhezeit nicht unterbringen – Gesamt sinkt entsprechend.`)
+    if (!gelöst) warnungen.push('Die 11-Stunden-Ruhezeit ließ sich nicht an allen Tagen einhalten – bitte die Zeiten prüfen.')
+  }
+
   // Plan bauen: Tage in Datumsreihenfolge, inkl. evtl. zusätzlicher Sonntage
   // (aus „frei" wird dann „schicht").
   let prevEndMs: number | null = null
