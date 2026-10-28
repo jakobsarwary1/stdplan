@@ -18,6 +18,7 @@
 
 import { dateKey, weekdayIndex, type DriverPlan, type PlanDay, type PlanShift } from './uberPlan'
 import { computeShiftHours } from './wage'
+import { erstellePlan, type ManualResult } from './manual'
 
 const MAX_NET_MIN = 8 * 60
 const MAX_PAUSE_MIN = 90 // 1,5 h – betriebliche Obergrenze (wie im Uber-Pfad)
@@ -418,5 +419,130 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
     workDays,
     freeDays: neueTage.filter((d) => d.kind !== 'schicht').length,
     weekNotes,
+  }
+}
+
+/**
+ * EXAKT-Planer (freie Zeiten): trifft Gesamt (netto) UND alle Zuschläge
+ * (Sonntag / Nacht 25 / Nacht 40) exakt, legal und über den Monat verteilt.
+ * Nutzt den bewährten manuellen Planer (erstellePlan), der die Uhrzeiten so
+ * setzt, dass die §-3b-Stunden exakt stimmen. Weil erstellePlan mit der
+ * bezahlten SPANNE rechnet, das Ziel aber NETTO ist, wird die Spanne so
+ * nachgeführt, dass die Nettosumme das Gesamt trifft. Die echten Uber-Zeiten
+ * gehen hier bewusst NICHT ein – dafür stimmen die Zahlen exakt.
+ */
+export function planExakt(name: string, month: string, ziel: ZielVorgabe): DriverPlan {
+  const m = /^(\d{4})-(\d{2})$/.exec(month || '')
+  const jahr = m ? Number(m[1]) : new Date().getFullYear()
+  const monat1 = m ? Number(m[2]) : new Date().getMonth() + 1
+  const son = Math.max(0, ziel.sonntag || 0)
+  const n25 = Math.max(0, ziel.nacht25 || 0)
+  const n40 = Math.max(0, ziel.nacht40 || 0)
+
+  let bezahlt = Math.max(0, ziel.gesamt)
+  let mr: ManualResult = erstellePlan(jahr, monat1, { bezahlt, sunday: son, n25, n40 })
+  for (let i = 0; i < 10; i++) {
+    const diff = ziel.gesamt - mr.summe.netto
+    if (Math.abs(diff) < 0.05) break
+    bezahlt = Math.max(0, bezahlt + diff)
+    mr = erstellePlan(jahr, monat1, { bezahlt, sunday: son, n25, n40 })
+  }
+  const dp = manualAlsDriverPlan(name, month, mr)
+  feinAbgleichNetto(dp, Math.round(ziel.gesamt * 60))
+  return dp
+}
+
+/**
+ * Netto-Gesamt exakt treffen, ohne die Zuschläge anzutasten: nur ZUSCHLAGSFREIE
+ * (reine Tages-)Schichten werden in der Länge angepasst. Reicht die vorhandene
+ * Kapazität nicht, werden zusätzliche neutrale Werktage angesetzt.
+ */
+function feinAbgleichNetto(dp: DriverPlan, zielMin: number): void {
+  const istNeutral = (s: PlanShift): boolean => {
+    const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.pauseAt })
+    return h.sunday50 < 0.01 && h.night25 < 0.01 && h.night40 < 0.01 && h.holiday125 < 0.01
+  }
+  const netMin = () => Math.round(dp.days.reduce((a, d) => a + d.shifts.reduce((x, s) => x + s.nettoH, 0), 0) * 60)
+  let diff = zielMin - netMin()
+
+  // 1) vorhandene neutrale Tages-Schichten anpassen (08:00-Fenster bleibt neutral).
+  for (const day of dp.days) {
+    if (Math.abs(diff) < 1) break
+    if (day.kind !== 'schicht' || day.shifts.length !== 1) continue
+    const s = day.shifts[0]
+    if (!istNeutral(s)) continue
+    const cur = Math.round(s.nettoH * 60)
+    const neu = Math.max(0, Math.min(MAX_NET_MIN, cur + diff))
+    if (neu === cur) continue
+    diff -= neu - cur
+    if (neu <= 0) { day.kind = 'frei'; day.shifts = []; day.hinweis = '' }
+    else day.shifts = [baueSchicht(s.startMs, neu, Math.round(s.pauseH * 60), s.restH)]
+  }
+  // 2) fehlt noch etwas, neutrale Werktage (10:00) auf freien Tagen ergänzen.
+  if (diff > 1) {
+    for (const day of dp.days) {
+      if (diff < 1) break
+      if (day.kind === 'schicht') continue
+      if (weekdayIndex(day.date) === 0) continue // Sonntag neutral vermeiden
+      const add = Math.min(MAX_NET_MIN, diff)
+      const startMs = Date.parse(`${day.date}T10:00:00Z`)
+      day.kind = 'schicht'
+      day.shifts = [baueSchicht(startMs, add, 30, null)]
+      day.hinweis = ''
+      diff -= add
+    }
+  }
+  // Summen neu setzen.
+  let paidH = 0, nettoH = 0, workDays = 0
+  for (const d of dp.days) {
+    if (d.kind !== 'schicht') continue
+    for (const s of d.shifts) { paidH += s.paidH; nettoH += s.nettoH }
+    if (d.shifts.length) workDays++
+  }
+  dp.paidH = round2(paidH)
+  dp.nettoH = round2(nettoH)
+  dp.workDays = workDays
+  dp.freeDays = dp.days.filter((d) => d.kind !== 'schicht').length
+}
+
+function manualAlsDriverPlan(name: string, month: string, mr: ManualResult): DriverPlan {
+  let paidH = 0
+  let nettoH = 0
+  let workDays = 0
+  const days: PlanDay[] = mr.tage.map((t) => {
+    const weekday = weekdayIndex(t.date)
+    if (!t.aktiv || t.startMin == null || t.endMin == null || t.bezahlt <= 0) {
+      return { date: t.date, weekday, kind: 'frei', shifts: [], hinweis: '', ausgelassen: '' }
+    }
+    const tag0 = Date.parse(`${t.date}T00:00:00Z`)
+    const shift: PlanShift = {
+      date: t.date,
+      startMs: tag0 + t.startMin * 60000,
+      endMs: tag0 + t.endMin * 60000,
+      startMin: t.startMin,
+      endMin: t.endMin,
+      pauseH: round2(t.pause / 60),
+      pauseAt: t.breaks,
+      paidH: round2(t.bezahlt),
+      nettoH: round2(t.netto),
+      restH: t.ruhe,
+      hinweis: t.warnung ?? '',
+    }
+    paidH += shift.paidH
+    nettoH += shift.nettoH
+    workDays++
+    return { date: t.date, weekday, kind: 'schicht', shifts: [shift], hinweis: shift.hinweis, ausgelassen: '' }
+  })
+  return {
+    name,
+    month,
+    days,
+    paidH: round2(paidH),
+    nettoH: round2(nettoH),
+    workDays,
+    freeDays: days.filter((d) => d.kind !== 'schicht').length,
+    ruheTage: 0,
+    violations: 0,
+    weekNotes: mr.warnings,
   }
 }

@@ -34,7 +34,7 @@ const num = (s: string): number => {
   return Number.isFinite(n) ? n : 0
 }
 
-type Ziel = { gesamt: string; sonntag: string }
+type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string }
 
 export default function UberCsvPlan() {
   const [csv, setCsv] = useState<string | null>(null)
@@ -47,13 +47,14 @@ export default function UberCsvPlan() {
   const [ziele, setZiele] = useState<Record<string, Ziel>>({})
   const [dupePairs, setDupePairs] = useState<string[][]>([])
   const [merges, setMerges] = useState<string[][]>([])
+  const [exakt, setExakt] = useState(true)
 
   /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
-  function zieleBody(): Record<string, { gesamt: number; sonntag: number }> {
-    const out: Record<string, { gesamt: number; sonntag: number }> = {}
+  function zieleBody(): Record<string, { gesamt: number; sonntag: number; nacht25: number; nacht40: number }> {
+    const out: Record<string, { gesamt: number; sonntag: number; nacht25: number; nacht40: number }> = {}
     for (const [name, z] of Object.entries(ziele)) {
       const g = num(z.gesamt)
-      if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag) }
+      if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag), nacht25: num(z.nacht25), nacht40: num(z.nacht40) }
     }
     return out
   }
@@ -73,7 +74,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, ziele: zieleBody(), merges: mergesArg }),
+        body: JSON.stringify({ csv, ziele: zieleBody(), merges: mergesArg, exakt }),
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Neuberechnung fehlgeschlagen.')
@@ -94,7 +95,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv: text, ziele: zieleBody(), merges }),
+        body: JSON.stringify({ csv: text, ziele: zieleBody(), merges, exakt }),
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Die Datei ließ sich nicht auswerten.')
@@ -121,7 +122,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'xlsx', ziele: zieleBody(), merges }),
+        body: JSON.stringify({ csv, format: 'xlsx', ziele: zieleBody(), merges, exakt }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -149,7 +150,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'csv', ziele: zieleBody(), merges }),
+        body: JSON.stringify({ csv, format: 'csv', ziele: zieleBody(), merges, exakt }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -177,7 +178,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'mappe', ziele: zieleBody(), merges }),
+        body: JSON.stringify({ csv, format: 'mappe', ziele: zieleBody(), merges, exakt }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -284,36 +285,37 @@ export default function UberCsvPlan() {
             {fahrer.violations > 0 && ` · ${fahrer.violations} Hinweise`}
           </p>
 
-          {/* Zielvorgaben aus der Lohnabrechnung: echte Tage/Zeiten bleiben,
-              nur die Längen werden auf exakt diese Monatsstunden gebracht. */}
-          <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-bg/40 p-3">
-            <div className="text-xs text-textMuted">
-              <div className="mb-1 font-medium text-text">Monatsvorgabe (Lohnabrechnung)</div>
-              <div>Bezahlte Stunden ohne Pause. Leer = echte Uber-Stunden.</div>
+          {/* Zielvorgaben aus der Lohnabrechnung: Gesamt + Zuschläge. Im Exakt-
+              Modus werden sie alle genau getroffen (Uhrzeiten frei gesetzt). */}
+          <div className="space-y-2 rounded-xl border border-border bg-bg/40 p-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="text-xs text-textMuted">
+                <div className="mb-1 font-medium text-text">Monatsvorgabe (Lohnabrechnung)</div>
+                <div>Bezahlte Stunden ohne Pause + Zuschläge. Leer = echte Uber-Stunden.</div>
+              </div>
+              {([['gesamt', 'Gesamt'], ['sonntag', 'Sonntag'], ['nacht25', 'Nacht 25 %'], ['nacht40', 'Nacht 40 %']] as [keyof Ziel, string][]).map(([feld, label]) => (
+                <label key={feld} className="flex flex-col gap-1 text-xs text-textMuted">
+                  {label}
+                  <input inputMode="decimal" placeholder={feld === 'gesamt' ? n2(fahrer.nettoH) : '0'}
+                    value={ziele[fahrer.name]?.[feld] ?? ''}
+                    onChange={(e) => setZiel(fahrer.name, feld, e.target.value)}
+                    className="w-20 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-right text-sm tabular-nums outline-none focus:border-accent" />
+                </label>
+              ))}
+              <button type="button" onClick={() => void neuBerechnen()} disabled={busy}
+                className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50">
+                {busy ? 'Rechne…' : 'Übernehmen'}
+              </button>
             </div>
-            <label className="flex flex-col gap-1 text-xs text-textMuted">
-              Gesamt (Std.)
-              <input inputMode="decimal" placeholder={n2(fahrer.nettoH)}
-                value={ziele[fahrer.name]?.gesamt ?? ''}
-                onChange={(e) => setZiel(fahrer.name, 'gesamt', e.target.value)}
-                className="w-24 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-right text-sm tabular-nums outline-none focus:border-accent" />
+            <label className="flex items-center gap-2 text-xs text-textMuted">
+              <input type="checkbox" checked={exakt} onChange={(e) => { setExakt(e.target.checked) }} className="h-3.5 w-3.5 accent-accent" />
+              <span><span className="font-medium text-text">Genau treffen</span> (freie Uhrzeiten) – alle Vorgaben exakt. Aus: so nah wie möglich an den echten Uber-Zeiten.</span>
             </label>
-            <label className="flex flex-col gap-1 text-xs text-textMuted">
-              davon Sonntag
-              <input inputMode="decimal" placeholder="0"
-                value={ziele[fahrer.name]?.sonntag ?? ''}
-                onChange={(e) => setZiel(fahrer.name, 'sonntag', e.target.value)}
-                className="w-24 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-right text-sm tabular-nums outline-none focus:border-accent" />
-            </label>
-            <button type="button" onClick={() => void neuBerechnen()} disabled={busy}
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50">
-              {busy ? 'Rechne…' : 'Übernehmen'}
-            </button>
             {num(ziele[fahrer.name]?.gesamt ?? '') > 0 && (
-              <span className="text-xs text-textMuted">
+              <div className="text-xs text-textMuted">
                 Ziel {n2(num(ziele[fahrer.name]!.gesamt))} h · aktuell <span className="font-medium text-text">{n2(fahrer.nettoH)} h</span>
-                {Math.abs(fahrer.nettoH - num(ziele[fahrer.name]!.gesamt)) < 0.02 ? ' ✓ exakt' : ' — „Übernehmen" klicken'}
-              </span>
+                {Math.abs(fahrer.nettoH - num(ziele[fahrer.name]!.gesamt)) < 0.05 ? ' ✓' : ' — „Übernehmen" klicken'}
+              </div>
             )}
           </div>
           {fahrer.weekNotes.length > 0 && (

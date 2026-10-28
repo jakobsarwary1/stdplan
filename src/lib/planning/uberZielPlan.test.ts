@@ -1,8 +1,21 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { planDriver, type Trip } from './uberPlan'
-import { planAnZiel, skaliere } from './uberZielPlan'
+import { planAnZiel, skaliere, planExakt } from './uberZielPlan'
 import { computeShiftHours } from './wage'
+
+test('planExakt: trifft Gesamt, Sonntag UND Nacht 40 exakt (freie Zeiten)', () => {
+  for (const [g, so, n40] of [[120, 32, 32], [100, 32, 32], [130, 32, 0], [75, 8, 0]] as [number, number, number][]) {
+    const r = planExakt('Test', '2026-06', { gesamt: g, sonntag: so, nacht40: n40 })
+    const sh = r.days.filter((d) => d.kind === 'schicht').flatMap((d) => d.shifts)
+    const net = sh.reduce((a, s) => a + s.nettoH, 0)
+    let soIst = 0, n40Ist = 0
+    for (const s of sh) { const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.pauseAt }); soIst += h.sunday50; n40Ist += h.night40 }
+    assert.ok(Math.abs(net - g) <= 0.1, `Gesamt ${net} / ${g}`)
+    assert.ok(Math.abs(soIst - so) <= 0.3, `Sonntag ${soIst} / ${so}`)
+    assert.ok(Math.abs(n40Ist - n40) <= 0.3, `Nacht40 ${n40Ist} / ${n40}`)
+  }
+})
 
 function at(iso: string, hm: string): number {
   const [y, m, d] = iso.split('-').map(Number)
