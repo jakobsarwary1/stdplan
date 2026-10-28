@@ -313,6 +313,10 @@ export default function UberCsvPlan() {
   }
 
   const fahrer = drivers?.find((d) => d.name === aktiv) ?? drivers?.[0]
+  // Fahrerliste für die manuelle Stunden-Tabelle: CSV-Fahrer + evtl. zusätzliche
+  // Ziel-Fahrer (eigene Zettel). Ohne PDF einfach die Zahlen eintippen.
+  const tabFahrer = csvFahrer.length ? csvFahrer : (drivers?.map((d) => d.name) ?? [])
+  const alleFahrer = [...tabFahrer, ...Object.keys(ziele).filter((n) => !tabFahrer.includes(n))]
 
   return (
     <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
@@ -457,39 +461,61 @@ export default function UberCsvPlan() {
             </div>
           )}
 
-          {/* Zielvorgaben aus der Lohnabrechnung: Gesamt + Zuschläge. Im Exakt-
-              Modus werden sie alle genau getroffen (Uhrzeiten frei gesetzt). */}
+          {/* Stunden je Fahrer direkt eintippen (ohne PDF) – die zuverlässige
+              Alternative zum Einlesen der Lohnabrechnungen. */}
           <div className="space-y-2 rounded-xl border border-border bg-bg/40 p-3">
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="text-xs text-textMuted">
-                <div className="mb-1 font-medium text-text">Monatsvorgabe (Lohnabrechnung)</div>
-                <div>Bezahlte Stunden ohne Pause + Zuschläge. Leer = echte Uber-Stunden.</div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs">
+                <span className="font-medium text-text">Stunden je Fahrer eintippen (aus der Lohnabrechnung)</span>
+                <span className="text-textMuted"> — kein PDF nötig. Leer = dieser Fahrer wird übersprungen.</span>
               </div>
-              {([['gesamt', 'Gesamt'], ['sonntag', 'Sonntag'], ['nacht25', 'Nacht 25 %'], ['nacht40', 'Nacht 40 %'], ['feiertag', 'Feiertag']] as [keyof Ziel, string][]).map(([feld, label]) => (
-                <label key={feld} className="flex flex-col gap-1 text-xs text-textMuted">
-                  {label}
-                  <input inputMode="decimal" placeholder={feld === 'gesamt' ? n2(fahrer.nettoH) : '0'}
-                    value={ziele[fahrer.name]?.[feld] ?? ''}
-                    onChange={(e) => setZiel(fahrer.name, feld, e.target.value)}
-                    className="w-20 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-right text-sm tabular-nums outline-none focus:border-accent" />
-                </label>
-              ))}
               <button type="button" onClick={() => void neuBerechnen()} disabled={busy}
                 className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50">
-                {busy ? 'Rechne…' : 'Übernehmen'}
+                {busy ? 'Rechne…' : 'Stundenzettel erstellen'}
               </button>
+            </div>
+            <div className="overflow-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-textMuted">
+                    <th className="px-2 py-1 font-medium">Fahrer</th>
+                    <th className="px-2 py-1 text-right font-medium">Gesamt</th>
+                    <th className="px-2 py-1 text-right font-medium">Sonntag</th>
+                    <th className="px-2 py-1 text-right font-medium">Nacht 25 %</th>
+                    <th className="px-2 py-1 text-right font-medium">Nacht 40 %</th>
+                    <th className="px-2 py-1 text-right font-medium">Feiertag</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {alleFahrer.map((name) => {
+                    const ist = drivers?.find((d) => d.name === name)
+                    const g = num(ziele[name]?.gesamt ?? '')
+                    const treffer = g > 0 && ist && Math.abs(ist.nettoH - g) < 0.05
+                    return (
+                      <tr key={name} className="border-t border-border/60">
+                        <td className="whitespace-nowrap px-2 py-1">
+                          {name}{treffer && <span className="ml-1 text-accent">✓</span>}
+                        </td>
+                        {(['gesamt', 'sonntag', 'nacht25', 'nacht40', 'feiertag'] as (keyof Ziel)[]).map((feld) => (
+                          <td key={feld} className="px-1 py-0.5">
+                            <input inputMode="decimal" placeholder="0"
+                              value={ziele[name]?.[feld] ?? ''}
+                              onChange={(e) => setZiel(name, feld, e.target.value)}
+                              className="w-20 rounded-lg border border-border bg-bg px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-accent" />
+                          </td>
+                        ))}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
             <label className="flex items-center gap-2 text-xs text-textMuted">
               <input type="checkbox" checked={exakt} onChange={(e) => { setExakt(e.target.checked) }} className="h-3.5 w-3.5 accent-accent" />
-              <span><span className="font-medium text-text">Genau treffen</span> (freie Uhrzeiten) – alle Vorgaben exakt. Aus: so nah wie möglich an den echten Uber-Zeiten.</span>
+              <span><span className="font-medium text-text">Genau treffen</span> (freie Uhrzeiten) – alle Vorgaben exakt, 11 h Ruhe &amp; max. 6 Tage. Aus: so nah wie möglich an den echten Uber-Zeiten.</span>
             </label>
-            {num(ziele[fahrer.name]?.gesamt ?? '') > 0 && (
-              <div className="text-xs text-textMuted">
-                Ziel {n2(num(ziele[fahrer.name]!.gesamt))} h · aktuell <span className="font-medium text-text">{n2(fahrer.nettoH)} h</span>
-                {Math.abs(fahrer.nettoH - num(ziele[fahrer.name]!.gesamt)) < 0.05 ? ' ✓' : ' — „Übernehmen" klicken'}
-              </div>
-            )}
           </div>
+
           {fahrer.weekNotes.length > 0 && (
             <ul className="space-y-1 text-xs text-textMuted">
               {fahrer.weekNotes.map((n) => <li key={n}>{n}</li>)}
