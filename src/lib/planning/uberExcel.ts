@@ -6,7 +6,8 @@ import { monthLabelDE, timesheetHours, timesheetLines, type DriverPlan } from '.
 export function planToRows(plan: DriverPlan): StundenzettelRow[] {
   return timesheetLines(plan).map((line) => ({
     driverName: line.driverName,
-    employeeNumber: line.driverName === 'Mohammad Jakob Sarwary' ? '44' : null,
+    // Die Uber-/Fahrlygo-CSV enthält keine Personalnummer – nichts erfinden.
+    employeeNumber: null,
     date: line.isoDate,
     isoDate: line.isoDate,
     startMin: line.startMin,
@@ -30,6 +31,9 @@ export function planToRows(plan: DriverPlan): StundenzettelRow[] {
 /** Monatszusammenfassung eines Fahrer-Plans (inkl. geschätztem Bruttolohn). */
 export function planToSummary(plan: DriverPlan): StundenzettelSummary {
   const hours = timesheetHours(plan)
+  // Kein Stundenlohn in der CSV – also keinen erfinden. Die Lohn-Zelle im Excel
+  // bleibt leer und editierbar; sobald jemand den Satz einträgt, rechnen die
+  // Formeln (Grundlohn + Zuschläge) automatisch.
   const wage = computeWage(hours, null)
   return {
     driverName: plan.name,
@@ -39,7 +43,7 @@ export function planToSummary(plan: DriverPlan): StundenzettelSummary {
     night40: hours.night40,
     sunday50: hours.sunday50,
     holiday125: hours.holiday125,
-    hourlyRate: 15,
+    hourlyRate: null,
     night25Amount: wage.night25Amount,
     night40Amount: wage.night40Amount,
     sunday50Amount: wage.sunday50Amount,
