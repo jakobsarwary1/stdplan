@@ -17,6 +17,7 @@
 // Reines Modul (keine IO) – unit-testbar.
 
 import { dateKey, weekdayIndex, type DriverPlan, type PlanDay, type PlanShift } from './uberPlan'
+import { computeShiftHours } from './wage'
 
 const MAX_NET_MIN = 8 * 60
 const MAX_PAUSE_MIN = 90 // 1,5 h – betriebliche Obergrenze (wie im Uber-Pfad)
@@ -135,9 +136,25 @@ function baueSchicht(startMs: number, netMin: number, echteLueckeMin: number, re
   }
 }
 
+/** Alle Sonntage eines Monats "YYYY-MM" als ISO-Datum. */
+function sonntageImMonat(month: string): string[] {
+  const m = /^(\d{4})-(\d{2})$/.exec(month || '')
+  if (!m) return []
+  const out: string[] = []
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, 1))
+  while (d.getUTCMonth() === Number(m[2]) - 1) {
+    if (d.getUTCDay() === 0) out.push(d.toISOString().slice(0, 10))
+    d.setUTCDate(d.getUTCDate() + 1)
+  }
+  return out
+}
+
 /**
- * Bringt einen Fahrer-Plan auf die Monats-Zielstunden (siehe Kopf). Gibt einen
- * neuen Plan zurück (gleiche Tage, angepasste Längen) plus Warnungen.
+ * Bringt einen Fahrer-Plan auf die Monats-Zielstunden. Echte Arbeitstage und
+ * Startzeiten bleiben, die Längen werden skaliert; die Monatssumme trifft das
+ * Gesamt EXAKT. Sonntag zählt als TATSÄCHLICHE Stunden ab 00:00 (die Nacht von
+ * Samstag auf Sonntag fließt also mit ein). Reichen die echten Sonntage nicht,
+ * dürfen – nur für den Sonntag – zusätzliche Sonntage angesetzt werden.
  */
 export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
   const gesamtMin = Math.round(Math.max(0, ziel.gesamt) * 60)
@@ -148,59 +165,173 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe): DriverPlan {
     sonntagMin = gesamtMin
   }
 
-  // Echte Arbeitstage mit Anker-Startzeit (frühester Start des Tages) und
-  // tatsächlich gefahrener Netto-Länge als Verteilungsgewicht.
-  type Anker = { tag: PlanDay; startMs: number; realNet: number; sonntag: boolean }
-  const anker: Anker[] = []
+  // Echte Arbeitstage: Startzeit, Pause und gefahrene Länge je Tag.
+  type Tagq = { date: string; startMs: number; realNet: number; realPause: number }
+  const echte: Tagq[] = []
   for (const tag of plan.days) {
     if (tag.kind !== 'schicht' || tag.shifts.length === 0) continue
-    const startMs = Math.min(...tag.shifts.map((s) => s.startMs))
-    const realNet = tag.shifts.reduce((a, s) => a + s.nettoH, 0) * 60
-    anker.push({ tag, startMs, realNet, sonntag: weekdayIndex(tag.date) === 0 })
+    echte.push({
+      date: tag.date,
+      startMs: Math.min(...tag.shifts.map((s) => s.startMs)),
+      realNet: tag.shifts.reduce((a, s) => a + s.nettoH, 0) * 60,
+      realPause: Math.max(0, ...tag.shifts.map((s) => s.pauseH)) * 60,
+    })
   }
 
-  const sonntage = anker.filter((a) => a.sonntag)
-  const werktage = anker.filter((a) => !a.sonntag)
+  // Start-/Pausen-Nachschlag je Datum (echte Tage + evtl. zusätzliche Sonntage).
+  const startOf = new Map<string, number>()
+  const pauseOf = new Map<string, number>()
+  echte.forEach((t) => { startOf.set(t.date, t.startMs); pauseOf.set(t.date, t.realPause) })
 
-  // 1) Sonntag so weit wie möglich auf die ECHTEN Sonntage legen.
-  const so = skaliere(sonntage.map((a) => a.realNet), sonntagMin)
-  const sonntagPlatziert = so.vals.reduce((a, b) => a + b, 0)
-  if (sonntagMin > 0 && sonntage.length === 0) {
-    warnungen.push(`Sonntag ${ziel.sonntag} h vorgegeben, aber der Fahrer ist an keinem Sonntag gefahren – die Stunden liegen auf Werktagen, Gesamt bleibt exakt.`)
-  } else if (so.fehlt > 1) {
-    warnungen.push(`Sonntag: nur ${round2(sonntagPlatziert / 60)} von ${ziel.sonntag} h möglich (${sonntage.length} Sonntag(e) gefahren, max. 8 h/Tag) – der Rest liegt auf Werktagen, Gesamt bleibt exakt.`)
+  // Tatsächliche Sonntagsminuten eines Datums bei Netto n (via Zuschlagsrechnung,
+  // mitternachtsgenau und pausenbereinigt). Memoisiert, weil der Sonntags-
+  // Abgleich sie oft mit denselben Werten abfragt.
+  const soMemo = new Map<string, number>()
+  const sonntagMinOf = (date: string, n: number): number => {
+    if (n <= 0) return 0
+    const key = `${date}|${n}`
+    const c = soMemo.get(key)
+    if (c != null) return c
+    const startMs = startOf.get(date) ?? Date.parse(`${date}T10:00:00Z`)
+    const pause = pauseOf.get(date) ?? 30
+    const sh = baueSchicht(startMs, n, pause, null)
+    const h = computeShiftHours({ date: sh.date, startMin: sh.startMin, endMin: sh.endMin, breaks: sh.pauseAt })
+    const v = Math.round(h.sunday50 * 60)
+    soMemo.set(key, v)
+    return v
   }
 
-  // 2) Werktage füllen den REST zum Gesamtziel auf (also inkl. des Sonntag-
-  //    Fehlbetrags). So trifft die Monatssumme in jedem Fall exakt das Gesamt.
-  const werktagZiel = Math.max(0, gesamtMin - sonntagPlatziert)
-  const rest = skaliere(werktage.map((a) => a.realNet), werktagZiel)
-  if (rest.fehlt > 1) warnungen.push(`${round2(rest.fehlt / 60)} h passen nicht auf die ${werktage.length} echten Werktage (max. 8 h/Tag) – Gesamt wird nicht ganz erreicht.`)
+  const istSo = (d: string) => weekdayIndex(d) === 0
+  const alleSonntage = sonntageImMonat(plan.month)
+  const echteSoSet = new Set(echte.filter((t) => istSo(t.date)).map((t) => t.date))
 
+  // ---- GRUNDVERTEILUNG: Gesamt proportional zur gefahrenen Länge auf ALLE
+  // echten Tage (auch Sonntage). So wird bei z. B. zwei gefahrenen Tagen auf
+  // beide dünn gestreckt (5 + 5 h), nicht alles mit 8 h auf einen Tag. ----
   const netById = new Map<string, number>()
-  sonntage.forEach((a, i) => netById.set(a.tag.date, so.vals[i]))
-  werktage.forEach((a, i) => netById.set(a.tag.date, rest.vals[i]))
+  const grund = skaliere(echte.map((t) => t.realNet), gesamtMin)
+  echte.forEach((t, i) => netById.set(t.date, grund.vals[i]))
+  if (grund.fehlt > 1) warnungen.push(`${round2(grund.fehlt / 60)} h passen nicht auf die ${echte.length} echten Tage (max. 8 h/Tag) – Gesamt wird nicht ganz erreicht.`)
 
-  // Neuen Plan bauen: echte Tage behalten, Längen aus der Verteilung.
+  // ---- SONNTAG (nur bei Vorgabe): tatsächliche Sonntagsstunden (ab 00:00,
+  // Samstagnacht zählt mit) aufs Ziel bringen, durch Umschichten zwischen Tagen
+  // (Gesamt bleibt konstant). Reichen die echten Sonntage nicht, werden
+  // zusätzliche Kalender-Sonntage angesetzt. ----
+  if (sonntagMin > 0) {
+    for (const d of alleSonntage) {
+      if (!startOf.has(d)) { startOf.set(d, Date.parse(`${d}T10:00:00Z`)); pauseOf.set(d, 30) }
+      if (!netById.has(d)) netById.set(d, 0)
+    }
+    const sundayNow = () => [...netById.keys()].reduce((a, d) => a + sonntagMinOf(d, netById.get(d) || 0), 0)
+    for (const step of [15, 5, 1]) {
+      let guard = 0
+      while (guard++ < 8000) {
+        const diff = sonntagMin - sundayNow()
+        if (Math.abs(diff) <= 0.5) break
+        if (diff > 0) {
+          let empf: string | null = null; let best = 0
+          for (const d of netById.keys()) {
+            if ((netById.get(d) || 0) + step > MAX_NET_MIN) continue
+            const g = sonntagMinOf(d, (netById.get(d) || 0) + step) - sonntagMinOf(d, netById.get(d) || 0)
+            if (g > best) { best = g; empf = d }
+          }
+          if (!empf || best <= 0) break
+          let geber: string | null = null; let verlust = Infinity; let gNet = -1
+          for (const d of netById.keys()) {
+            if (d === empf) continue
+            const nd = netById.get(d) || 0
+            if (nd < step) continue
+            const l = sonntagMinOf(d, nd) - sonntagMinOf(d, nd - step)
+            if (l < verlust || (l === verlust && nd > gNet)) { verlust = l; geber = d; gNet = nd }
+          }
+          if (!geber || best - verlust <= 0) break
+          netById.set(empf, (netById.get(empf) || 0) + step)
+          netById.set(geber, (netById.get(geber) || 0) - step)
+        } else {
+          let geber: string | null = null
+          for (const d of netById.keys()) { if (istSo(d) && (netById.get(d) || 0) >= step) { geber = d; break } }
+          let empf: string | null = null; let eNet = Infinity
+          for (const d of netById.keys()) {
+            if (istSo(d)) continue
+            const nd = netById.get(d) || 0
+            if (nd + step > MAX_NET_MIN) continue
+            if (nd < eNet) { eNet = nd; empf = d }
+          }
+          if (!geber || !empf) break
+          netById.set(geber, (netById.get(geber) || 0) - step)
+          netById.set(empf, (netById.get(empf) || 0) + step)
+        }
+      }
+    }
+    const erreicht = sundayNow()
+    if (sonntagMin - erreicht > 30) warnungen.push(`Sonntag: nur ${round2(erreicht / 60)} von ${ziel.sonntag} h erreichbar (durch die vorhandenen Tage/Sonntage begrenzt).`)
+    const zusatz = [...netById.keys()].filter((d) => istSo(d) && !echteSoSet.has(d) && (netById.get(d) || 0) > 0)
+    if (zusatz.length > 0) warnungen.push(`${zusatz.length} zusätzliche(r) Sonntag(e) angesetzt: ${zusatz.join(', ')}.`)
+  }
+
+  // ---- HÖCHSTENS 6 ARBEITSTAGE AM STÜCK (§ 11 ArbZG). Bei 7 in Folge wird der
+  // Tag mit den WENIGSTEN Stunden freigegeben und seine Stunden auf die übrigen
+  // belegten Tage verteilt (max. 8 h/Tag). Ein Sonntag mit Zielstunden wird
+  // nicht freigegeben – dann ein anderer, stundenärmster Tag. ----
+  {
+    const alleTage = plan.days.map((t) => t.date)
+    const belegt = (d: string) => (netById.get(d) || 0) > 0
+    const geschützt = (d: string) => sonntagMin > 0 && istSo(d)
+    let freigegeben = 0
+    for (let versuch = 0; versuch < 60; versuch++) {
+      let lauf: string[] = []
+      let treffer: string[] | null = null
+      for (let i = 0; i <= alleTage.length; i++) {
+        if (i < alleTage.length && belegt(alleTage[i])) lauf.push(alleTage[i])
+        else { if (lauf.length > 6) { treffer = lauf; break }; lauf = [] }
+      }
+      if (!treffer) break
+      const kand = treffer.filter((d) => !geschützt(d))
+      if (kand.length === 0) break
+      const frei = kand.reduce((a, b) => ((netById.get(a) || 0) <= (netById.get(b) || 0) ? a : b))
+      let übrig = netById.get(frei) || 0
+      netById.set(frei, 0)
+      freigegeben++
+      const ziele = alleTage.filter((d) => d !== frei && belegt(d) && !geschützt(d) && (netById.get(d) || 0) < MAX_NET_MIN)
+      let g2 = 0
+      while (übrig > 0 && g2++ < 10000) {
+        let platziert = false
+        for (const d of ziele) {
+          if (übrig <= 0) break
+          const nd = netById.get(d) || 0
+          const add = Math.min(MAX_NET_MIN - nd, übrig, 15)
+          if (add <= 0) continue
+          netById.set(d, nd + add); übrig -= add; platziert = true
+        }
+        if (!platziert) break
+      }
+      if (übrig > 1) warnungen.push(`${round2(übrig / 60)} h ließen sich nach dem Freigeben eines Ruhetags nicht umverteilen – Gesamt sinkt entsprechend.`)
+    }
+    if (freigegeben > 0) warnungen.push(`${freigegeben} Tag(e) freigegeben für die gesetzliche Obergrenze von 6 Arbeitstagen am Stück (§ 11 ArbZG).`)
+  }
+
+  // Plan bauen: Tage in Datumsreihenfolge, inkl. evtl. zusätzlicher Sonntage
+  // (aus „frei" wird dann „schicht").
   let prevEndMs: number | null = null
   let paidH = 0
   let nettoH = 0
   let workDays = 0
   const neueTage: PlanDay[] = plan.days.map((tag) => {
-    if (tag.kind !== 'schicht' || tag.shifts.length === 0) return tag
     const netMin = netById.get(tag.date) ?? 0
     if (netMin <= 0) {
-      return { ...tag, kind: 'frei', shifts: [], hinweis: 'durch Zielvorgabe nicht belegt', ausgelassen: '' }
+      if (tag.kind === 'schicht') return { ...tag, kind: 'frei', shifts: [], hinweis: 'durch Zielvorgabe nicht belegt', ausgelassen: '' }
+      return tag
     }
-    const startMs = Math.min(...tag.shifts.map((s) => s.startMs))
-    const realPause = Math.max(0, ...tag.shifts.map((s) => s.pauseH)) * 60
+    const startMs = startOf.get(tag.date) ?? Date.parse(`${tag.date}T10:00:00Z`)
+    const realPause = pauseOf.get(tag.date) ?? 30
     const restH = prevEndMs != null ? (startMs - prevEndMs) / H : null
     const shift = baueSchicht(startMs, netMin, realPause, restH)
+    const zusatz = !echteSoSet.has(tag.date) && istSo(tag.date) && tag.kind !== 'schicht'
     prevEndMs = shift.endMs
     paidH += shift.paidH
     nettoH += shift.nettoH
     workDays++
-    return { ...tag, shifts: [shift], hinweis: shift.hinweis, ausgelassen: '' }
+    return { ...tag, kind: 'schicht', shifts: [shift], hinweis: [shift.hinweis, zusatz ? 'Zusatz-Sonntag (Zielvorgabe)' : ''].filter(Boolean).join(' · '), ausgelassen: '' }
   })
 
   const weekNotes = [...plan.weekNotes]
