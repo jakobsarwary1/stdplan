@@ -51,6 +51,11 @@ export default function UberCsvPlan() {
   const [merges, setMerges] = useState<string[][]>([])
   const [exakt, setExakt] = useState(true)
   const [raster, setRaster] = useState(15) // Zeit-Raster in Minuten: 15 / 10 / 1 (punktgenau)
+  // Von Hand hinzugefügte Fahrer, die NICHT in der CSV stehen (z. B. Wahidullah
+  // Nasiri ohne Uber-Fahrten). Für sie wird rein aus den getippten Stunden ein
+  // eigener Stundenzettel erstellt.
+  const [extraFahrer, setExtraFahrer] = useState<string[]>([])
+  const [neuerName, setNeuerName] = useState('')
 
   /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
   function zieleBody(): Record<string, ZielZahl> {
@@ -206,7 +211,16 @@ export default function UberCsvPlan() {
   // Ziel-Fahrer (eigene Zettel). Ohne PDF einfach die Zahlen eintippen.
   // Aktuelle Fahrerliste (nach Zusammenführungen) für Tabelle und Zuordnung.
   const aktuelleFahrer = drivers?.map((d) => d.name) ?? []
-  const alleFahrer = [...aktuelleFahrer, ...Object.keys(ziele).filter((n) => !aktuelleFahrer.includes(n))]
+  // CSV-Fahrer + von Hand hinzugefügte + Ziel-Namen, die sonst nirgends stehen.
+  const alleFahrer = [...aktuelleFahrer, ...extraFahrer, ...Object.keys(ziele)]
+    .filter((n, i, a) => n && a.indexOf(n) === i)
+  const fahrerHinzufuegen = () => {
+    const name = neuerName.trim().replace(/\s+/g, ' ')
+    if (!name || alleFahrer.includes(name)) { setNeuerName(''); return }
+    setExtraFahrer((f) => [...f, name])
+    setZiel(name, 'gesamt', '') // Zeile anlegen, Werte leer
+    setNeuerName('')
+  }
 
   // Tastatur-Navigation in der Stunden-Tabelle (wie Excel): ↑/↓ & Enter wechseln
   // die Zeile, ←/→ am Feldrand die Spalte. 5 Spalten (Gesamt … Feiertag).
@@ -356,6 +370,18 @@ export default function UberCsvPlan() {
                   })}
                 </tbody>
               </table>
+            </div>
+            {/* Fahrer hinzufügen, der nicht in der CSV steht (z. B. ohne Uber-Fahrten). */}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-textMuted">Fahrer nicht dabei?</span>
+              <input value={neuerName} placeholder="Vor- und Nachname"
+                onChange={(e) => setNeuerName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); fahrerHinzufuegen() } }}
+                className="w-56 rounded-lg border border-border bg-bg px-2 py-1 text-sm text-text outline-none focus:border-accent" />
+              <button type="button" onClick={fahrerHinzufuegen} disabled={!neuerName.trim()}
+                className="rounded-lg border border-accent px-3 py-1 font-medium text-accent disabled:opacity-40">
+                + hinzufügen
+              </button>
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <label className="flex items-center gap-2 text-xs text-textMuted">
