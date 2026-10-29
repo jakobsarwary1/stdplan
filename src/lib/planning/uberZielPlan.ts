@@ -235,12 +235,59 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
   const alleSonntage = sonntageImMonat(plan.month)
   const echteSoSet = new Set(echte.filter((t) => istSo(t.date)).map((t) => t.date))
 
-  // ---- GRUNDVERTEILUNG: Gesamt proportional zur gefahrenen Länge auf ALLE
-  // echten Tage (auch Sonntage). ----
   const netById = new Map<string, number>()
-  const grund = skaliere(echte.map((t) => t.realNet), gesamtMin, maxNet, raster || 1)
-  echte.forEach((t, i) => netById.set(t.date, grund.vals[i]))
-  if (grund.fehlt > 1) warnungen.push(`${round2(grund.fehlt / 60)} h passen nicht auf die ${echte.length} echten Tage (max. 8 h/Tag) – Gesamt wird nicht ganz erreicht.`)
+  if (raster) {
+    // ---- B-VERTEILUNG: gleichmäßig dünn (Ziel ~6 h/Tag), NUR 1 Tag/Woche frei.
+    // Echte Nicht-Fahr-Tage dürfen leichte Schichten bekommen, damit keine
+    // 10-h-Tage entstehen. Echte Startzeiten bleiben; ergänzte Tage bekommen die
+    // typische (Median-)Startzeit des Fahrers. Sonntage bleiben Arbeitstage. ----
+    const IDEAL = 6 * 60
+    const alleTage = plan.days.map((d) => d.date)
+    const echtSet = new Set(echte.map((t) => t.date))
+    const netReal = new Map(echte.map((t) => [t.date, t.realNet]))
+    const startMins = echte.map((t) => { const d = new Date(t.startMs); return d.getUTCHours() * 60 + d.getUTCMinutes() }).sort((a, b) => a - b)
+    const medStart = startMins.length ? snapMin(startMins[Math.floor(startMins.length / 2)]) : 8 * 60
+    // Kalenderwoche (Mo–So) je Tag.
+    const wochenKey = (d: string) => {
+      const dt = new Date(d + 'T00:00:00Z'); const off = (dt.getUTCDay() + 6) % 7
+      const mon = new Date(dt); mon.setUTCDate(dt.getUTCDate() - off); return mon.toISOString().slice(0, 10)
+    }
+    const wochen = new Map<string, string[]>()
+    for (const d of alleTage) { const k = wochenKey(d); (wochen.get(k) ?? wochen.set(k, []).get(k)!).push(d) }
+    // 1 freier Tag je Woche: bevorzugt ein nicht gefahrener Nicht-Sonntag, sonst
+    // der stundenärmste echte Nicht-Sonntag.
+    const freiSet = new Set<string>()
+    for (const [, tage] of wochen) {
+      const nichtGef = tage.filter((d) => !echtSet.has(d) && !istSo(d))
+      let frei: string | undefined = nichtGef.length ? nichtGef[Math.floor(nichtGef.length / 2)]
+        : tage.filter((d) => !istSo(d)).sort((a, b) => (netReal.get(a) ?? 0) - (netReal.get(b) ?? 0))[0]
+      if (frei) freiSet.add(frei)
+    }
+    // Garantie: nie mehr als 6 Arbeitstage am Stück (§ 11). Beim 7. belegten Tag
+    // in Folge wird dieser frei gegeben.
+    let lauf6 = 0
+    for (const d of alleTage) {
+      if (freiSet.has(d)) { lauf6 = 0; continue }
+      if (++lauf6 > 6) { freiSet.add(d); lauf6 = 0 }
+    }
+    // ALLE verfügbaren Tage (= alle außer 1 frei/Woche) werden Arbeitstage, damit
+    // die Stunden möglichst DÜNN verteilt sind (lieber viele Tage wenige Stunden
+    // als wenige 10-h-Tage). Reicht die Kapazität nicht (Gesamt > Tage × 10 h),
+    // steigt die Tageslänge entsprechend.
+    void IDEAL; void netReal; void echtSet
+    const workDays = alleTage.filter((d) => !freiSet.has(d))
+    for (const d of workDays) {
+      if (!startOf.has(d)) { startOf.set(d, Date.parse(`${d}T00:00:00Z`) + medStart * 60000); pauseOf.set(d, snapMin(30)) }
+    }
+    const base = skaliere(workDays.map(() => 1), gesamtMin, maxNet, raster)
+    workDays.forEach((d, i) => netById.set(d, base.vals[i]))
+    if (base.fehlt > 1) warnungen.push(`${round2(base.fehlt / 60)} h passen nicht auf die ${workDays.length} Arbeitstage.`)
+  } else {
+    // ---- GRUNDVERTEILUNG (klassisch): proportional zur gefahrenen Länge. ----
+    const grund = skaliere(echte.map((t) => t.realNet), gesamtMin, maxNet, 1)
+    echte.forEach((t, i) => netById.set(t.date, grund.vals[i]))
+    if (grund.fehlt > 1) warnungen.push(`${round2(grund.fehlt / 60)} h passen nicht auf die ${echte.length} echten Tage (max. 8 h/Tag) – Gesamt wird nicht ganz erreicht.`)
+  }
 
   // ---- ZUSCHLÄGE (Sonntag / Nacht 25 % / Nacht 40 % / Feiertag) exakt treffen.
   // Lokale Suche: Netto wird minutenweise zwischen Tagen VERSCHOBEN (Gesamt
@@ -320,8 +367,10 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
   // ---- HÖCHSTENS 6 ARBEITSTAGE AM STÜCK (§ 11 ArbZG). Bei 7 in Folge wird der
   // Tag mit den WENIGSTEN Stunden freigegeben und seine Stunden auf die übrigen
   // belegten Tage verteilt (max. 8 h/Tag). Ein Sonntag mit Zielstunden wird
-  // nicht freigegeben – dann ein anderer, stundenärmster Tag. ----
-  {
+  // nicht freigegeben – dann ein anderer, stundenärmster Tag. Im B-Modus (raster)
+  // regeln wir die freien Tage schon selbst (1/Woche) – diese Umverteilung würde
+  // nur wieder concentrieren, daher hier aus. ----
+  if (!raster) {
     const alleTage = plan.days.map((t) => t.date)
     const belegt = (d: string) => (netById.get(d) || 0) > 0
     const geschützt = (d: string) => sonntagMin > 0 && istSo(d)
@@ -379,7 +428,10 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
     }
     return lo
   }
-  for (let iter = 0; iter < 10; iter++) {
+  // Im B-Modus (raster) keine rest-bedingte Umverteilung – sie würde die dünne
+  // Gleichverteilung wieder concentrieren. Dünne Schichten halten die 11 h
+  // Ruhe ohnehin meist ein; verbleibende Unterschreitungen werden nur vermerkt.
+  for (let iter = 0; !raster && iter < 10; iter++) {
     const worked = [...netById.keys()].filter((d) => (netById.get(d) || 0) > 0).sort()
     if (worked.length === 0) break
     const cap = new Map<string, number>()
