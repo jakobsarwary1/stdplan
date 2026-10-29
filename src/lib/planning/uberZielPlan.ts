@@ -174,6 +174,10 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
   // bestehende Tests/Aufrufer unverändert bleiben.
   const raster = opts.raster && [1, 5, 10, 15].includes(opts.raster) ? opts.raster : 0
   const snapMs = (ms: number) => raster ? Math.round(ms / (raster * 60000)) * raster * 60000 : ms
+  // Im Streck-Modus (raster) dürfen Schichten bis legal 10 h gestreckt werden,
+  // damit Gesamt UND Sonntag exakt erreichbar sind (A: „so nah an echt wie
+  // möglich, aber Zahl stimmt"). Sonst die klassische 8-h-Grenze.
+  const maxNet = raster ? 10 * 60 : MAX_NET_MIN
   const gesamtMin = Math.round(Math.max(0, ziel.gesamt) * 60)
   let sonntagMin = Math.round(Math.max(0, ziel.sonntag) * 60)
   const warnungen: string[] = []
@@ -234,7 +238,7 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
   // ---- GRUNDVERTEILUNG: Gesamt proportional zur gefahrenen Länge auf ALLE
   // echten Tage (auch Sonntage). ----
   const netById = new Map<string, number>()
-  const grund = skaliere(echte.map((t) => t.realNet), gesamtMin, MAX_NET_MIN, raster || 1)
+  const grund = skaliere(echte.map((t) => t.realNet), gesamtMin, maxNet, raster || 1)
   echte.forEach((t, i) => netById.set(t.date, grund.vals[i]))
   if (grund.fehlt > 1) warnungen.push(`${round2(grund.fehlt / 60)} h passen nicht auf die ${echte.length} echten Tage (max. 8 h/Tag) – Gesamt wird nicht ganz erreicht.`)
 
@@ -252,21 +256,17 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
     fe: Math.round(Math.max(0, ziel.feiertag ?? 0) * 60),
   }
   const aktiv = (['so', 'n25', 'n40', 'fe'] as const).filter((k) => zielK[k] > 0)
-  if (aktiv.length > 0) {
-    if (zielK.so > 0) {
-      for (const d of alleSonntage) {
-        if (!startOf.has(d)) { startOf.set(d, Date.parse(`${d}T10:00:00Z`)); pauseOf.set(d, 30) }
-        if (!netById.has(d)) netById.set(d, 0)
-      }
-    }
-    const summe = (): Zus => {
-      const a: Zus = { so: 0, n25: 0, n40: 0, fe: 0 }
-      for (const d of netById.keys()) { const b = beitrag(d, netById.get(d) || 0); a.so += b.so; a.n25 += b.n25; a.n40 += b.n40; a.fe += b.fe }
-      return a
-    }
-    const fehler = (c: Zus) => aktiv.reduce((s, k) => s + Math.abs(c[k] - zielK[k]), 0)
-    // Im Raster-Modus nur in Raster-Schritten verschieben (Zeiten bleiben sauber);
-    // sonst fein bis auf die Minute (altes Verhalten).
+  const summe = (): Zus => {
+    const a: Zus = { so: 0, n25: 0, n40: 0, fe: 0 }
+    for (const d of netById.keys()) { const b = beitrag(d, netById.get(d) || 0); a.so += b.so; a.n25 += b.n25; a.n40 += b.n40; a.fe += b.fe }
+    return a
+  }
+  const fehler = (c: Zus) => aktiv.reduce((s, k) => s + Math.abs(c[k] - zielK[k]), 0)
+  // Zuschlags-Abgleich: Netto zwischen Tagen verschieben (Gesamt bleibt gleich),
+  // bis die Zuschlagssummen den Zielen am nächsten sind. Wird VOR UND NACH der
+  // §11/§5-Umverteilung aufgerufen, damit z. B. der Sonntag am Ende exakt stimmt
+  // (die Umverteilung dazwischen würde ihn sonst wieder verschieben).
+  const zuschlagsSuche = () => {
     for (const step of raster ? [raster] : [15, 5, 1]) {
       let guard = 0
       while (guard++ < 4000) {
@@ -279,7 +279,7 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
         for (const d of dates) {
           const nd = netById.get(d) || 0
           const b0 = beitrag(d, nd)
-          gain.set(d, nd + step <= MAX_NET_MIN ? sub(beitrag(d, nd + step), b0) : null)
+          gain.set(d, nd + step <= maxNet ? sub(beitrag(d, nd + step), b0) : null)
           loss.set(d, nd >= step ? sub(b0, beitrag(d, nd - step)) : null)
         }
         let best: [string, string] | null = null
@@ -299,6 +299,15 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
         netById.set(best[1], (netById.get(best[1]) || 0) - step)
       }
     }
+  }
+  if (aktiv.length > 0) {
+    if (zielK.so > 0) {
+      for (const d of alleSonntage) {
+        if (!startOf.has(d)) { startOf.set(d, Date.parse(`${d}T10:00:00Z`)); pauseOf.set(d, 30) }
+        if (!netById.has(d)) netById.set(d, 0)
+      }
+    }
+    zuschlagsSuche()
     const c = summe()
     const lbl: Record<string, string> = { so: 'Sonntag', n25: 'Nacht 25 %', n40: 'Nacht 40 %', fe: 'Feiertag' }
     for (const k of aktiv) {
@@ -331,14 +340,14 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
       let übrig = netById.get(frei) || 0
       netById.set(frei, 0)
       freigegeben++
-      const ziele = alleTage.filter((d) => d !== frei && belegt(d) && !geschützt(d) && (netById.get(d) || 0) < MAX_NET_MIN)
+      const ziele = alleTage.filter((d) => d !== frei && belegt(d) && !geschützt(d) && (netById.get(d) || 0) < maxNet)
       let g2 = 0
       while (übrig > 0 && g2++ < 10000) {
         let platziert = false
         for (const d of ziele) {
           if (übrig <= 0) break
           const nd = netById.get(d) || 0
-          const add = Math.min(MAX_NET_MIN - nd, übrig, 15)
+          const add = Math.min(maxNet - nd, übrig, 15)
           if (add <= 0) continue
           netById.set(d, nd + add); übrig -= add; platziert = true
         }
@@ -359,10 +368,10 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
   const RUHE = 11 * 60 * 60000
   const restSichererCap = (d: string, nextStart: number): number => {
     const s = startOf.get(d) ?? Date.parse(`${d}T10:00:00Z`)
-    if (!Number.isFinite(nextStart)) return MAX_NET_MIN
+    if (!Number.isFinite(nextStart)) return maxNet
     const grenze = nextStart - RUHE
     if (s > grenze) return 0
-    let lo = 0, hi = MAX_NET_MIN
+    let lo = 0, hi = maxNet
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2)
       const end = baueSchicht(s, mid, pauseOf.get(d) ?? 30, null, raster || 15).endMs
@@ -379,19 +388,24 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
       cap.set(worked[i], restSichererCap(worked[i], nextStart))
     }
     let pool = 0
-    for (const d of worked) { const c = cap.get(d) ?? MAX_NET_MIN; if ((netById.get(d) || 0) > c) { pool += (netById.get(d) || 0) - c; netById.set(d, c) } }
+    for (const d of worked) { const c = cap.get(d) ?? maxNet; if ((netById.get(d) || 0) > c) { pool += (netById.get(d) || 0) - c; netById.set(d, c) } }
     // Umverteilen innerhalb der rest-sicheren Kapazität (Sonntage mit Ziel zuletzt).
     const empf = worked
-      .filter((d) => (netById.get(d) || 0) < (cap.get(d) ?? MAX_NET_MIN))
+      .filter((d) => (netById.get(d) || 0) < (cap.get(d) ?? maxNet))
       .sort((a, b) => ((sonntagMin > 0 && istSo(a)) ? 1 : 0) - ((sonntagMin > 0 && istSo(b)) ? 1 : 0) || (netById.get(a) || 0) - (netById.get(b) || 0))
     for (const d of empf) {
       if (pool <= 0) break
-      const add = Math.min((cap.get(d) ?? MAX_NET_MIN) - (netById.get(d) || 0), pool)
+      const add = Math.min((cap.get(d) ?? maxNet) - (netById.get(d) || 0), pool)
       if (add <= 0) continue
       netById.set(d, (netById.get(d) || 0) + add); pool -= add
     }
-    if (pool <= 0.5 && worked.every((d) => (netById.get(d) || 0) <= (cap.get(d) ?? MAX_NET_MIN) + 0.5)) break
+    if (pool <= 0.5 && worked.every((d) => (netById.get(d) || 0) <= (cap.get(d) ?? maxNet) + 0.5)) break
   }
+  // Nach §11/§5 die Zuschläge nochmals exakt nachziehen (Vorrang: Zielzahlen
+  // stimmen – A). Die Umverteilung oben hätte z. B. den Sonntag sonst wieder
+  // verschoben; kleine Ruhe-Abweichungen werden dafür in Kauf genommen. Nur im
+  // Streck-Modus (raster) – das klassische Verhalten bleibt unverändert.
+  if (raster && aktiv.length > 0) zuschlagsSuche()
   {
     const gesamtIst = [...netById.values()].reduce((a, b) => a + b, 0)
     if (gesamtMin - gesamtIst > 5) warnungen.push(`Wegen der 11-Stunden-Ruhezeit sind nur ${round2(gesamtIst / 60)} von ${ziel.gesamt} h planbar (die Ruhezeit hat Vorrang).`)

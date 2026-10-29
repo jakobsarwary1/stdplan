@@ -45,11 +45,11 @@ function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined,
     const g = Number(z?.gesamt) || 0
     if (g <= 0) return p
     const ziel = zielFuer(p.name, p.month, z)
-    // Hat der Fahrer echte Uber-Fahrten? Dann die ECHTEN Zeiten behalten
-    // (planAnZiel): Gesamt exakt, Von/Bis nah an den echten Uber-Fahrten, freie
-    // Tage über den Monat verteilt, §11/§5 eingehalten – Zuschläge so nah wie
-    // möglich (nicht minutengenau, dafür echte Zeiten). Nur manuell getippte
-    // Fahrer OHNE Fahrten bekommen künstliche Zeiten mit exakten Zuschlägen.
+    // Hat der Fahrer echte Uber-Fahrten? Dann die ECHTEN Startzeiten behalten
+    // (planAnZiel, Streck-Modus): echte Von-Zeiten, Längen/Pausen gestaucht bzw.
+    // gestreckt (bis legal 10 h), sodass Gesamt UND Sonntag EXAKT stimmen; freie
+    // Tage verteilt, §11/§5 beachtet. Nur manuell getippte Fahrer OHNE Fahrten
+    // bekommen künstliche Zeiten.
     const hatEchte = p.days.some((d) => d.kind === 'schicht' && d.shifts.length > 0)
     if (!hatEchte) return planExakt(p.name, p.month, ziel, raster)
     return planAnZiel(p, ziel, { raster })
