@@ -232,8 +232,7 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
   const echteSoSet = new Set(echte.filter((t) => istSo(t.date)).map((t) => t.date))
 
   // ---- GRUNDVERTEILUNG: Gesamt proportional zur gefahrenen Länge auf ALLE
-  // echten Tage (auch Sonntage). So wird bei z. B. zwei gefahrenen Tagen auf
-  // beide dünn gestreckt (5 + 5 h), nicht alles mit 8 h auf einen Tag. ----
+  // echten Tage (auch Sonntage). ----
   const netById = new Map<string, number>()
   const grund = skaliere(echte.map((t) => t.realNet), gesamtMin, MAX_NET_MIN, raster || 1)
   echte.forEach((t, i) => netById.set(t.date, grund.vals[i]))

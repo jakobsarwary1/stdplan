@@ -6,7 +6,7 @@ import { buildPlansFromCsv, monthLabelDE, timesheetView, findeDoppelPaare, type 
 import { buildPlansFromFahrlygoCsv, looksLikeFahrlygo } from '@/lib/planning/fahrlygoPlan'
 import { buildCsvForPlans } from '@/lib/planning/uberCsv'
 import { buildWorkbookPerDriver } from '@/lib/planning/uberMappe'
-import { planAnZiel, planExakt, echteVorlage } from '@/lib/planning/uberZielPlan'
+import { planAnZiel, planExakt } from '@/lib/planning/uberZielPlan'
 import { feiertageImMonat } from '@/lib/planning/feiertage'
 
 /** Pro Fahrer optional die Monats-Zielstunden (aus der Lohnabrechnung). */
@@ -45,12 +45,14 @@ function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined,
     const g = Number(z?.gesamt) || 0
     if (g <= 0) return p
     const ziel = zielFuer(p.name, p.month, z)
-    // Exakt: ALLE Zahlen (Gesamt + Sonntag/Nacht/Feiertag) minutengenau treffen –
-    // mit frei gesetzten, sauberen Rasterzeiten (Vorrang: exakte Zahlen).
-    // Die echten Uber-Startzeiten dienen als Vorlage für die Tagschichten, damit
-    // die Zeiten nicht monoton gleich aussehen.
-    const vorlage = exakt ? echteVorlage(p) : undefined
-    return exakt ? planExakt(p.name, p.month, ziel, raster, vorlage) : planAnZiel(p, ziel)
+    // Hat der Fahrer echte Uber-Fahrten? Dann die ECHTEN Zeiten behalten
+    // (planAnZiel): Gesamt exakt, Von/Bis nah an den echten Uber-Fahrten, freie
+    // Tage über den Monat verteilt, §11/§5 eingehalten – Zuschläge so nah wie
+    // möglich (nicht minutengenau, dafür echte Zeiten). Nur manuell getippte
+    // Fahrer OHNE Fahrten bekommen künstliche Zeiten mit exakten Zuschlägen.
+    const hatEchte = p.days.some((d) => d.kind === 'schicht' && d.shifts.length > 0)
+    if (!hatEchte) return planExakt(p.name, p.month, ziel, raster)
+    return planAnZiel(p, ziel, { raster })
   })
   // Lohn-Fahrer, die NICHT in der CSV vorkommen: im Exakt-Modus einen eigenen
   // Stundenzettel anlegen (freie Zeiten – es braucht nur Name + Monat).
