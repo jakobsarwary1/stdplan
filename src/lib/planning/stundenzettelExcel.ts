@@ -423,25 +423,32 @@ export async function addStundenzettelSheet(
         capRow.getCell(AMT_COL).value = 'Status'
         for (const c of [STD_COL, STD_TO, AMT_COL]) capRow.getCell(c).font = { italic: true, size: 9, color: { argb: 'FF666666' } }
         sheet.mergeCells(capRow.number, AMT_COL, capRow.number, AMT_TO)
-        const abgleich = (label: string, sollVal: number, istRef: string) => {
+        const r2 = (n: number) => Math.round(n * 100) / 100
+        const abgleich = (label: string, sollVal: number, istRef: string, istVal: number) => {
           const row = sheet.addRow([label])
           sheet.mergeCells(row.number, 1, row.number, LABEL_TO)
           const sollCell = row.getCell(STD_COL)
-          sollCell.value = Math.round(sollVal * 100) / 100
+          sollCell.value = r2(sollVal)
           sollCell.numFmt = '0.00'
           const istCell = row.getCell(STD_TO)
-          istCell.value = { formula: `${istRef}`, result: 0 }
+          // Ergebnis-Cache = tatsächlicher Ist-Wert, damit die Zelle sofort stimmt
+          // (nicht 0), und als Formel, damit sie bei Änderungen live neu rechnet.
+          istCell.value = { formula: `${istRef}`, result: r2(istVal) }
           istCell.numFmt = '0.00'
           sheet.mergeCells(row.number, AMT_COL, row.number, AMT_TO)
           const stCell = row.getCell(AMT_COL)
-          stCell.value = { formula: `IF(ABS(${L(STD_TO)}${row.number}-${L(STD_COL)}${row.number})<0.01,"OK - stimmt","PRUEFEN")`, result: '' }
-          stCell.font = { bold: true }
+          const stimmt = Math.abs(r2(istVal) - r2(sollVal)) < 0.01
+          stCell.value = {
+            formula: `IF(ABS(${L(STD_TO)}${row.number}-${L(STD_COL)}${row.number})<0.01,"✓ stimmt","✗ abweichung")`,
+            result: stimmt ? '✓ stimmt' : '✗ abweichung',
+          }
+          stCell.font = { bold: true, color: { argb: stimmt ? 'FF177245' : 'FFB00000' } }
         }
-        abgleich('Gesamt (Std.)', s.soll.gesamt, nettoRef)
-        if (s.soll.sonntag > 0 || s.sunday50 > 0) abgleich('davon Sonntag', s.soll.sonntag, soRef)
-        if (s.soll.nacht25 > 0 || s.night25 > 0) abgleich('davon Nacht 25 %', s.soll.nacht25, n25Ref)
-        if (s.soll.nacht40 > 0 || s.night40 > 0) abgleich('davon Nacht 40 %', s.soll.nacht40, n40Ref)
-        if (s.soll.feiertag > 0 || s.holiday125 > 0) abgleich('davon Feiertag', s.soll.feiertag, feRef)
+        abgleich('Gesamt (Std.)', s.soll.gesamt, nettoRef, s.paidHours)
+        if (s.soll.sonntag > 0 || s.sunday50 > 0) abgleich('davon Sonntag', s.soll.sonntag, soRef, s.sunday50)
+        if (s.soll.nacht25 > 0 || s.night25 > 0) abgleich('davon Nacht 25 %', s.soll.nacht25, n25Ref, s.night25)
+        if (s.soll.nacht40 > 0 || s.night40 > 0) abgleich('davon Nacht 40 %', s.soll.nacht40, n40Ref, s.night40)
+        if (s.soll.feiertag > 0 || s.holiday125 > 0) abgleich('davon Feiertag', s.soll.feiertag, feRef, s.holiday125)
         sheet.addRow([])
       }
 

@@ -37,19 +37,6 @@ const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
 type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string; feiertag: string }
 type ZielZahl = { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }
-type LohnErgebnis = {
-  filename: string
-  name: string
-  fahrer: string | null
-  nichtInCsv?: boolean
-  month: string | null
-  gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number
-  krank: number; urlaub: number
-  warnungen: string[]
-}
-
-const IGNORE = '' // Zuordnungswert „ignorieren"
-const EIGEN = '__eigen__' // Zuordnungswert „eigener Stundenzettel (Abrechnungsname)"
 
 export default function UberCsvPlan() {
   const [csv, setCsv] = useState<string | null>(null)
@@ -63,10 +50,7 @@ export default function UberCsvPlan() {
   const [dupePairs, setDupePairs] = useState<string[][]>([])
   const [merges, setMerges] = useState<string[][]>([])
   const [exakt, setExakt] = useState(true)
-  const [lohnInfo, setLohnInfo] = useState<LohnErgebnis[] | null>(null)
-  // Fahrernamen aus der CSV (für die manuelle Zuordnung – fest ab CSV-Load).
-  // Zuordnung je Lohnabrechnung (Dateiname → Zielfahrer/EIGEN/IGNORE).
-  const [zuordnung, setZuordnung] = useState<Record<string, string>>({})
+  const [raster, setRaster] = useState(15) // Zeit-Raster in Minuten: 15 / 10 / 1 (punktgenau)
 
   /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
   function zieleBody(): Record<string, ZielZahl> {
@@ -93,7 +77,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, ziele: zieleArg ?? zieleBody(), merges: mergesArg, exakt }),
+        body: JSON.stringify({ csv, ziele: zieleArg ?? zieleBody(), merges: mergesArg, exakt, raster }),
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Neuberechnung fehlgeschlagen.')
@@ -114,7 +98,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv: text, ziele: zieleBody(), merges, exakt }),
+        body: JSON.stringify({ csv: text, ziele: zieleBody(), merges, exakt, raster }),
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Die Datei ließ sich nicht auswerten.')
@@ -123,8 +107,6 @@ export default function UberCsvPlan() {
       setMonth(j.monthLabel || j.month || '')
       const list = (j.drivers as Driver[]) ?? []
       setDrivers(list)
-      setLohnInfo(null)
-      setZuordnung({})
       setDupePairs((j.dupePairs as string[][]) ?? [])
       setAktiv(list[0]?.name ?? '')
     } catch (err) {
@@ -135,97 +117,6 @@ export default function UberCsvPlan() {
     }
   }
 
-  /** Datei → Base64 (ohne data:-Präfix). */
-  function alsBase64(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const r = new FileReader()
-      r.onload = () => resolve(String(r.result).split(',')[1] ?? '')
-      r.onerror = () => reject(new Error('Datei nicht lesbar.'))
-      r.readAsDataURL(file)
-    })
-  }
-
-  /** Zielfahrer, zu dem eine Abrechnung laut aktueller Zuordnung gehört (oder ''). */
-  function zielFahrer(e: LohnErgebnis, zu: Record<string, string>): string {
-    const wahl = zu[e.filename]
-    if (wahl === IGNORE) return ''
-    if (wahl === EIGEN) return e.name || e.fahrer || ''
-    if (wahl != null) return wahl // konkreter CSV-Fahrer
-    return e.fahrer ?? '' // Default: automatische Zuordnung
-  }
-
-  /** Numerische Ziele aus allen Abrechnungen + Zuordnung (mehrere je Fahrer = Summe). */
-  function zieleAusLohn(info: LohnErgebnis[], zu: Record<string, string>): Record<string, ZielZahl> {
-    const out: Record<string, ZielZahl> = {}
-    for (const e of info) {
-      if (e.gesamt <= 0) continue
-      const ziel = zielFahrer(e, zu)
-      if (!ziel) continue
-      const c = out[ziel] ?? { gesamt: 0, sonntag: 0, nacht25: 0, nacht40: 0, feiertag: 0 }
-      out[ziel] = {
-        gesamt: c.gesamt + e.gesamt, sonntag: c.sonntag + e.sonntag,
-        nacht25: c.nacht25 + e.nacht25, nacht40: c.nacht40 + e.nacht40, feiertag: c.feiertag + e.feiertag,
-      }
-    }
-    return out
-  }
-
-  /** Eingabefelder auf GENAU die Lohn-Ziele setzen (alte Lohn-Ziele fallen weg). */
-  function fuelleZiele(num: Record<string, ZielZahl>) {
-    const next: Record<string, Ziel> = {}
-    for (const [name, v] of Object.entries(num)) {
-      next[name] = {
-        gesamt: String(round2(v.gesamt)), sonntag: v.sonntag ? String(round2(v.sonntag)) : '',
-        nacht25: v.nacht25 ? String(round2(v.nacht25)) : '', nacht40: v.nacht40 ? String(round2(v.nacht40)) : '',
-        feiertag: v.feiertag ? String(round2(v.feiertag)) : '',
-      }
-    }
-    setZiele(next)
-  }
-
-  /** Lohnabrechnungen (PDF) einlesen → automatische Zuordnung + Zielwerte füllen. */
-  async function lohnLaden(files: File[]) {
-    if (!csv || !drivers || files.length === 0) return
-    setBusy(true)
-    setFehler(null)
-    try {
-      const pdfs = await Promise.all(files.map(async (f) => ({ filename: f.name, dataBase64: await alsBase64(f) })))
-      const res = await fetch('/api/dienstplan/lohn', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdfs, driverNames: drivers.map((d) => d.name) }),
-      })
-      const j = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(j?.error || 'Die Lohnabrechnungen ließen sich nicht lesen.')
-      const info = (j.ergebnisse as LohnErgebnis[]) ?? []
-      // Standard-Zuordnung je Abrechnung: automatisch erkannter Fahrer, sonst
-      // „eigener Stundenzettel" (Lohn ohne CSV-Fahrt) bzw. „ignorieren" (0 h).
-      const zu: Record<string, string> = {}
-      for (const e of info) {
-        zu[e.filename] = e.gesamt <= 0 ? IGNORE : e.nichtInCsv ? EIGEN : (e.fahrer ?? EIGEN)
-      }
-      setLohnInfo(info)
-      setZuordnung(zu)
-      const num = zieleAusLohn(info, zu)
-      fuelleZiele(num)
-      await neuBerechnen(merges, num)
-    } catch (err) {
-      setFehler((err as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /** Eine Abrechnung manuell einem Fahrer zuordnen und sofort neu rechnen. */
-  async function setzeZuordnung(filename: string, wert: string) {
-    if (!lohnInfo) return
-    const zu = { ...zuordnung, [filename]: wert }
-    setZuordnung(zu)
-    const num = zieleAusLohn(lohnInfo, zu)
-    fuelleZiele(num)
-    await neuBerechnen(merges, num)
-  }
-
   async function xlsx() {
     if (!csv) return
     setBusy(true)
@@ -234,7 +125,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'xlsx', ziele: zieleBody(), merges, exakt }),
+        body: JSON.stringify({ csv, format: 'xlsx', ziele: zieleBody(), merges, exakt, raster }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -262,7 +153,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'csv', ziele: zieleBody(), merges, exakt }),
+        body: JSON.stringify({ csv, format: 'csv', ziele: zieleBody(), merges, exakt, raster }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -290,7 +181,7 @@ export default function UberCsvPlan() {
       const res = await fetch('/api/dienstplan/aus-csv', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csv, format: 'mappe', ziele: zieleBody(), merges, exakt }),
+        body: JSON.stringify({ csv, format: 'mappe', ziele: zieleBody(), merges, exakt, raster }),
       })
       if (!res.ok) {
         const j = await res.json().catch(() => ({}))
@@ -386,22 +277,7 @@ export default function UberCsvPlan() {
                 {d.name}
               </button>
             ))}
-            <label className="ml-auto inline-flex cursor-pointer items-center rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-bg">
-              {busy ? 'Lese…' : 'Lohnabrechnungen (PDF) einlesen'}
-              <input
-                type="file"
-                accept="application/pdf,.pdf"
-                multiple
-                className="sr-only"
-                disabled={busy}
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? [])
-                  if (files.length) void lohnLaden(files)
-                  e.target.value = ''
-                }}
-              />
-            </label>
-            <button type="button" onClick={() => void mappe()} disabled={busy} className="rounded-lg border border-[var(--accent,#c79a3a)] px-3 py-1.5 text-sm font-medium">
+            <button type="button" onClick={() => void mappe()} disabled={busy} className="ml-auto rounded-lg border border-[var(--accent,#c79a3a)] px-3 py-1.5 text-sm font-medium">
               Arbeitsmappe (je Fahrer ein Blatt)
             </button>
             <button type="button" onClick={() => void csvDownload()} disabled={busy} className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium">
@@ -417,51 +293,7 @@ export default function UberCsvPlan() {
             {fahrer.violations > 0 && ` · ${fahrer.violations} Hinweise`}
           </p>
 
-          {lohnInfo && lohnInfo.length > 0 && (
-            <div className="space-y-1.5 rounded-xl border border-border bg-bg/40 p-3 text-xs">
-              <div className="mb-1 font-medium text-text">Aus Lohnabrechnungen eingelesen ({lohnInfo.length}) · Zuordnung änderbar</div>
-              {lohnInfo.map((e) => {
-                const wahl = zuordnung[e.filename] ?? (e.gesamt <= 0 ? IGNORE : e.nichtInCsv ? EIGEN : (e.fahrer ?? EIGEN))
-                const zugeordnet = wahl !== IGNORE
-                return (
-                  <div key={e.filename} className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <span className="text-textMuted/70">{e.name || e.filename}</span>
-                    {e.gesamt > 0 && <span className="text-textMuted">Gesamt {n2(e.gesamt)}</span>}
-                    {e.sonntag > 0 && <span className="text-textMuted">So {n2(e.sonntag)}</span>}
-                    {e.nacht25 > 0 && <span className="text-textMuted">N25 {n2(e.nacht25)}</span>}
-                    {e.nacht40 > 0 && <span className="text-textMuted">N40 {n2(e.nacht40)}</span>}
-                    {e.feiertag > 0 && <span className="text-textMuted">Fe {n2(e.feiertag)}</span>}
-                    {e.krank > 0 && <span className="text-textMuted/70">Krank {n2(e.krank)}</span>}
-                    {e.urlaub > 0 && <span className="text-textMuted/70">Urlaub {n2(e.urlaub)}</span>}
-                    <span className="ml-auto flex items-center gap-1">
-                      <span className={zugeordnet ? 'text-textMuted/70' : 'text-amber-300'}>→</span>
-                      <select
-                        value={wahl}
-                        disabled={busy || e.gesamt <= 0}
-                        onChange={(ev) => void setzeZuordnung(e.filename, ev.target.value)}
-                        className="max-w-[16rem] rounded-lg border border-border bg-bg px-2 py-1 text-xs text-text outline-none focus:border-accent disabled:opacity-50"
-                      >
-                        <option value={IGNORE}>— ignorieren —</option>
-                        {e.gesamt > 0 && <option value={EIGEN}>Eigener Zettel: {e.name || e.filename}</option>}
-                        {aktuelleFahrer.map((f) => (
-                          <option key={f} value={f}>{f}</option>
-                        ))}
-                      </select>
-                    </span>
-                    {e.warnungen.filter((w) => !/eigener Stundenzettel|manuell zuordnen/i.test(w)).map((w, i) => (
-                      <span key={i} className="w-full text-amber-300/80">· {w}</span>
-                    ))}
-                  </div>
-                )
-              })}
-              <div className="pt-1 text-textMuted/80">
-                Nicht erkannte Fahrer rechts zuordnen (z. B. anderer Name in der CSV) oder „Eigener Zettel" lassen. Krank/Urlaub sind nur zur Info, keine geplanten Schichten.
-              </div>
-            </div>
-          )}
-
-          {/* Stunden je Fahrer direkt eintippen (ohne PDF) – die zuverlässige
-              Alternative zum Einlesen der Lohnabrechnungen. */}
+          {/* Stunden je Fahrer direkt eintippen – aus der Lohnabrechnung. */}
           <div className="space-y-2 rounded-xl border border-border bg-bg/40 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs">
@@ -509,10 +341,21 @@ export default function UberCsvPlan() {
                 </tbody>
               </table>
             </div>
-            <label className="flex items-center gap-2 text-xs text-textMuted">
-              <input type="checkbox" checked={exakt} onChange={(e) => { setExakt(e.target.checked) }} className="h-3.5 w-3.5 accent-accent" />
-              <span><span className="font-medium text-text">Genau treffen</span> (freie Uhrzeiten) – alle Vorgaben exakt, 11 h Ruhe &amp; max. 6 Tage. Aus: so nah wie möglich an den echten Uber-Zeiten.</span>
-            </label>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <label className="flex items-center gap-2 text-xs text-textMuted">
+                <input type="checkbox" checked={exakt} onChange={(e) => { setExakt(e.target.checked) }} className="h-3.5 w-3.5 accent-accent" />
+                <span><span className="font-medium text-text">Genau treffen</span> (freie Uhrzeiten) – alle Vorgaben exakt, 11 h Ruhe &amp; max. 6 Tage.</span>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-textMuted">
+                <span className="font-medium text-text">Zeit-Raster</span>
+                <select value={raster} onChange={(e) => setRaster(Number(e.target.value))}
+                  className="rounded-lg border border-border bg-bg px-2 py-1 text-xs text-text outline-none focus:border-accent">
+                  <option value={15}>15 Minuten (sauber)</option>
+                  <option value={10}>10 Minuten</option>
+                  <option value={1}>punktgenau</option>
+                </select>
+              </label>
+            </div>
           </div>
 
           {fahrer.weekNotes.length > 0 && (

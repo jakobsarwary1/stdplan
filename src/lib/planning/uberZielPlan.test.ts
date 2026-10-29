@@ -33,6 +33,25 @@ test('planExakt: trifft Gesamt, Sonntag UND Nacht 40 exakt (freie Zeiten)', () =
   }
 })
 
+test('planExakt: 15-Minuten-Raster – alle Zeiten sauber, Zahlen exakt (keine krummen 16:29)', () => {
+  const faelle: [number, number, number, number][] = [
+    [108, 8, 38.5, 25.5], [110, 19, 46.25, 30.75], [160, 32, 0, 0], [84.5, 17.75, 45.5, 21.25],
+  ]
+  for (const [g, so, n25, n40] of faelle) {
+    const plan = planExakt('Test', '2026-08', { gesamt: g, sonntag: so, nacht25: n25, nacht40: n40 }, 15)
+    const sh = plan.days.filter((d) => d.kind === 'schicht').flatMap((d) => d.shifts)
+    for (const s of sh) {
+      assert.equal(s.startMin % 15, 0, `Beginn ${s.startMin} nicht auf 15 min`)
+      assert.equal(s.endMin % 15, 0, `Ende ${s.endMin} nicht auf 15 min`)
+      for (const b of s.pauseAt) { assert.equal(b.start % 15, 0); assert.equal((b.end - b.start) % 15, 0) }
+    }
+    let net = 0, soIst = 0, n25Ist = 0, n40Ist = 0
+    for (const s of sh) { const h = computeShiftHours({ date: s.date, startMin: s.startMin, endMin: s.endMin, breaks: s.pauseAt }); net += s.nettoH; soIst += h.sunday50; n25Ist += h.night25; n40Ist += h.night40 }
+    assert.ok(Math.abs(net - g) <= 0.02, `Gesamt ${net}/${g}`)
+    assert.ok(Math.abs(soIst - so) <= 0.02 && Math.abs(n25Ist - n25) <= 0.02 && Math.abs(n40Ist - n40) <= 0.02, `Zuschläge ${soIst}/${n25Ist}/${n40Ist}`)
+  }
+})
+
 test('planExakt: § 5 (11 h Ruhe) und § 11 (max 6 Tage) erzwungen – Zahlen bleiben exakt', () => {
   // Fälle, die vor dem Erzwingen Ruhe < 11 h bzw. 7 Tage am Stück hatten.
   const faelle: [number, number, number, number][] = [

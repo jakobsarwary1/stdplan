@@ -18,7 +18,7 @@ type Ziel = { gesamt?: number; sonntag?: number; nacht25?: number; nacht40?: num
  * gesetzten Uhrzeiten. `exakt=false`: der Echte-Zeiten-Planer bleibt möglichst
  * nah an den tatsächlichen Uber-Fahrzeiten (best-effort bei den Zuschlägen).
  */
-function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined, exakt: boolean, bundesland: string): DriverPlan[] {
+function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined, exakt: boolean, bundesland: string, raster: number): DriverPlan[] {
   if (!ziele) return plans
   // Feiertage je Monat (für das Bundesland der Firma) nur bei Bedarf berechnen.
   // Sie werden NICHT automatisch angewendet – erst wenn für einen Fahrer
@@ -45,7 +45,7 @@ function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined,
     const g = Number(z?.gesamt) || 0
     if (g <= 0) return p
     const ziel = zielFuer(p.name, p.month, z)
-    return exakt ? planExakt(p.name, p.month, ziel) : planAnZiel(p, ziel)
+    return exakt ? planExakt(p.name, p.month, ziel, raster) : planAnZiel(p, ziel)
   })
   // Lohn-Fahrer, die NICHT in der CSV vorkommen: im Exakt-Modus einen eigenen
   // Stundenzettel anlegen (freie Zeiten – es braucht nur Name + Monat).
@@ -54,7 +54,7 @@ function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined,
     const vorhanden = new Set(plans.map((p) => p.name))
     for (const [name, z] of Object.entries(ziele)) {
       if (vorhanden.has(name) || (Number(z?.gesamt) || 0) <= 0 || !monat) continue
-      out.push(planExakt(name, monat, zielFuer(name, monat, z)))
+      out.push(planExakt(name, monat, zielFuer(name, monat, z), raster))
     }
   }
   return out
@@ -68,7 +68,7 @@ export async function POST(request: Request) {
   const user = await getCurrentUser()
   if (!user || !user.companyId) return NextResponse.json({ error: 'Kein Firmenzugriff.' }, { status: 403 })
 
-  let body: { csv?: string; format?: string; ziele?: Record<string, Ziel>; merges?: string[][]; exakt?: boolean }
+  let body: { csv?: string; format?: string; ziele?: Record<string, Ziel>; merges?: string[][]; exakt?: boolean; raster?: number }
   try {
     body = await request.json()
   } catch {
@@ -93,7 +93,8 @@ export async function POST(request: Request) {
 
   // Zielvorgaben anwenden. Standard: exakt (freie Zeiten) – trifft alle Zahlen
   // genau. exakt=false nutzt die echten Uber-Zeiten (best-effort).
-  const plans = mitZielen(roh, body.ziele, body.exakt !== false, bundesland)
+  const raster = body.raster === 1 || body.raster === 10 ? body.raster : 15
+  const plans = mitZielen(roh, body.ziele, body.exakt !== false, bundesland, raster)
 
   if (body.format === 'xlsx') {
     const wb = await workbookForPlans(plans)
