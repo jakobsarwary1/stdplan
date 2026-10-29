@@ -10,7 +10,27 @@ import { planAnZiel, planExakt } from '@/lib/planning/uberZielPlan'
 import { feiertageImMonat } from '@/lib/planning/feiertage'
 
 /** Pro Fahrer optional die Monats-Zielstunden (aus der Lohnabrechnung). */
-type Ziel = { gesamt?: number; sonntag?: number; nacht25?: number; nacht40?: number; feiertag?: number }
+type Ziel = { gesamt?: number; sonntag?: number; nacht25?: number; nacht40?: number; feiertag?: number; krank?: string; krankH?: number }
+
+/**
+ * Parst eine Krank-Eingabe zu ISO-Tagen des Monats ("YYYY-MM"). Erlaubt:
+ *   "10.–14.02"  "10.-14."  "03.02, 17.02"  "3, 17"  (Bereiche und Einzeltage).
+ * Der Monat kommt aus `month`; eine abweichende Monatszahl in der Eingabe wird
+ * ignoriert (es zählt der Monat des Stundenzettels).
+ */
+function parseKrankTage(raw: string | undefined, month: string): string[] {
+  if (!raw || !/^\d{4}-\d{2}$/.test(month)) return []
+  const letzter = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate()
+  const tage = new Set<number>()
+  for (const token of raw.split(/[,;]/)) {
+    const m = token.trim().match(/^(\d{1,2})\s*[.]?\s*[–\-]\s*(\d{1,2})/) // Bereich
+    if (m) { const a = Number(m[1]), b = Number(m[2]); for (let d = Math.min(a, b); d <= Math.max(a, b); d++) tage.add(d); continue }
+    const s = token.trim().match(/^(\d{1,2})/) // Einzeltag
+    if (s) tage.add(Number(s[1]))
+  }
+  return [...tage].filter((d) => d >= 1 && d <= letzter).sort((a, b) => a - b)
+    .map((d) => `${month}-${String(d).padStart(2, '0')}`)
+}
 
 /**
  * Wendet die Zielvorgaben an. `exakt` (Standard): der Exakt-Planer trifft
@@ -38,6 +58,8 @@ function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined,
       feiertag: fe,
       // Feiertage nur anhängen, wenn tatsächlich Feiertagsstunden vorgegeben sind.
       feiertage: fe > 0 ? feiertage(month) : [],
+      krankTage: parseKrankTage(z?.krank, month),
+      krankStunden: Number(z?.krankH) || 0,
     }
   }
   const out = plans.map((p) => {

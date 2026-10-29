@@ -40,6 +40,13 @@ export type ZielVorgabe = {
   feiertag?: number
   /** Feiertage des Monats als "YYYY-MM-DD" (für die Feiertags-Zuordnung). */
   feiertage?: string[]
+  /** Kranktage als "YYYY-MM-DD" – an diesen Tagen keine Schicht, sondern Krank
+   *  (Lohnfortzahlung). Gesamt gilt INKL. Krank. */
+  krankTage?: string[]
+  /** Krank-Stunden des Monats (aus "Lohnfortzahlung Krank" der Abrechnung).
+   *  Gefahren = Gesamt − Krank. Fehlt der Wert, wird der gleichmäßige Anteil der
+   *  Kranktage als Krank angesetzt. */
+  krankStunden?: number
 }
 
 /** Gesetzliches Minimum (Minuten) für eine Netto-Arbeitszeit nach § 4 ArbZG. */
@@ -178,6 +185,9 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
   // damit Gesamt UND Sonntag exakt erreichbar sind (A: „so nah an echt wie
   // möglich, aber Zahl stimmt"). Sonst die klassische 8-h-Grenze.
   const maxNet = raster ? 10 * 60 : MAX_NET_MIN
+  // Kranktage (nur im Monat): an diesen Tagen keine Schicht, sondern Krank.
+  const krankSet = new Set((ziel.krankTage ?? []).filter((d) => d.startsWith(plan.month)))
+  let sickMin = 0 // Summe der Krank-Minuten (Lohnfortzahlung)
   const gesamtMin = Math.round(Math.max(0, ziel.gesamt) * 60)
   let sonntagMin = Math.round(Math.max(0, ziel.sonntag) * 60)
   const warnungen: string[] = []
@@ -258,30 +268,55 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
     // der stundenärmste echte Nicht-Sonntag.
     const freiSet = new Set<string>()
     for (const [, tage] of wochen) {
-      const nichtGef = tage.filter((d) => !echtSet.has(d) && !istSo(d))
-      let frei: string | undefined = nichtGef.length ? nichtGef[Math.floor(nichtGef.length / 2)]
-        : tage.filter((d) => !istSo(d)).sort((a, b) => (netReal.get(a) ?? 0) - (netReal.get(b) ?? 0))[0]
-      if (frei) freiSet.add(frei)
+      // Kranktage sind schon „nicht gefahren" – kein zusätzlicher freier Tag nötig,
+      // wenn die Woche ohnehin Kranktage enthält.
+      const frei6 = tage.filter((d) => !krankSet.has(d))
+      if (frei6.length >= 6) {
+        const nichtGef = frei6.filter((d) => !echtSet.has(d) && !istSo(d))
+        const frei: string | undefined = nichtGef.length ? nichtGef[Math.floor(nichtGef.length / 2)]
+          : frei6.filter((d) => !istSo(d)).sort((a, b) => (netReal.get(a) ?? 0) - (netReal.get(b) ?? 0))[0]
+        if (frei) freiSet.add(frei)
+      }
     }
-    // Garantie: nie mehr als 6 Arbeitstage am Stück (§ 11). Beim 7. belegten Tag
-    // in Folge wird dieser frei gegeben.
+    // Garantie: nie mehr als 6 Arbeitstage am Stück (§ 11). Frei- UND Kranktage
+    // unterbrechen die Serie.
     let lauf6 = 0
     for (const d of alleTage) {
-      if (freiSet.has(d)) { lauf6 = 0; continue }
+      if (freiSet.has(d) || krankSet.has(d)) { lauf6 = 0; continue }
       if (++lauf6 > 6) { freiSet.add(d); lauf6 = 0 }
     }
-    // ALLE verfügbaren Tage (= alle außer 1 frei/Woche) werden Arbeitstage, damit
-    // die Stunden möglichst DÜNN verteilt sind (lieber viele Tage wenige Stunden
-    // als wenige 10-h-Tage). Reicht die Kapazität nicht (Gesamt > Tage × 10 h),
-    // steigt die Tageslänge entsprechend.
-    void IDEAL; void netReal; void echtSet
-    const workDays = alleTage.filter((d) => !freiSet.has(d))
+    void IDEAL
+    // --- KRANK (Gesamt INKL. Krank): Krank-Stunden = Eingabe (aus „Lohnfortzahlung
+    // Krank"); fehlt sie, der gleichmäßige Anteil der Kranktage. Gefahren =
+    // Gesamt − Krank. Fehlen bei gegebener Krank-Stundenzahl die Kranktage, werden
+    // passend viele Tage automatisch als krank gewählt (bevorzugt Nicht-Fahr-/
+    // Nicht-Sonntag-Tage). ---
+    let arbeit = alleTage.filter((d) => !freiSet.has(d) && !krankSet.has(d))
+    const krankH = Math.max(0, ziel.krankStunden ?? 0)
+    if (krankH > 0) {
+      sickMin = Math.min(gesamtMin, Math.round((krankH * 60) / raster) * raster)
+      if ([...krankSet].filter((d) => alleTage.includes(d)).length === 0 && sickMin > 0) {
+        const brauche = Math.max(1, Math.round(sickMin / IDEAL))
+        const kand = arbeit.filter((d) => !istSo(d) && !echtSet.has(d))
+          .concat(arbeit.filter((d) => !istSo(d) && echtSet.has(d)))
+          .concat(arbeit.filter((d) => istSo(d)))
+        for (const d of kand.slice(0, brauche)) krankSet.add(d)
+        arbeit = arbeit.filter((d) => !krankSet.has(d))
+      }
+    } else {
+      const nK = [...krankSet].filter((d) => alleTage.includes(d)).length
+      sickMin = nK > 0 ? Math.round((gesamtMin * nK / (arbeit.length + nK)) / raster) * raster : 0
+    }
+    const workDays = arbeit
+    const workedMin = Math.max(0, gesamtMin - sickMin)
     for (const d of workDays) {
       if (!startOf.has(d)) { startOf.set(d, Date.parse(`${d}T00:00:00Z`) + medStart * 60000); pauseOf.set(d, snapMin(30)) }
     }
-    const base = skaliere(workDays.map(() => 1), gesamtMin, maxNet, raster)
+    const base = skaliere(workDays.map(() => 1), workedMin, maxNet, raster)
     workDays.forEach((d, i) => netById.set(d, base.vals[i]))
     if (base.fehlt > 1) warnungen.push(`${round2(base.fehlt / 60)} h passen nicht auf die ${workDays.length} Arbeitstage.`)
+    const nKrankF = [...krankSet].filter((d) => alleTage.includes(d)).length
+    if (nKrankF > 0) warnungen.push(`${nKrankF} Kranktag(e): ${round2(sickMin / 60)} h Lohnfortzahlung, gefahren ${round2(workedMin / 60)} h (Gesamt inkl. Krank).`)
   } else {
     // ---- GRUNDVERTEILUNG (klassisch): proportional zur gefahrenen Länge. ----
     const grund = skaliere(echte.map((t) => t.realNet), gesamtMin, maxNet, 1)
@@ -470,6 +505,8 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
   let nettoH = 0
   let workDays = 0
   const neueTage: PlanDay[] = plan.days.map((tag) => {
+    // Kranktag: keine Schicht, als „Krankgeschrieben" ausweisen.
+    if (krankSet.has(tag.date)) return { ...tag, kind: 'krank', shifts: [], hinweis: 'Krankgeschrieben', ausgelassen: '' }
     const netMin = netById.get(tag.date) ?? 0
     if (netMin <= 0) {
       if (tag.kind === 'schicht') return { ...tag, kind: 'frei', shifts: [], hinweis: 'durch Zielvorgabe nicht belegt', ausgelassen: '' }
@@ -503,6 +540,7 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
       gesamt: Math.max(0, ziel.gesamt), sonntag: Math.max(0, ziel.sonntag),
       nacht25: Math.max(0, ziel.nacht25 ?? 0), nacht40: Math.max(0, ziel.nacht40 ?? 0), feiertag: Math.max(0, ziel.feiertag ?? 0),
     },
+    sickHours: sickMin > 0 ? round2(sickMin / 60) : undefined,
   }
 }
 

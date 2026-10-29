@@ -49,7 +49,7 @@ export type PlanShift = {
 export type PlanDay = {
   date: string
   weekday: number
-  kind: 'schicht' | 'frei' | 'ruhetag' | 'ausgelassen'
+  kind: 'schicht' | 'frei' | 'ruhetag' | 'ausgelassen' | 'krank'
   shifts: PlanShift[]
   hinweis: string
   /** Gefahren, aber nicht geplant: liegt in der 11-Stunden-Ruhe. */
@@ -73,6 +73,8 @@ export type DriverPlan = {
   feiertage?: string[]
   /** Soll-Vorgaben aus der Lohnabrechnung (zum Abgleich im Export), falls gesetzt. */
   ziel?: { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }
+  /** Krank-Stunden des Monats (Lohnfortzahlung § 3 EntgFG), falls Kranktage gesetzt. */
+  sickHours?: number
 }
 
 const WOCHENTAG = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa']
@@ -278,7 +280,7 @@ export function timesheetHours(plan: DriverPlan): MonthlyHours {
     endMin: line.endMin,
     breaks: line.breakMinutes > 0 ? [{ start: line.breakOffsetMin, end: line.breakOffsetMin + line.breakMinutes }] : [],
   }))
-  return sumShiftHours(shifts, new Set(plan.feiertage ?? []))
+  return sumShiftHours(shifts, new Set(plan.feiertage ?? []), plan.sickHours ?? 0)
 }
 
 export function timesheetView(plan: DriverPlan): TimesheetView[] {

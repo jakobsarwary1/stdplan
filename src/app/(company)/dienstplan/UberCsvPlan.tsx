@@ -50,8 +50,8 @@ const num = (s: string): number => {
 }
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
-type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string; feiertag: string }
-type ZielZahl = { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number }
+type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string; feiertag: string; krankH: string; krank: string }
+type ZielZahl = { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number; krankH: number; krank: string }
 
 export default function UberCsvPlan() {
   const [csv, setCsv] = useState<string | null>(null)
@@ -91,14 +91,14 @@ export default function UberCsvPlan() {
     const out: Record<string, ZielZahl> = {}
     for (const [name, z] of Object.entries(ziele)) {
       const g = num(z.gesamt)
-      if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag), nacht25: num(z.nacht25), nacht40: num(z.nacht40), feiertag: num(z.feiertag) }
+      if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag), nacht25: num(z.nacht25), nacht40: num(z.nacht40), feiertag: num(z.feiertag), krankH: num(z.krankH), krank: z.krank ?? '' }
     }
     return out
   }
 
   const setZiel = (name: string, feld: keyof Ziel, wert: string) =>
     setZiele((z) => {
-      const cur: Ziel = z[name] ?? { gesamt: '', sonntag: '', nacht25: '', nacht40: '', feiertag: '' }
+      const cur: Ziel = z[name] ?? { gesamt: '', sonntag: '', nacht25: '', nacht40: '', feiertag: '', krankH: '', krank: '' }
       return { ...z, [name]: { ...cur, [feld]: wert } }
     })
 
@@ -288,7 +288,7 @@ export default function UberCsvPlan() {
     const t = e.currentTarget
     if (e.key === 'ArrowDown' || e.key === 'Enter') { e.preventDefault(); fokusZelle(Math.min(zeilen - 1, ri + 1), ci) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); fokusZelle(Math.max(0, ri - 1), ci) }
-    else if (e.key === 'ArrowRight' && t.selectionStart === t.value.length && t.selectionEnd === t.value.length) { e.preventDefault(); fokusZelle(ri, Math.min(4, ci + 1)) }
+    else if (e.key === 'ArrowRight' && t.selectionStart === t.value.length && t.selectionEnd === t.value.length) { e.preventDefault(); fokusZelle(ri, Math.min(6, ci + 1)) }
     else if (e.key === 'ArrowLeft' && t.selectionStart === 0 && t.selectionEnd === 0) { e.preventDefault(); fokusZelle(ri, Math.max(0, ci - 1)) }
   }
 
@@ -399,6 +399,8 @@ export default function UberCsvPlan() {
                     <th className="px-2 py-1 text-right font-medium">Nacht 25 %</th>
                     <th className="px-2 py-1 text-right font-medium">Nacht 40 %</th>
                     <th className="px-2 py-1 text-right font-medium">Feiertag</th>
+                    <th className="px-2 py-1 text-right font-medium">Krank Std.</th>
+                    <th className="px-2 py-1 text-left font-medium">Krank Tage</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -416,7 +418,7 @@ export default function UberCsvPlan() {
                           )}
                           {name}{treffer && <span className="ml-1 text-accent">✓</span>}
                         </td>
-                        {(['gesamt', 'sonntag', 'nacht25', 'nacht40', 'feiertag'] as (keyof Ziel)[]).map((feld, ci) => (
+                        {(['gesamt', 'sonntag', 'nacht25', 'nacht40', 'feiertag', 'krankH'] as (keyof Ziel)[]).map((feld, ci) => (
                           <td key={feld} className="px-1 py-0.5">
                             <input id={`z-${ri}-${ci}`} inputMode="decimal" placeholder="0"
                               value={ziele[name]?.[feld] ?? ''}
@@ -425,6 +427,13 @@ export default function UberCsvPlan() {
                               className="w-20 rounded-lg border border-border bg-bg px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-accent" />
                           </td>
                         ))}
+                        <td className="px-1 py-0.5">
+                          <input id={`z-${ri}-6`} placeholder="z. B. 10.–14. oder 3, 17"
+                            value={ziele[name]?.krank ?? ''}
+                            onChange={(e) => setZiel(name, 'krank', e.target.value)}
+                            onKeyDown={(e) => zellenTaste(e, ri, 6)}
+                            className="w-40 rounded-lg border border-border bg-bg px-2 py-1 text-sm outline-none focus:border-accent" />
+                        </td>
                       </tr>
                     )
                   })}
