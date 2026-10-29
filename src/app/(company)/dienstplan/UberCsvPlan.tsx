@@ -1,6 +1,21 @@
 'use client'
 
-import { useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+
+// Gemerkte Fahrer (im Browser gespeichert): jeder Fahrer, der schon einmal in
+// einer geladenen CSV war, bleibt dauerhaft in der Tabelle – so lässt sich für
+// ihn auch in Monaten ohne Fahrten manuell ein Stundenzettel erstellen.
+const GEMERKT_KEY = 'stdplan.gemerkteFahrer'
+const ladeGemerkte = (): string[] => {
+  try {
+    const roh = localStorage.getItem(GEMERKT_KEY)
+    const arr = roh ? (JSON.parse(roh) as unknown) : []
+    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : []
+  } catch { return [] }
+}
+const speichereGemerkte = (namen: string[]) => {
+  try { localStorage.setItem(GEMERKT_KEY, JSON.stringify(namen)) } catch { /* ignore */ }
+}
 
 type Row = {
   tag: string
@@ -56,6 +71,20 @@ export default function UberCsvPlan() {
   // eigener Stundenzettel erstellt.
   const [extraFahrer, setExtraFahrer] = useState<string[]>([])
   const [neuerName, setNeuerName] = useState('')
+  // Dauerhaft gemerkte Fahrer (Browser-Speicher). Beim Laden einer CSV werden
+  // deren Fahrer hier aufgenommen, damit sie künftig immer in der Tabelle stehen.
+  const [gemerkte, setGemerkte] = useState<string[]>([])
+  useEffect(() => { setGemerkte(ladeGemerkte()) }, [])
+  const merkeFahrer = (namen: string[]) => setGemerkte((alt) => {
+    const low = new Set(alt.map((n) => n.toLowerCase()))
+    const neu = [...alt]
+    for (const n of namen) {
+      const name = (n || '').trim()
+      if (name && !low.has(name.toLowerCase())) { neu.push(name); low.add(name.toLowerCase()) }
+    }
+    if (neu.length !== alt.length) speichereGemerkte(neu)
+    return neu
+  })
 
   /** Nur gesetzte Ziele (Gesamt > 0) als Zahlen – für die Anfrage an die Route. */
   function zieleBody(): Record<string, ZielZahl> {
@@ -86,7 +115,9 @@ export default function UberCsvPlan() {
       })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(j?.error || 'Neuberechnung fehlgeschlagen.')
-      setDrivers((j.drivers as Driver[]) ?? [])
+      const list = (j.drivers as Driver[]) ?? []
+      setDrivers(list)
+      merkeFahrer(list.map((d) => d.name))
       setDupePairs((j.dupePairs as string[][]) ?? [])
     } catch (err) {
       setFehler((err as Error).message)
@@ -112,6 +143,7 @@ export default function UberCsvPlan() {
       setMonth(j.monthLabel || j.month || '')
       const list = (j.drivers as Driver[]) ?? []
       setDrivers(list)
+      merkeFahrer(list.map((d) => d.name))
       setDupePairs((j.dupePairs as string[][]) ?? [])
       setAktiv(list[0]?.name ?? '')
     } catch (err) {
@@ -211,15 +243,38 @@ export default function UberCsvPlan() {
   // Ziel-Fahrer (eigene Zettel). Ohne PDF einfach die Zahlen eintippen.
   // Aktuelle Fahrerliste (nach Zusammenführungen) für Tabelle und Zuordnung.
   const aktuelleFahrer = drivers?.map((d) => d.name) ?? []
-  // CSV-Fahrer + von Hand hinzugefügte + Ziel-Namen, die sonst nirgends stehen.
-  const alleFahrer = [...aktuelleFahrer, ...extraFahrer, ...Object.keys(ziele)]
-    .filter((n, i, a) => n && a.indexOf(n) === i)
+  // Reihenfolge: Fahrer der geladenen CSV zuerst, dann dauerhaft gemerkte,
+  // von Hand hinzugefügte und Ziel-Namen. Doppelte (auch bei anderer
+  // Groß-/Kleinschreibung) werden entfernt – der erste Treffer gewinnt.
+  const alleFahrer = [...aktuelleFahrer, ...gemerkte, ...extraFahrer, ...Object.keys(ziele)]
+    .filter((n) => n && n.trim())
+    .filter((n, i, a) => a.findIndex((m) => m.toLowerCase() === n.toLowerCase()) === i)
   const fahrerHinzufuegen = () => {
-    const name = neuerName.trim().replace(/\s+/g, ' ')
-    if (!name || alleFahrer.includes(name)) { setNeuerName(''); return }
-    setExtraFahrer((f) => [...f, name])
-    setZiel(name, 'gesamt', '') // Zeile anlegen, Werte leer
+    // Mehrere Namen auf einmal: durch Zeilenumbruch, Komma oder Semikolon getrennt.
+    const namen = neuerName
+      .split(/[\n,;]+/)
+      .map((n) => n.trim().replace(/\s+/g, ' '))
+      .filter((n) => n.length > 1)
+    if (!namen.length) { setNeuerName(''); return }
+    const vorhanden = new Set(alleFahrer.map((n) => n.toLowerCase()))
+    const neue: string[] = []
+    for (const name of namen) {
+      if (vorhanden.has(name.toLowerCase())) continue
+      vorhanden.add(name.toLowerCase())
+      neue.push(name)
+      setZiel(name, 'gesamt', '') // Zeile anlegen, Werte leer
+    }
+    if (neue.length) {
+      setExtraFahrer((f) => [...f, ...neue])
+      merkeFahrer(neue) // auch dauerhaft merken
+    }
     setNeuerName('')
+  }
+  const entferneFahrer = (name: string) => {
+    const low = name.toLowerCase()
+    setExtraFahrer((f) => f.filter((n) => n.toLowerCase() !== low))
+    setGemerkte((alt) => { const neu = alt.filter((n) => n.toLowerCase() !== low); speichereGemerkte(neu); return neu })
+    setZiele((z) => { const c = { ...z }; delete c[name]; return c })
   }
 
   // Tastatur-Navigation in der Stunden-Tabelle (wie Excel): ↑/↓ & Enter wechseln
@@ -327,7 +382,7 @@ export default function UberCsvPlan() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs">
                 <span className="font-medium text-text">Stunden je Fahrer eintippen (aus der Lohnabrechnung)</span>
-                <span className="text-textMuted"> — kein PDF nötig. Leer = dieser Fahrer wird übersprungen. Navigation mit ↑ ↓ Enter ← → wie in Excel.</span>
+                <span className="text-textMuted"> — kein PDF nötig. Leer = dieser Fahrer wird übersprungen. Fahrer aus geladenen CSVs bleiben dauerhaft gemerkt. Navigation mit ↑ ↓ Enter ← → wie in Excel.</span>
               </div>
               <button type="button" onClick={() => void neuBerechnen()} disabled={busy}
                 className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50">
@@ -351,9 +406,14 @@ export default function UberCsvPlan() {
                     const ist = drivers?.find((d) => d.name === name)
                     const g = num(ziele[name]?.gesamt ?? '')
                     const treffer = g > 0 && ist && Math.abs(ist.nettoH - g) < 0.05
+                    const imCsv = aktuelleFahrer.some((n) => n.toLowerCase() === name.toLowerCase())
                     return (
                       <tr key={name} className="border-t border-border/60">
                         <td className="whitespace-nowrap px-2 py-1">
+                          {!imCsv && (
+                            <button type="button" onClick={() => entferneFahrer(name)} title="Fahrer entfernen"
+                              className="mr-1 text-textMuted hover:text-red-500">✕</button>
+                          )}
                           {name}{treffer && <span className="ml-1 text-accent">✓</span>}
                         </td>
                         {(['gesamt', 'sonntag', 'nacht25', 'nacht40', 'feiertag'] as (keyof Ziel)[]).map((feld, ci) => (
@@ -371,13 +431,14 @@ export default function UberCsvPlan() {
                 </tbody>
               </table>
             </div>
-            {/* Fahrer hinzufügen, der nicht in der CSV steht (z. B. ohne Uber-Fahrten). */}
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-textMuted">Fahrer nicht dabei?</span>
-              <input value={neuerName} placeholder="Vor- und Nachname"
+            {/* Fahrer hinzufügen, die nicht in der CSV stehen (z. B. ohne Uber-Fahrten).
+                Mehrere Namen auf einmal: je Zeile einer, oder mit Komma getrennt. */}
+            <div className="flex flex-wrap items-start gap-2 text-xs">
+              <span className="pt-1 text-textMuted">Fahrer nicht dabei?</span>
+              <textarea value={neuerName} rows={1} placeholder="Vor- und Nachname – mehrere je Zeile oder mit Komma"
                 onChange={(e) => setNeuerName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); fahrerHinzufuegen() } }}
-                className="w-56 rounded-lg border border-border bg-bg px-2 py-1 text-sm text-text outline-none focus:border-accent" />
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); fahrerHinzufuegen() } }}
+                className="min-h-[2rem] w-72 resize-y rounded-lg border border-border bg-bg px-2 py-1 text-sm text-text outline-none focus:border-accent" />
               <button type="button" onClick={fahrerHinzufuegen} disabled={!neuerName.trim()}
                 className="rounded-lg border border-accent px-3 py-1 font-medium text-accent disabled:opacity-40">
                 + hinzufügen
