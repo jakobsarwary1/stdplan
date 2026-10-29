@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 type Row = {
   tag: string
@@ -208,6 +208,21 @@ export default function UberCsvPlan() {
   const aktuelleFahrer = drivers?.map((d) => d.name) ?? []
   const alleFahrer = [...aktuelleFahrer, ...Object.keys(ziele).filter((n) => !aktuelleFahrer.includes(n))]
 
+  // Tastatur-Navigation in der Stunden-Tabelle (wie Excel): ↑/↓ & Enter wechseln
+  // die Zeile, ←/→ am Feldrand die Spalte. 5 Spalten (Gesamt … Feiertag).
+  const fokusZelle = (ri: number, ci: number) => {
+    const el = document.getElementById(`z-${ri}-${ci}`) as HTMLInputElement | null
+    if (el) { el.focus(); el.select() }
+  }
+  const zellenTaste = (e: ReactKeyboardEvent<HTMLInputElement>, ri: number, ci: number) => {
+    const zeilen = alleFahrer.length
+    const t = e.currentTarget
+    if (e.key === 'ArrowDown' || e.key === 'Enter') { e.preventDefault(); fokusZelle(Math.min(zeilen - 1, ri + 1), ci) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); fokusZelle(Math.max(0, ri - 1), ci) }
+    else if (e.key === 'ArrowRight' && t.selectionStart === t.value.length && t.selectionEnd === t.value.length) { e.preventDefault(); fokusZelle(ri, Math.min(4, ci + 1)) }
+    else if (e.key === 'ArrowLeft' && t.selectionStart === 0 && t.selectionEnd === 0) { e.preventDefault(); fokusZelle(ri, Math.max(0, ci - 1)) }
+  }
+
   return (
     <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -298,7 +313,7 @@ export default function UberCsvPlan() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-xs">
                 <span className="font-medium text-text">Stunden je Fahrer eintippen (aus der Lohnabrechnung)</span>
-                <span className="text-textMuted"> — kein PDF nötig. Leer = dieser Fahrer wird übersprungen.</span>
+                <span className="text-textMuted"> — kein PDF nötig. Leer = dieser Fahrer wird übersprungen. Navigation mit ↑ ↓ Enter ← → wie in Excel.</span>
               </div>
               <button type="button" onClick={() => void neuBerechnen()} disabled={busy}
                 className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg disabled:opacity-50">
@@ -318,7 +333,7 @@ export default function UberCsvPlan() {
                   </tr>
                 </thead>
                 <tbody>
-                  {alleFahrer.map((name) => {
+                  {alleFahrer.map((name, ri) => {
                     const ist = drivers?.find((d) => d.name === name)
                     const g = num(ziele[name]?.gesamt ?? '')
                     const treffer = g > 0 && ist && Math.abs(ist.nettoH - g) < 0.05
@@ -327,11 +342,12 @@ export default function UberCsvPlan() {
                         <td className="whitespace-nowrap px-2 py-1">
                           {name}{treffer && <span className="ml-1 text-accent">✓</span>}
                         </td>
-                        {(['gesamt', 'sonntag', 'nacht25', 'nacht40', 'feiertag'] as (keyof Ziel)[]).map((feld) => (
+                        {(['gesamt', 'sonntag', 'nacht25', 'nacht40', 'feiertag'] as (keyof Ziel)[]).map((feld, ci) => (
                           <td key={feld} className="px-1 py-0.5">
-                            <input inputMode="decimal" placeholder="0"
+                            <input id={`z-${ri}-${ci}`} inputMode="decimal" placeholder="0"
                               value={ziele[name]?.[feld] ?? ''}
                               onChange={(e) => setZiel(name, feld, e.target.value)}
+                              onKeyDown={(e) => zellenTaste(e, ri, ci)}
                               className="w-20 rounded-lg border border-border bg-bg px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-accent" />
                           </td>
                         ))}
