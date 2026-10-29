@@ -65,7 +65,6 @@ export default function UberCsvPlan() {
   const [exakt, setExakt] = useState(true)
   const [lohnInfo, setLohnInfo] = useState<LohnErgebnis[] | null>(null)
   // Fahrernamen aus der CSV (für die manuelle Zuordnung – fest ab CSV-Load).
-  const [csvFahrer, setCsvFahrer] = useState<string[]>([])
   // Zuordnung je Lohnabrechnung (Dateiname → Zielfahrer/EIGEN/IGNORE).
   const [zuordnung, setZuordnung] = useState<Record<string, string>>({})
 
@@ -124,7 +123,6 @@ export default function UberCsvPlan() {
       setMonth(j.monthLabel || j.month || '')
       const list = (j.drivers as Driver[]) ?? []
       setDrivers(list)
-      setCsvFahrer(list.map((d) => d.name))
       setLohnInfo(null)
       setZuordnung({})
       setDupePairs((j.dupePairs as string[][]) ?? [])
@@ -315,8 +313,9 @@ export default function UberCsvPlan() {
   const fahrer = drivers?.find((d) => d.name === aktiv) ?? drivers?.[0]
   // Fahrerliste für die manuelle Stunden-Tabelle: CSV-Fahrer + evtl. zusätzliche
   // Ziel-Fahrer (eigene Zettel). Ohne PDF einfach die Zahlen eintippen.
-  const tabFahrer = csvFahrer.length ? csvFahrer : (drivers?.map((d) => d.name) ?? [])
-  const alleFahrer = [...tabFahrer, ...Object.keys(ziele).filter((n) => !tabFahrer.includes(n))]
+  // Aktuelle Fahrerliste (nach Zusammenführungen) für Tabelle und Zuordnung.
+  const aktuelleFahrer = drivers?.map((d) => d.name) ?? []
+  const alleFahrer = [...aktuelleFahrer, ...Object.keys(ziele).filter((n) => !aktuelleFahrer.includes(n))]
 
   return (
     <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
@@ -444,7 +443,7 @@ export default function UberCsvPlan() {
                       >
                         <option value={IGNORE}>— ignorieren —</option>
                         {e.gesamt > 0 && <option value={EIGEN}>Eigener Zettel: {e.name || e.filename}</option>}
-                        {csvFahrer.map((f) => (
+                        {aktuelleFahrer.map((f) => (
                           <option key={f} value={f}>{f}</option>
                         ))}
                       </select>
