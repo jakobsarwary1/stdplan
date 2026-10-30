@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { upsertMonate, type MonatEintrag } from './stundenStore'
 
 // Gemerkte Fahrer (im Browser gespeichert): jeder Fahrer, der schon einmal in
 // einer geladenen CSV war, bleibt dauerhaft in der Tabelle – so lässt sich für
@@ -49,6 +50,9 @@ type Driver = {
   violations: number
   weekNotes: string[]
   rows: Row[]
+  hours?: { worked: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number; krank: number }
+  sundaysWorked?: number
+  soll?: { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number } | null
 }
 
 const n2 = (n: number) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -128,6 +132,18 @@ export default function UberCsvPlan() {
     })
   }
 
+  // Monatszahlen je Fahrer für die Jahres-Stundenübersicht sichern (Browser).
+  const speichereUebersicht = (monthIso: string, list: Driver[]) => {
+    if (!monthIso || !/^\d{4}-\d{2}$/.test(monthIso)) return
+    const eintraege: MonatEintrag[] = list.filter((d) => d.hours).map((d) => ({
+      month: monthIso, name: d.name,
+      worked: d.hours!.worked, sonntag: d.hours!.sonntag, nacht25: d.hours!.nacht25,
+      nacht40: d.hours!.nacht40, feiertag: d.hours!.feiertag, krank: d.hours!.krank,
+      sundaysWorked: d.sundaysWorked ?? 0, soll: d.soll ?? null,
+    }))
+    if (eintraege.length) upsertMonate(eintraege)
+  }
+
   /** Vorschau mit den aktuellen Zielvorgaben/Merges neu berechnen (ohne Datei-Reupload). */
   async function neuBerechnen(mergesArg: string[][] = merges, zieleArg?: Record<string, ZielZahl>) {
     if (!csv) return
@@ -144,6 +160,7 @@ export default function UberCsvPlan() {
       const list = (j.drivers as Driver[]) ?? []
       setDrivers(list)
       merkeFahrer(list.map((d) => d.name))
+      speichereUebersicht(j.month as string, list)
       setDupePairs((j.dupePairs as string[][]) ?? [])
     } catch (err) {
       setFehler((err as Error).message)
@@ -170,6 +187,7 @@ export default function UberCsvPlan() {
       const list = (j.drivers as Driver[]) ?? []
       setDrivers(list)
       merkeFahrer(list.map((d) => d.name))
+      speichereUebersicht(j.month as string, list)
       setDupePairs((j.dupePairs as string[][]) ?? [])
       setAktiv(list[0]?.name ?? '')
     } catch (err) {

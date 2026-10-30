@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { workbookForPlans } from '@/lib/planning/uberExcel'
-import { buildPlansFromCsv, monthLabelDE, timesheetView, findeDoppelPaare, type DriverPlan } from '@/lib/planning/uberPlan'
+import { buildPlansFromCsv, monthLabelDE, timesheetView, timesheetHours, findeDoppelPaare, type DriverPlan } from '@/lib/planning/uberPlan'
 import { buildPlansFromFahrlygoCsv, looksLikeFahrlygo } from '@/lib/planning/fahrlygoPlan'
 import { buildCsvForPlans } from '@/lib/planning/uberCsv'
 import { buildWorkbookPerDriver } from '@/lib/planning/uberMappe'
@@ -171,16 +171,24 @@ export async function POST(request: Request) {
     month: plans[0].month,
     monthLabel: plans[0].month ? monthLabelDE(plans[0].month) : '',
     dupePairs: findeDoppelPaare(plans.map((p) => p.name)),
-    drivers: plans.map((p) => ({
-      name: p.name,
-      paidH: p.paidH,
-      nettoH: p.nettoH,
-      workDays: p.workDays,
-      freeDays: p.freeDays,
-      ruheTage: p.ruheTage,
-      violations: p.violations,
-      weekNotes: p.weekNotes,
-      rows: timesheetView(p),
-    })),
+    drivers: plans.map((p) => {
+      const h = timesheetHours(p)
+      const sundaysWorked = p.days.filter((d) => d.kind === 'schicht' && d.shifts.length > 0 && d.weekday === 0).length
+      return {
+        name: p.name,
+        paidH: p.paidH,
+        nettoH: p.nettoH,
+        workDays: p.workDays,
+        freeDays: p.freeDays,
+        ruheTage: p.ruheTage,
+        violations: p.violations,
+        weekNotes: p.weekNotes,
+        rows: timesheetView(p),
+        // Für die Jahres-Stundenübersicht: Summen + gearbeitete Sonntage + Soll.
+        hours: { worked: h.workedHours, sonntag: h.sunday50, nacht25: h.night25, nacht40: h.night40, feiertag: h.holiday125, krank: h.sickHours },
+        sundaysWorked,
+        soll: p.ziel ?? null,
+      }
+    }),
   })
 }

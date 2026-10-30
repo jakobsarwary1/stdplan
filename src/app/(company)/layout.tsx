@@ -15,6 +15,7 @@ export default async function CompanyLayout({ children }: { children: React.Reac
           </Link>
           <nav className="flex items-center gap-6 text-sm">
             <Link href="/dienstplan" className="text-textMuted hover:text-text">Dienstplan</Link>
+            <Link href="/stunden" className="text-textMuted hover:text-text">Stundenübersicht</Link>
             <Link href="/fahrer" className="text-textMuted hover:text-text">Fahrer</Link>
           </nav>
           <div className="flex items-center gap-4 text-sm text-textMuted">
