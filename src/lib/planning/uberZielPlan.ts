@@ -544,6 +544,57 @@ export function planAnZiel(plan: DriverPlan, ziel: ZielVorgabe, opts: { raster?:
   }
 }
 
+export type PersonalTyp = 'reinigung' | 'buero'
+/** Fester Dienstplan je Personal-Typ: Wochentage (0=So..6=Sa) + Startzeit (Min). */
+const PERSONAL: Record<PersonalTyp, { wdays: number[]; start: number; label: string }> = {
+  reinigung: { wdays: [1, 4], start: 6 * 60, label: 'Reinigung' },   // Mo & Do, 06:00
+  buero: { wdays: [2, 4], start: 14 * 60, label: 'Büro (nachmittags)' }, // Di & Do, 14:00
+}
+
+/**
+ * Personal-Planer (Reinigung/Büro – KEINE Fahrer): verteilt die Monatsstunden
+ * NUR auf feste Wochentage (z. B. Reinigung Mo & Do, Büro Di & Do) zu einer
+ * festen Uhrzeit. Keine Zuschläge (Tagschicht), saubere Rasterzeiten, Summe
+ * exakt. Pro Typ lassen sich Wochentage/Startzeit überschreiben.
+ */
+export function planPersonal(
+  name: string, month: string, typ: PersonalTyp, stunden: number, raster = 15,
+  cfg?: { wdays?: number[]; start?: number },
+): DriverPlan {
+  const r = raster === 1 || raster === 10 || raster === 15 ? raster : 15
+  const basis = PERSONAL[typ]
+  const wdays = cfg?.wdays?.length ? cfg.wdays : basis.wdays
+  const start = cfg?.start ?? basis.start
+  const tage = tageImMonat(month)
+  const arbeit = tage.filter((d) => wdays.includes(weekdayIndex(d)))
+  const zielMin = Math.round(Math.max(0, stunden) * 60)
+  const vals = skaliere(arbeit.map(() => 1), zielMin, 10 * 60, r).vals
+  // Krumme Monatsstunden (z. B. 38,90 h) trifft das 15-Min-Raster nicht exakt –
+  // den Restbetrag genau auf den letzten Tag legen, damit die Summe stimmt.
+  const rest = zielMin - vals.reduce((a, b) => a + b, 0)
+  if (vals.length > 0 && rest !== 0) vals[vals.length - 1] = Math.max(0, vals[vals.length - 1] + rest)
+  const netOf = new Map<string, number>()
+  arbeit.forEach((d, i) => netOf.set(d, vals[i]))
+  let paidH = 0, nettoH = 0, workDays = 0
+  const days: PlanDay[] = tage.map((date) => {
+    const netM = netOf.get(date) ?? 0
+    const base = { date, weekday: weekdayIndex(date) }
+    if (netM <= 0) return { ...base, kind: 'frei', shifts: [], hinweis: '', ausgelassen: '' }
+    const pause = gesetzMin(netM) // unter 6 h keine Pflichtpause
+    const shift = baueSchicht(Date.parse(`${date}T00:00:00Z`) + start * 60000, netM, pause, null, r)
+    paidH += shift.paidH; nettoH += shift.nettoH; workDays++
+    return { ...base, kind: 'schicht', shifts: [shift], hinweis: '', ausgelassen: '' }
+  })
+  return {
+    name, month, days,
+    paidH: round2(paidH), nettoH: round2(nettoH), workDays,
+    freeDays: days.filter((d) => d.kind !== 'schicht').length,
+    ruheTage: 0, violations: 0,
+    weekNotes: [`${basis.label}: ${round2(stunden)} h auf ${arbeit.length} feste Tage verteilt (keine Zuschläge).`],
+    ziel: { gesamt: Math.max(0, stunden), sonntag: 0, nacht25: 0, nacht40: 0, feiertag: 0 },
+  }
+}
+
 /**
  * EXAKT-Planer (freie Zeiten): trifft Gesamt (netto) UND alle Zuschläge
  * (Sonntag / Nacht 25 / Nacht 40) exakt, legal und über den Monat verteilt.

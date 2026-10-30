@@ -50,8 +50,8 @@ const num = (s: string): number => {
 }
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
 
-type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string; feiertag: string; krankH: string; krank: string }
-type ZielZahl = { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number; krankH: number; krank: string }
+type Ziel = { gesamt: string; sonntag: string; nacht25: string; nacht40: string; feiertag: string; krankH: string; krank: string; typ: string }
+type ZielZahl = { gesamt: number; sonntag: number; nacht25: number; nacht40: number; feiertag: number; krankH: number; krank: string; typ: string }
 
 export default function UberCsvPlan() {
   const [csv, setCsv] = useState<string | null>(null)
@@ -91,14 +91,14 @@ export default function UberCsvPlan() {
     const out: Record<string, ZielZahl> = {}
     for (const [name, z] of Object.entries(ziele)) {
       const g = num(z.gesamt)
-      if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag), nacht25: num(z.nacht25), nacht40: num(z.nacht40), feiertag: num(z.feiertag), krankH: num(z.krankH), krank: z.krank ?? '' }
+      if (g > 0) out[name] = { gesamt: g, sonntag: num(z.sonntag), nacht25: num(z.nacht25), nacht40: num(z.nacht40), feiertag: num(z.feiertag), krankH: num(z.krankH), krank: z.krank ?? '', typ: z.typ ?? '' }
     }
     return out
   }
 
   const setZiel = (name: string, feld: keyof Ziel, wert: string) =>
     setZiele((z) => {
-      const cur: Ziel = z[name] ?? { gesamt: '', sonntag: '', nacht25: '', nacht40: '', feiertag: '', krankH: '', krank: '' }
+      const cur: Ziel = z[name] ?? { gesamt: '', sonntag: '', nacht25: '', nacht40: '', feiertag: '', krankH: '', krank: '', typ: '' }
       return { ...z, [name]: { ...cur, [feld]: wert } }
     })
 
@@ -394,6 +394,7 @@ export default function UberCsvPlan() {
                 <thead>
                   <tr className="text-left text-xs text-textMuted">
                     <th className="px-2 py-1 font-medium">Fahrer</th>
+                    <th className="px-2 py-1 font-medium">Typ</th>
                     <th className="px-2 py-1 text-right font-medium">Gesamt</th>
                     <th className="px-2 py-1 text-right font-medium">Sonntag</th>
                     <th className="px-2 py-1 text-right font-medium">Nacht 25 %</th>
@@ -417,6 +418,14 @@ export default function UberCsvPlan() {
                               className="mr-1 text-textMuted hover:text-red-500">✕</button>
                           )}
                           {name}{treffer && <span className="ml-1 text-accent">✓</span>}
+                        </td>
+                        <td className="px-1 py-0.5">
+                          <select value={ziele[name]?.typ ?? ''} onChange={(e) => setZiel(name, 'typ', e.target.value)}
+                            className="rounded-lg border border-border bg-bg px-2 py-1 text-sm text-text outline-none focus:border-accent">
+                            <option value="">Fahrer</option>
+                            <option value="reinigung">Reinigung</option>
+                            <option value="buero">Büro</option>
+                          </select>
                         </td>
                         {(['gesamt', 'sonntag', 'nacht25', 'nacht40', 'feiertag', 'krankH'] as (keyof Ziel)[]).map((feld, ci) => (
                           <td key={feld} className="px-1 py-0.5">

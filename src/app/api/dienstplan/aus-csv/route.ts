@@ -6,11 +6,11 @@ import { buildPlansFromCsv, monthLabelDE, timesheetView, findeDoppelPaare, type 
 import { buildPlansFromFahrlygoCsv, looksLikeFahrlygo } from '@/lib/planning/fahrlygoPlan'
 import { buildCsvForPlans } from '@/lib/planning/uberCsv'
 import { buildWorkbookPerDriver } from '@/lib/planning/uberMappe'
-import { planAnZiel, planExakt } from '@/lib/planning/uberZielPlan'
+import { planAnZiel, planExakt, planPersonal, type PersonalTyp } from '@/lib/planning/uberZielPlan'
 import { feiertageImMonat } from '@/lib/planning/feiertage'
 
 /** Pro Fahrer optional die Monats-Zielstunden (aus der Lohnabrechnung). */
-type Ziel = { gesamt?: number; sonntag?: number; nacht25?: number; nacht40?: number; feiertag?: number; krank?: string; krankH?: number }
+type Ziel = { gesamt?: number; sonntag?: number; nacht25?: number; nacht40?: number; feiertag?: number; krank?: string; krankH?: number; typ?: string }
 
 /**
  * Parst eine Krank-Eingabe zu ISO-Tagen des Monats ("YYYY-MM"). Erlaubt:
@@ -62,10 +62,13 @@ function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined,
       krankStunden: Number(z?.krankH) || 0,
     }
   }
+  const alsTyp = (z?: Ziel): PersonalTyp | null => (z?.typ === 'reinigung' || z?.typ === 'buero' ? z.typ : null)
   const out = plans.map((p) => {
     const z = ziele[p.name]
     const g = Number(z?.gesamt) || 0
     if (g <= 0) return p
+    const typ = alsTyp(z)
+    if (typ) return planPersonal(p.name, p.month, typ, g, raster)
     const ziel = zielFuer(p.name, p.month, z)
     // Hat der Fahrer echte Uber-Fahrten? Dann die ECHTEN Startzeiten behalten
     // (planAnZiel, Streck-Modus): echte Von-Zeiten, Längen/Pausen gestaucht bzw.
@@ -76,14 +79,16 @@ function mitZielen(plans: DriverPlan[], ziele: Record<string, Ziel> | undefined,
     if (!hatEchte) return planExakt(p.name, p.month, ziel, raster)
     return planAnZiel(p, ziel, { raster })
   })
-  // Lohn-Fahrer, die NICHT in der CSV vorkommen: im Exakt-Modus einen eigenen
-  // Stundenzettel anlegen (freie Zeiten – es braucht nur Name + Monat).
-  if (exakt) {
+  // Personen, die NICHT in der CSV vorkommen (manuell getippt): eigenen Zettel
+  // anlegen. Personal (Reinigung/Büro) immer; Fahrer ohne Fahrten nur im Exakt-Modus.
+  {
     const monat = plans[0]?.month ?? ''
     const vorhanden = new Set(plans.map((p) => p.name))
     for (const [name, z] of Object.entries(ziele)) {
       if (vorhanden.has(name) || (Number(z?.gesamt) || 0) <= 0 || !monat) continue
-      out.push(planExakt(name, monat, zielFuer(name, monat, z), raster))
+      const typ = alsTyp(z)
+      if (typ) out.push(planPersonal(name, monat, typ, Number(z.gesamt), raster))
+      else if (exakt) out.push(planExakt(name, monat, zielFuer(name, monat, z), raster))
     }
   }
   return out
