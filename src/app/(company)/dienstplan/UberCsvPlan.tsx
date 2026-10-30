@@ -16,6 +16,15 @@ const ladeGemerkte = (): string[] => {
 const speichereGemerkte = (namen: string[]) => {
   try { localStorage.setItem(GEMERKT_KEY, JSON.stringify(namen)) } catch { /* ignore */ }
 }
+// Dauerhaft gemerkter Typ je Person (Fahrer/Reinigung/Büro), damit man ihn nur
+// EINMAL setzt. Namen bleiben über GEMERKT_KEY, der Typ über diesen Schlüssel.
+const TYP_KEY = 'stdplan.typByName'
+const ladeTyp = (): Record<string, string> => {
+  try { const r = localStorage.getItem(TYP_KEY); const o = r ? JSON.parse(r) : {}; return o && typeof o === 'object' ? o as Record<string, string> : {} } catch { return {} }
+}
+const speichereTyp = (name: string, typ: string) => {
+  try { const m = ladeTyp(); if (typ) m[name] = typ; else delete m[name]; localStorage.setItem(TYP_KEY, JSON.stringify(m)) } catch { /* ignore */ }
+}
 
 type Row = {
   tag: string
@@ -74,7 +83,22 @@ export default function UberCsvPlan() {
   // Dauerhaft gemerkte Fahrer (Browser-Speicher). Beim Laden einer CSV werden
   // deren Fahrer hier aufgenommen, damit sie künftig immer in der Tabelle stehen.
   const [gemerkte, setGemerkte] = useState<string[]>([])
-  useEffect(() => { setGemerkte(ladeGemerkte()) }, [])
+  // Beim Start: gemerkte Namen laden UND ihren gemerkten Typ in die Ziele setzen,
+  // damit Fahrer/Reinigung/Büro gleich richtig steht (Stunden gibt man je Monat ein).
+  useEffect(() => {
+    const g = ladeGemerkte(); setGemerkte(g)
+    const t = ladeTyp()
+    if (g.length || Object.keys(t).length) {
+      setZiele((z) => {
+        const c = { ...z }
+        for (const name of g) {
+          const cur = c[name] ?? { gesamt: '', sonntag: '', nacht25: '', nacht40: '', feiertag: '', krankH: '', krank: '', typ: '' }
+          c[name] = { ...cur, typ: cur.typ || (t[name] ?? '') }
+        }
+        return c
+      })
+    }
+  }, [])
   const merkeFahrer = (namen: string[]) => setGemerkte((alt) => {
     const low = new Set(alt.map((n) => n.toLowerCase()))
     const neu = [...alt]
@@ -96,11 +120,13 @@ export default function UberCsvPlan() {
     return out
   }
 
-  const setZiel = (name: string, feld: keyof Ziel, wert: string) =>
+  const setZiel = (name: string, feld: keyof Ziel, wert: string) => {
+    if (feld === 'typ') speichereTyp(name, wert) // Typ dauerhaft merken
     setZiele((z) => {
       const cur: Ziel = z[name] ?? { gesamt: '', sonntag: '', nacht25: '', nacht40: '', feiertag: '', krankH: '', krank: '', typ: '' }
       return { ...z, [name]: { ...cur, [feld]: wert } }
     })
+  }
 
   /** Vorschau mit den aktuellen Zielvorgaben/Merges neu berechnen (ohne Datei-Reupload). */
   async function neuBerechnen(mergesArg: string[][] = merges, zieleArg?: Record<string, ZielZahl>) {
